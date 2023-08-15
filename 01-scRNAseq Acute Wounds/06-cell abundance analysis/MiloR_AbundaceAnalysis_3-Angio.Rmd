@@ -1,0 +1,224 @@
+---
+title: "MiloR differential abundance analysis"
+author: "Zhuang Liu"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true #add a table of contents (TOC)
+    toc_depth: 3 #headers' level in the toc
+    toc_float: true #toc visible even when scrolled
+    theme: lumen
+    highlight: tango
+    code_folding: show
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.align='center', fig.width=12, fig.height = 6, warning=FALSE, message=FALSE)
+```
+
+```{r warning=FALSE, message=FALSE}
+library(Seurat)
+library(SeuratObject)
+library(tidyverse)
+
+library(miloR)
+library(SingleCellExperiment)
+library(scater)
+library(scran)
+library(dplyr)
+library(patchwork)
+```
+
+#############################################
+# Differential abundance analysis
+#############################################
+# 1. Create a Milo object
+```{r}
+rm(list = ls());gc()
+
+output_path <- "/Users/zhuliu/Desktop/scRNA_STseq/proj_10X_woundhealing/03_results/01-Seurat-PreAnalysis/02_Seurat_BatchCorrection/s6_7_Seurat_allOthers/"
+seu_obj <- readRDS(paste0(output_path, "s1_clean_othercell.rds"))
+
+# re-annotate the cell clusters
+fac_levs <- c("SMC", "Pericytes", "LE",
+              "VE_arteriole", "VE_capillary",
+              "VE_venule1", "VE_venule2")
+
+current_cluster_ids <- c(1, 3, 2, 
+                         5, 6, 
+                         0, 4) # List of current cluster IDs
+tmp <- plyr::mapvalues(x=seu_obj$SCT_snn_res.0.5, from=current_cluster_ids, to=fac_levs)
+
+seu_obj$upCellTypes <- tmp
+seu_obj$upCellTypes <- factor(seu_obj$upCellTypes, levels = fac_levs)
+Idents(seu_obj) <- seu_obj$upCellTypes
+
+# use new colors
+ct.cols <- c('#12a22d', '#ce8b1a', '#fe8Bac', 
+             '#d93860', '#3ba4db', 
+             '#807dba', '#d4b9da')
+
+names(ct.cols) <- fac_levs
+
+DimPlot(seu_obj, group.by = "upCellTypes", label = F, cols = ct.cols) +
+  NoAxes() + ggtitle("")
+
+## convert back to singleCellExperiment
+seu_sce <- as.SingleCellExperiment(seu_obj, assay = "RNA")
+seu_milo <- Milo(seu_sce)
+seu_milo
+#plotUMAP(seu_milo, colour_by="upCellTypes") + plotUMAP(seu_milo, colour_by="Condition")
+
+rm(seu_obj);gc() #remove unneeded files
+```
+
+
+# 2. Define cell neighbourhoods
+```{r}
+# build KNN graph
+seu_milo <- buildGraph(seu_milo, k = 20, d = 20, reduced.dim = "HARMONY")
+
+# Defining representative neighbourhoods on the KNN graph
+seu_milo <- makeNhoods(seu_milo, prop = 0.1, k = 20, d = 20, refined = TRUE, reduced_dims = "HARMONY", refinement_scheme="reduced_dim")
+plotNhoodSizeHist(seu_milo)
+
+# Counting cells in neighbourhoods
+seu_milo <- countCells(seu_milo, meta.data = as.data.frame(colData(seu_milo)), sample="orig.ident")
+head(nhoodCounts(seu_milo))
+
+# Defining experimental design
+seu_milo_design <- data.frame(colData(seu_milo))[,c("orig.ident", "Condition")] %>% 
+  distinct()
+# Change the sample order since it is misordered due to the factor variables
+seu_milo_design <- seu_milo_design %>% dplyr::slice(1,2,4,3,5,6,8,7,9,10,12,11)
+rownames(seu_milo_design) <- seu_milo_design$orig.ident
+seu_milo_design
+
+# check the identical sample names
+identical(colnames(seu_milo@nhoodCounts), rownames(seu_milo_design))
+table(seu_milo_design$Condition)
+```
+
+
+# 3 Differential abundance analysis with contrasts
+## 3.1 Create the function for differential abundance (DA) testing
+```{r}
+# Function
+DA_analysis <- function(milo_obj=NULL, contrast = NULL){
+  print(contrast)
+  da_results <- testNhoods(milo_obj, design = ~ 0 + Condition, # Change the Condition if you have different GroupName
+                           design.df = seu_milo_design, # contrast design
+                           model.contrasts = contrast, # contrast methods
+                           fdr.weighting="graph-overlap", 
+                           reduced.dim = "HARMONY")
+  # check the results
+  print(table(da_results$SpatialFDR < 0.1))
+  da_results %>%
+    arrange(SpatialFDR) %>%
+    head() %>% print()
+  
+  milo_obj <- buildNhoodGraph(milo_obj)
+  ## Plot neighbourhood graph
+  nh_graph_pl <- plotNhoodGraphDA(milo_obj, da_results, layout="UMAP", alpha=0.1) +
+    scale_fill_gradient2(name="log2FC",
+                       low = "blue",
+                       mid = "white",
+                       high = "red")
+  
+  # visualizing wheather DA is particularly evident in certain cell types
+  da_results <- annotateNhoods(milo_obj, da_results, coldata_col = "upCellTypes")
+  print(head(da_results))
+  
+  print(ggplot(da_results, aes(upCellTypes_fraction)) + geom_histogram(bins=50))
+  #da_results$upCellTypes <- ifelse(da_results$upCellTypes_fraction < 0.7, "Mixed", da_results$upCellTypes)
+
+  da_results$upCellTypes <- factor(da_results$upCellTypes, levels = rev(fac_levs))
+  
+  #trace('plotDAbeeswarm', edit = T, where = asNamespace("miloR"))
+  
+  beeplot <- plotDAbeeswarm(da_results, group.by = "upCellTypes") + 
+    scale_color_gradient2(low = "blue",
+                          mid = "white",
+                          high = "red") +
+    #scale_y_continuous(breaks = c(-8,-6,-4,-2,0,2,4,6,8), limits = c(-9,9)) +
+    labs(x="", y="Log2(Fold Change)") +
+    theme(
+      panel.grid.minor = element_blank(),
+      panel.grid.major = element_line(colour = "grey90", size = 0.6))
+  
+  print(nh_graph_pl + beeplot)
+  tmp_list <- list(da_results, nh_graph_pl, beeplot, milo_obj)
+  names(tmp_list) <- c("da_results", "nh_graph_pl", "beeplot", "milo_obj")
+  return(tmp_list)
+}
+```
+
+
+## 3.2 Pair-wise comparisons
+```{r}
+# pair-wise comparisons sequentially run at one time
+contrast.all <- c("ConditionWound1 - ConditionSkin", "ConditionWound7 - ConditionWound1", "ConditionWound30 - ConditionWound7", "ConditionWound30 - ConditionSkin", "ConditionWound30 - ConditionWound1", "ConditionWound7 - ConditionSkin") # the syntax is <VariableName><ConditionLevel> - <VariableName><ControlLevel>
+
+# this is the edgeR code called by `testNhoods`
+model <- model.matrix(~ 0 + Condition, data=seu_milo_design)
+mod.constrast <- makeContrasts(contrasts=contrast.all, levels=model)
+mod.constrast
+
+
+# Run the DA testing (Wound1 vs. Skin)
+da_results <- DA_analysis(milo_obj = seu_milo, contrast = contrast.all[1])
+# Draw the plot
+da_results$nh_graph_pl +  
+  (da_results$beeplot + scale_y_continuous(breaks = c(-6,-4,-2,0,2,4,6), 
+                                           limits = c(-6.5,6))) +
+  plot_layout(widths = c(1.6, 1.2))
+pdf("Milo_Endo_wound1_skin.pdf", useDingbats = FALSE, width = 12, height = 6)
+dev.off()
+
+
+# Run the DA testing (Wound7 vs. Wound1)
+da_results <- DA_analysis(milo_obj = seu_milo, contrast = contrast.all[2])
+# Draw the plot
+da_results$nh_graph_pl + 
+  (da_results$beeplot + scale_y_continuous(breaks = c(-6,-4,-2,0,2,4,6), limits = c(-6,6.5))) + 
+  plot_layout(widths = c(1.6, 1.2))
+pdf("Milo_Endo_wound7_wound1.pdf", useDingbats = FALSE, width = 12, height = 6)
+dev.off()
+
+
+# Run the DA testing (Wound30 vs. Wound7)
+da_results <- DA_analysis(milo_obj = seu_milo, contrast = contrast.all[3])
+# Draw the plot
+da_results$nh_graph_pl + 
+  (da_results$beeplot + scale_y_continuous(breaks = c(-6,-4,-2,0,2,4), limits = c(-6,4))) + 
+  plot_layout(widths = c(1.6, 1.2))
+pdf("Milo_Endo_wound30_wound7.pdf", useDingbats = FALSE, width = 12, height = 6)
+dev.off()
+```
+
+
+## 3.3 One-vs-others(>1 group) comparisons 
+```{r}
+# one group (Skin) compared to other groups (Wounds)
+ave.contrast <- c("(ConditionWound1 + ConditionWound7 + ConditionWound30)/3 - ConditionSkin")
+model <- model.matrix(~ 0 + Condition, data=seu_milo_design)
+mod.constrast <- makeContrasts(contrasts=ave.contrast, levels=model)
+mod.constrast
+
+# Run the DA testing
+da_results <- DA_analysis(milo_obj = seu_milo, contrast = ave.contrast)
+# Draw the plot
+da_results$nh_graph_pl + 
+  (da_results$beeplot + scale_y_continuous(breaks = c(-6,-4,-2,0,2,4,6), limits = c(-6,6))) + 
+  plot_layout(widths = c(1.6, 1.2))
+pdf("Milo_Endo_wounds_skin.pdf", useDingbats = FALSE, width = 12, height = 6)
+dev.off()
+```
+
+
+# SessionInfo
+```{r}
+sessionInfo()
+```

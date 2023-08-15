@@ -1,0 +1,20 @@
+name: scanpy_scvi
+channels:
+ - pytorch
+ - conda-forge
+ - bioconda
+ - defaults
+ - anaconda
+dependencies:
+ - python=3.7
+ - compilers
+ - pip
+ - jupyterlab
+ - nb_conda
+ - pip:
+   - scvi-tools[tutorials]
+ 
+# install scvi with pip instead, the  conda version installs but kernel dies when running it.
+
+
+

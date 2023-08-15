@@ -1,0 +1,358 @@
+---
+title: "scRNAseq essential analysis with Seurat with sctransform"
+author: "Zhuang Liu"
+date: "18/09/2021 Updated: `r Sys.Date()`"
+output:
+  html_document:
+    toc: true #add a table of contents (TOC)
+    toc_depth: 3 #headers' level in the toc
+    toc_float: true #toc visible even when scrolled
+    theme: lumen
+    highlight: tango
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.align='center', fig.width=12, fig.height = 8)
+```
+
+```{r warning=FALSE, message=FALSE}
+library(Seurat)
+library(tidyverse)
+library(magrittr)
+library(ggplot2)
+library(patchwork)
+library(sctransform)
+library(cowplot)
+```
+
+#####################
+## Reload the data ##
+#####################
+```{r fig.align='center', fig.width=12, fig.height=7}
+hswound.combined.sct <- readRDS("s2_cleanSeurat_harmony_allSamples_clusters_normGenes.rds")
+hswound.combined.sct
+p1 <- DimPlot(hswound.combined.sct, reduction = "umap", group.by='seurat_clusters', label=TRUE, label.size = 8) +
+  ggtitle('Cluster') + NoLegend() + NoAxes()
+
+p1 + FeaturePlot(
+  hswound.combined.sct,
+  features = c(top20[top20$cluster == 2, ]$gene[1:12]),
+  cols = c("gray","red"), ncol = 3
+)
+```
+```{r}
+table(hswound.combined.sct$SCT_snn_res.0.8)
+markers <- readxl::read_xlsx("s2_MarkerGenes_SingleR_Annotation_manually.xlsx", sheet = 1)
+table(markers$cluster)
+top20 <- markers %>% group_by(cluster) %>% top_n(n = 20, wt = avg_log2FC)
+top1 <- markers %>% group_by(cluster) %>% top_n(n = 1, wt = avg_log2FC)
+```
+
+## 5.5 Replace the cluster names with annotated cell types
+```{r eval=TRUE, fig.align='center', fig.width=12, fig.height=6}
+top1$SingleR_main #Check the cell types
+####----Annotate the cell types----####
+current_cluster_ids <- top1$cluster %>% c() # List of current cluster IDs
+new_cluster_ids <- top1$SingleR_main %>% c() # List of new cluster IDs
+# Changing IDs to cell type
+Idents(hswound.combined.sct) <- plyr::mapvalues(x=Idents(hswound.combined.sct), from=current_cluster_ids, to=new_cluster_ids)
+####----Rename the cell types manually----####
+#hswound.combined.sct <- RenameIdents(object = hswound.combined.sct,
+#                         "0" = "Fibroblasts",
+#                         "1" = "Keratinocytes",
+#                         "2" = "Keratinocytes",
+#                         ...)
+
+####----save general cell type names to metadata and relevel based on order in figures----####
+levels(hswound.combined.sct) <- c("Keratinocytes", 
+                                  "Fibroblasts", 
+                                  "Epithelial cells", 
+                                  "Endothelial cells",
+                                  "MSCs", #Mesenchymal stem cells 
+                                  "CMPs", #common myeloid progenitor cells: can differentiate into granulocyte-macrophage progenitors (GMPs)
+                                  "Neurons",
+                                  "Dendritic cells",
+                                  "NK cells",
+                                  "T cells",
+                                  "B cells")
+hswound.combined.sct$CellTypes_main <- hswound.combined.sct@active.ident
+
+#Draw the umap of annotated cell types
+p2 <- DimPlot(object = hswound.combined.sct, 
+        reduction = "umap", 
+        label = TRUE,
+        pt.size = 0.5,
+        repel = T,
+        label.size = 6) + NoAxes()
+p1 + p2 + plot_layout(ncol = 2)
+
+####----This step can also reset the active.ident cell names into default number labels----####
+hswound.combined.sct <- SetIdent(hswound.combined.sct, value = hswound.combined.sct@meta.data$SCT_snn_res.0.8)
+```
+
+## 5.6 AddModuleScore with previously identified cell types
+```{r eval=TRUE}
+source("../Functions/overlap_phyper2.R")
+sfile = "./s2_References for Cell types annotation.xlsx"
+sheets = readxl::excel_sheets(sfile)
+
+####----read all sheets and list all the cell types----####
+cells.list = list()
+for (sheet in sheets) {
+    cells.list[[sheet]] = readxl::read_xlsx(sfile, sheet = sheet)
+}
+#reformat the marker genes from Science paper
+cells.list$Science <- pivot_longer(cells.list$Science, everything(), names_to = "cluster", values_to = "gene") %>% arrange(cluster)
+  
+lapply(cells.list, function(x) unique(x$cluster))
+
+####----select marker genes of our clusters and make a mg.list----####
+markers_f <- markers %>% filter(p_val_adj < 0.05) %>% group_by(cluster) %>% top_n(n = 100, wt = avg_log2FC)
+mg.list <- split(markers_f$gene, markers_f$cluster)
+```
+
+## 5.7.1 celltypes from Science paper
+```{r fig.height=6}
+cell2gene_1 <- split(cells.list$Science$gene, cells.list$Science$cluster)
+overlaps <- overlap_phyper2(cell2gene_1, mg.list)
+```
+```{r fig.height=60}
+ft.names_1 <- paste("Score", names(cell2gene_1), sep = "_")
+ft.names_1 <- sub("-", ".", ft.names_1)
+
+# add Celltype scores
+hswound.combined.sct <- AddModuleScore(hswound.combined.sct, features = cell2gene_1, name = "CTScores_1", assay = "RNA")
+scores_1 <- hswound.combined.sct@meta.data[, grep("CTScores_1", colnames(hswound.combined.sct@meta.data))]
+# remove the CTScore columns
+hswound.combined.sct@meta.data <- hswound.combined.sct@meta.data[, setdiff(colnames(hswound.combined.sct@meta.data), colnames(scores_1))]
+
+hswound.combined.sct <- AddMetaData(hswound.combined.sct, scores_1, col.name = ft.names_1)
+
+VlnPlot(hswound.combined.sct, features = ft.names_1, group.by='SCT_snn_res.0.8', pt.size = 0, ncol = 3)
+```
+
+## 5.7.2 Main celltypes from JACI paper
+```{r fig.height=4}
+cell2gene_2 <- split(cells.list$All$gene, cells.list$All$cluster)
+overlaps <- overlap_phyper2(cell2gene_2, mg.list)
+```
+```{r fig.height=12}
+ft.names_2 <- paste("Score", names(cell2gene_2), sep = "_")
+ft.names_2 <- sub("-", ".", ft.names_2)
+
+# add Celltype scores
+hswound.combined.sct <- AddModuleScore(hswound.combined.sct, features = cell2gene_2, name = "CTScores_2", assay = "RNA")
+scores_2 <- hswound.combined.sct@meta.data[, grep("CTScores_2", colnames(hswound.combined.sct@meta.data))]
+# remove the CTScore columns
+hswound.combined.sct@meta.data <- hswound.combined.sct@meta.data[, setdiff(colnames(hswound.combined.sct@meta.data), colnames(scores_2))]
+
+hswound.combined.sct <- AddMetaData(hswound.combined.sct, scores_2, col.name = ft.names_2)
+
+VlnPlot(hswound.combined.sct, features = ft.names_2, group.by='SCT_snn_res.0.8', pt.size = 0, ncol = 3)
+```
+
+## 5.7.3 Fine celltypes of Keratinocytes from JACI paper
+```{r fig.height=4}
+####----Keratinocytes----####
+cell2gene_3 <- split(cells.list$Keratinocytes$gene, cells.list$Keratinocytes$cluster)
+overlaps <- overlap_phyper2(cell2gene_3, mg.list)
+```
+```{r fig.height=8}
+ft.names_3 <- paste("KC_Score", names(cell2gene_3), sep = "_")
+ft.names_3 <- sub("-", "_", ft.names_3)
+
+# add Celltype scores
+hswound.combined.sct <- AddModuleScore(hswound.combined.sct, features = cell2gene_3, name = "CTScores_3", assay = "RNA")
+scores_3 <- hswound.combined.sct@meta.data[, grep("CTScores_3", colnames(hswound.combined.sct@meta.data))]
+# remove the CTScore columns
+hswound.combined.sct@meta.data <- hswound.combined.sct@meta.data[, setdiff(colnames(hswound.combined.sct@meta.data), colnames(scores_3))]
+
+hswound.combined.sct <- AddMetaData(hswound.combined.sct, scores_3, col.name = ft.names_3)
+
+VlnPlot(hswound.combined.sct, features = ft.names_3, group.by='SCT_snn_res.0.8', pt.size = 0, ncol = 3)
+```
+
+## 5.7.4 Fine celltypes of Fibroblasts from JACI paper
+```{r fig.height=2}
+####----Fibroblasts----####
+cell2gene_4 <- split(cells.list$Fibroblasts$gene, cells.list$Fibroblasts$cluster)
+overlaps <- overlap_phyper2(cell2gene_4, mg.list)
+```
+```{r fig.height=5}
+ft.names_4 <- paste("FB_Score", names(cell2gene_4), sep = "_")
+ft.names_4 <- sub("\\+", "_", ft.names_4)
+ft.names_4 <- sub("\\+", "", ft.names_4)
+
+# add Celltype scores
+hswound.combined.sct <- AddModuleScore(hswound.combined.sct, features = cell2gene_4, name = "CTScores_4", assay = "RNA")
+scores_4 <- hswound.combined.sct@meta.data[, grep("CTScores_4", colnames(hswound.combined.sct@meta.data))]
+# remove the CTScore columns
+hswound.combined.sct@meta.data <- hswound.combined.sct@meta.data[, setdiff(colnames(hswound.combined.sct@meta.data), colnames(scores_4))]
+
+hswound.combined.sct <- AddMetaData(hswound.combined.sct, scores_4, col.name = ft.names_4)
+
+VlnPlot(hswound.combined.sct, features = ft.names_4, group.by='SCT_snn_res.0.8', pt.size = 0, ncol = 3)
+```
+
+## 5.7.5 Fine celltypes of Pericytes, vSMC from JACI paper
+```{r fig.height=2}
+####----Pericytes, vSMC----####
+cell2gene_5 <- split(cells.list$`Pericytes, vSMC`$gene, cells.list$`Pericytes, vSMC`$cluster)
+overlaps <- overlap_phyper2(cell2gene_5, mg.list)
+```
+```{r fig.height=3}
+ft.names_5 <- paste("PV_Score", names(cell2gene_5), sep = "_")
+ft.names_5 <- sub("-", "_", ft.names_5)
+
+# add Celltype scores
+hswound.combined.sct <- AddModuleScore(hswound.combined.sct, features = cell2gene_5, name = "CTScores_5", assay = "RNA")
+scores_5 <- hswound.combined.sct@meta.data[, grep("CTScores_5", colnames(hswound.combined.sct@meta.data))]
+# remove the CTScore columns
+hswound.combined.sct@meta.data <- hswound.combined.sct@meta.data[, setdiff(colnames(hswound.combined.sct@meta.data), colnames(scores_5))]
+
+hswound.combined.sct <- AddMetaData(hswound.combined.sct, scores_5, col.name = ft.names_5)
+
+VlnPlot(hswound.combined.sct, features = ft.names_5, group.by='SCT_snn_res.0.8', pt.size = 0, ncol = 3)
+```
+
+## 5.7.6 Fine celltypes of MEL, NC, SC from JACI paper
+```{r fig.height=2}
+####----MEL, NC, SC----####
+cell2gene_6 <- split(cells.list$`MEL, NC, SC`$gene, cells.list$`MEL, NC, SC`$cluster)
+overlaps <- overlap_phyper2(cell2gene_6, mg.list)
+```
+```{r fig.height=3}
+ft.names_6 <- paste("MNS_Score", names(cell2gene_6), sep = "_")
+ft.names_6 <- sub(" ", "_", ft.names_6)
+
+# add Celltype scores
+hswound.combined.sct <- AddModuleScore(hswound.combined.sct, features = cell2gene_6, name = "CTScores_6", assay = "RNA")
+scores_6 <- hswound.combined.sct@meta.data[, grep("CTScores_6", colnames(hswound.combined.sct@meta.data))]
+# remove the CTScore columns
+hswound.combined.sct@meta.data <- hswound.combined.sct@meta.data[, setdiff(colnames(hswound.combined.sct@meta.data), colnames(scores_6))]
+
+hswound.combined.sct <- AddMetaData(hswound.combined.sct, scores_6, col.name = ft.names_6)
+
+VlnPlot(hswound.combined.sct, features = ft.names_6, group.by='SCT_snn_res.0.8', pt.size = 0, ncol = 3)
+```
+
+## 5.7.7 Fine celltypes of Sweat gland cells from JACI paper
+```{r fig.height=2}
+####----Sweat gland cells----####
+cell2gene_7 <- split(cells.list$`Sweat gland cells`$gene, cells.list$`Sweat gland cells`$cluster)
+overlaps <- overlap_phyper2(cell2gene_7, mg.list)
+```
+```{r fig.height=3}
+ft.names_7 <- paste("SGC_Score", names(cell2gene_7), sep = "_")
+ft.names_7 <- sub(" ", "_", ft.names_7)
+
+# add Celltype scores
+hswound.combined.sct <- AddModuleScore(hswound.combined.sct, features = cell2gene_7, name = "CTScores_7", assay = "RNA")
+scores_7 <- hswound.combined.sct@meta.data[, grep("CTScores_7", colnames(hswound.combined.sct@meta.data))]
+# remove the CTScore columns
+hswound.combined.sct@meta.data <- hswound.combined.sct@meta.data[, setdiff(colnames(hswound.combined.sct@meta.data), colnames(scores_7))]
+
+hswound.combined.sct <- AddMetaData(hswound.combined.sct, scores_7, col.name = ft.names_7)
+
+VlnPlot(hswound.combined.sct, features = ft.names_7, group.by='SCT_snn_res.0.8', pt.size = 0, ncol = 3)
+```
+
+## 5.7.8 Fine celltypes of Vascular endothelial cells from JACI paper
+```{r fig.height=3}
+####----Vascular endothelial cells----####
+cell2gene_8 <- split(cells.list$`Vascular endothelial cells`$gene, cells.list$`Vascular endothelial cells`$cluster)
+overlaps <- overlap_phyper2(cell2gene_8, mg.list)
+```
+```{r fig.height=5}
+ft.names_8 <- paste("VE_Score", names(cell2gene_8), sep = "_")
+ft.names_8 <- sub("\\/", "_", ft.names_8)
+
+# add Celltype scores
+hswound.combined.sct <- AddModuleScore(hswound.combined.sct, features = cell2gene_8, name = "CTScores_8", assay = "RNA")
+scores_8 <- hswound.combined.sct@meta.data[, grep("CTScores_8", colnames(hswound.combined.sct@meta.data))]
+# remove the CTScore columns
+hswound.combined.sct@meta.data <- hswound.combined.sct@meta.data[, setdiff(colnames(hswound.combined.sct@meta.data), colnames(scores_8))]
+
+hswound.combined.sct <- AddMetaData(hswound.combined.sct, scores_8, col.name = ft.names_8)
+
+VlnPlot(hswound.combined.sct, features = ft.names_8, group.by='SCT_snn_res.0.8', pt.size = 0, ncol = 3)
+```
+
+## 5.7.9 Fine celltypes of Macrophages, Dendritic cells from JACI paper
+```{r fig.height=2}
+####----Macrophages, Dendritic cells----####
+cell2gene_9 <- split(cells.list$`Macrophages, Dendritic cells`$gene, cells.list$`Macrophages, Dendritic cells`$cluster)
+overlaps <- overlap_phyper2(cell2gene_9, mg.list)
+```
+```{r fig.height=3}
+ft.names_9 <- paste("MD_Score", names(cell2gene_9), sep = "_")
+ft.names_9 <- sub(" ", "_", ft.names_9)
+ft.names_9 <- sub("-", "_", ft.names_9)
+
+# add Celltype scores
+hswound.combined.sct <- AddModuleScore(hswound.combined.sct, features = cell2gene_9, name = "CTScores_9", assay = "RNA")
+scores_9 <- hswound.combined.sct@meta.data[, grep("CTScores_9", colnames(hswound.combined.sct@meta.data))]
+# remove the CTScore columns
+hswound.combined.sct@meta.data <- hswound.combined.sct@meta.data[, setdiff(colnames(hswound.combined.sct@meta.data), colnames(scores_9))]
+
+hswound.combined.sct <- AddMetaData(hswound.combined.sct, scores_9, col.name = ft.names_9)
+
+VlnPlot(hswound.combined.sct, features = ft.names_9, group.by='SCT_snn_res.0.8', pt.size = 0, ncol = 3)
+```
+
+## 5.7.10 Fine celltypes of T-cells from JACI paper
+```{r fig.height=4}
+####----T-cells----####
+cell2gene_10 <- split(cells.list$`T-cells`$gene, cells.list$`T-cells`$cluster)
+overlaps <- overlap_phyper2(cell2gene_10, mg.list)
+```
+```{r fig.height=5}
+ft.names_10 <- paste("T_Score", names(cell2gene_10), sep = "_")
+ft.names_10 <- sub("\\+", "", ft.names_10)
+ft.names_10 <- sub(" ", "_", ft.names_10)
+ft.names_10 <- sub("-", "_", ft.names_10)
+
+# add Celltype scores
+hswound.combined.sct <- AddModuleScore(hswound.combined.sct, features = cell2gene_10, name = "CTScores_10", assay = "RNA")
+scores_10 <- hswound.combined.sct@meta.data[, grep("CTScores_10", colnames(hswound.combined.sct@meta.data))]
+# remove the CTScore columns
+hswound.combined.sct@meta.data <- hswound.combined.sct@meta.data[, setdiff(colnames(hswound.combined.sct@meta.data), colnames(scores_10))]
+
+hswound.combined.sct <- AddMetaData(hswound.combined.sct, scores_10, col.name = ft.names_10)
+
+VlnPlot(hswound.combined.sct, features = ft.names_10, group.by='SCT_snn_res.0.8', pt.size = 0, ncol = 3)
+```
+Export the metadata
+```{r}
+metadata <- hswound.combined.sct@meta.data %>% tibble::rownames_to_column(var = "CellBarcode")
+data.table::fwrite(metadata, "s3_Reference_annotation_celltypeScores.txt", sep="\t")
+```
+
+## 5.8 Unsupervised hierarchical clustering results of all clusters
+```{r fig.width=12, fig.height=6}
+rm(list = ls());gc(verbose = FALSE)
+hswound.combined.sct <- readRDS("s1_cleanSeurat_harmony_allSamples_clusters.rds")
+
+Idents(hswound.combined.sct) <- "SCT_snn_res.0.8"
+hswound.combined.sct <- BuildClusterTree(object = hswound.combined.sct, assay = "SCT", slot = "scale.data")
+levels(hswound.combined.sct) #Check the active cluster levels
+suppressMessages(library(scales)) 
+show_col(hue_pal()(length(levels(hswound.combined.sct)))) #Check the colors corresponding to each cluster
+```
+```{r fig.width=4, fig.height=5}
+cluster.color <- hue_pal()(length(levels(hswound.combined.sct)))
+# pull the tree
+hswound.clustertree <- Tool(object = hswound.combined.sct, slot = "BuildClusterTree")
+# plot the tree
+require(ape)
+{plot.phylo(x = hswound.clustertree, direction = "rightwards", use.edge.length = TRUE, font = 4, 
+                tip.color = cluster.color,
+                edge.width = 2, label.offset = 5, no.margin = TRUE)
+tiplabels(pch = 19, col = cluster.color, adj = 3, cex = 2)}
+```
+
+```{r}
+sessionInfo()
+```
+

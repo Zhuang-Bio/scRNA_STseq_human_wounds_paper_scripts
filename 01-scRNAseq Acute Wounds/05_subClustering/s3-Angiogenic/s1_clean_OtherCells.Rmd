@@ -1,0 +1,248 @@
+---
+title: "Sub-clustering of all other non-immune cells"
+author: "Zhuang Liu"
+date: "30/11/2021 Updated: `r Sys.Date()`"
+output:
+  html_document:
+    toc: true #add a table of contents (TOC)
+    toc_depth: 3 #headers' level in the toc
+    toc_float: true #toc visible even when scrolled
+    theme: lumen
+    highlight: tango
+    code_folding: hide
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.align='center', fig.width = 12, warning = FALSE, message = FALSE)
+```
+
+```{r warning=FALSE, message=FALSE}
+library(Seurat)
+library(SeuratObject)
+library(SeuratDisk)
+library(tidyverse)
+library(magrittr)
+library(ggplot2)
+library(patchwork)
+library(harmony)
+```
+
+####################################################
+# Step 1. Extract cells
+####################################################
+## 1.1 Load the whole cell types
+```{r fig.width=8, fig.height=6}
+# endothelial cells, pericytes and smooth muscle cell
+# Don't focus the Mast cells, Hair Follicle cells, Schwann cells, Melanocytes 
+hswound.combined.sct <- readRDS("/Users/zhuliu/Desktop/sc st/plotting scripts/Figure 1/allcombined_wounds_newAnnotation.rds") 
+DimPlot(object = hswound.combined.sct, 
+        reduction = "umap", 
+        label = TRUE, 
+        group.by = "newCellTypes", label.size = 3) + NoAxes() + NoLegend()
+table(hswound.combined.sct$newCellTypes)
+```
+
+## 1.2 Rerun the SCT and clustering (all Conditions)
+```{r}
+hswound.combined.sct$fill <- ifelse(hswound.combined.sct$newCellTypes %in% c("PC-vSMC", "LE", "VE"), "Yes", "No")
+hswound.endo <- subset(x = hswound.combined.sct, subset = fill == "Yes")
+hswound.endo@meta.data <- droplevels(hswound.endo@meta.data)
+
+DimPlot(object = hswound.endo, 
+        reduction = "umap", 
+        label = TRUE, 
+        group.by = "newCellTypes", label.size = 3) + NoAxes() + NoLegend()
+
+rm(hswound.combined.sct);invisible(gc())
+
+DefaultAssay(hswound.endo) <- "RNA"
+hswound.endo <- DietSeurat(hswound.endo, counts = TRUE, data = TRUE, scale.data = FALSE,
+                    assays = "RNA", dimreducs = NULL)
+#Remove unneeded columns
+hswound.endo@active.ident <- hswound.endo$orig.ident
+hswound.endo$SCT_snn_res.0.5 <- NULL
+hswound.endo$SCT_snn_res.0.8 <- NULL
+hswound.endo$seurat_clusters <- NULL
+hswound.endo$nCount_SCT <- NULL
+hswound.endo$nFeature_SCT <- NULL
+hswound.endo$fill <- NULL
+
+hswound.list <- SplitObject(hswound.endo, split.by = "orig.ident")
+rm(hswound.endo);invisible(gc())
+hswound.list <- lapply(X = hswound.list, FUN = function(x) {
+  x <- NormalizeData(x)
+  x <- CellCycleScoring(object = x, g2m.features = cc.genes$g2m.genes, s.features = cc.genes$s.genes, set.ident = FALSE)
+  x$CC.Difference <- x$S.Score - x$G2M.Score
+  x <- SCTransform(x, vars.to.regress = c("percent.mt", "CC.Difference"), variable.features.n = 3000, verbose = FALSE, return.only.var.genes = TRUE, method = "glmGamPoi")
+})
+
+vg = lapply(hswound.list, VariableFeatures)
+t = table(unlist(vg))
+
+vg$all = SelectIntegrationFeatures(hswound.list)
+source("../Functions/overlap_phyper2.R")
+
+vg.all = names(t)[t > 1]
+length(vg.all)
+
+# filter to only have genes detected in all sections.
+rn = lapply(hswound.list, rownames)
+nE = colSums(Reduce(rbind, lapply(rn, function(x) vg.all %in% x)))
+vg.all = vg.all[nE == length(hswound.list)]
+length(vg.all)
+
+vg$finalall <- vg.all
+
+features.all <- SelectIntegrationFeatures(object.list = hswound.list, nfeatures = 3000)
+rn <- lapply(hswound.list, rownames) 
+nE <- colSums(Reduce(rbind, lapply(rn, function(x) features.all %in% x))) 
+features.all <- features.all[nE == length(hswound.list)]
+
+vg$featuresall <- features.all
+overlap_phyper2(vg, vg)
+
+####----Prepare the integration----####
+hswound.list <- PrepSCTIntegration(object.list = hswound.list, anchor.features = features.all)
+
+hswound.endo.com <- merge(hswound.list[[1]], 
+                         y = hswound.list[2:length(hswound.list)],
+                         project = "woundendo",
+                         merge.data = TRUE)
+
+VariableFeatures(hswound.endo.com) <- features.all
+hswound.endo.com <- RunPCA(object = hswound.endo.com, assay = "SCT", npcs = 50, features = VariableFeatures(hswound.endo.com))
+ElbowPlot(hswound.endo.com, ndims = 40, reduction = "pca")
+
+hswound.endo.com <- RunHarmony(object = hswound.endo.com,
+                                    assay.use = "SCT",
+                                    reduction = "pca",
+                                    dims.use = 1:20,
+                                    group.by.vars = "orig.ident",
+                                    plot_convergence = TRUE)
+
+#rn pca, umap, clustering
+hswound.endo.com <- FindNeighbors(object = hswound.endo.com, assay = "SCT", reduction = "harmony", dims = 1:20, k.param = 40)
+hswound.endo.com <- FindClusters(object = hswound.endo.com, resolution = 1.0)
+hswound.endo.com <- FindClusters(object = hswound.endo.com, resolution = 0.8)
+hswound.endo.com <- FindClusters(object = hswound.endo.com, resolution = 0.5)
+hswound.endo.com <- FindClusters(object = hswound.endo.com, resolution = 0.3)
+
+hswound.endo.com <- RunUMAP(object = hswound.endo.com, assay = "SCT", reduction = "harmony", dims = 1:20, n.neighbors = 40, min.dist = 0.5, n.epochs = 300, spread = 0.7)
+
+hswound.endo.com$orig.ident <- factor(x = hswound.endo.com$orig.ident, levels =
+                                            c("PWH26D0", "PWH26D1", "PWH26D7","PWH26D30",
+                                              "PWH27D0", "PWH27D1", "PWH27D7","PWH27D30",
+                                              "PWH28D0", "PWH28D1", "PWH28D7","PWH28D30"))
+hswound.endo.com$Condition <- factor(x = hswound.endo.com$Condition, levels =
+                                            c("Skin", "Wound1", "Wound7","Wound30"))
+
+DimPlot(object = hswound.endo.com, 
+        reduction = "umap", 
+        label = F, 
+        group.by = "orig.ident", label.size = 4.5) + NoAxes() 
+
+table(hswound.endo.com$SCT_snn_res.0.3)
+DimPlot(object = hswound.endo.com, 
+        reduction = "umap", 
+        label = TRUE, 
+        group.by = "SCT_snn_res.0.3", label.size = 4.5) + NoAxes() 
+
+table(hswound.endo.com$SCT_snn_res.0.5)
+DimPlot(object = hswound.endo.com, 
+        reduction = "umap", 
+        label = TRUE, 
+        group.by = "SCT_snn_res.0.5", label.size = 4.5) + NoAxes() 
+
+table(hswound.endo.com$SCT_snn_res.0.8)
+DimPlot(object = hswound.endo.com, 
+        reduction = "umap", 
+        label = TRUE, 
+        group.by = "SCT_snn_res.0.8", label.size = 4.5) + NoAxes()
+
+table(hswound.endo.com$SCT_snn_res.1)
+DimPlot(object = hswound.endo.com, 
+        reduction = "umap", 
+        label = TRUE, 
+        group.by = "SCT_snn_res.1", label.size = 4.5) + NoAxes()
+
+DimPlot(object = hswound.endo.com, 
+        reduction = "umap", 
+        label = TRUE, 
+        group.by = "newCellTypes", label.size = 5) + NoAxes() + ggtitle("")
+
+DimPlot(hswound.endo.com, reduction = "umap", pt.size = .001,group.by = "SCT_snn_res.1", split.by = 'Condition', ncol = 4, label = F) + NoLegend()+ ggtitle("")
+DimPlot(hswound.endo.com, reduction = "umap", pt.size = .001,group.by = "newCellTypes", split.by = 'Condition', ncol = 4, label = F) + NoLegend()+ ggtitle("")
+
+FeaturePlot(hswound.endo.com, features = c("MKI67", "CCR7"), order = T)
+
+# Determine metrics to plot present in hswound.krt.com@meta.data
+metrics <-  c("nCount_RNA", "nFeature_RNA", "S.Score", "G2M.Score", "percent.mt", "doublet_scores")
+
+p3 <- FeaturePlot(
+  hswound.endo.com,
+  features = metrics,
+  cols = c("gray","red"), combine = FALSE)
+p2_list <- lapply(p3, function(x) {x + NoAxes() + theme(text = element_text(size = 10))})
+cowplot::plot_grid(plotlist = p2_list, ncol = 3)
+
+VlnPlot(hswound.endo.com, features = metrics, group.by='SCT_snn_res.0.8', pt.size = 0, ncol = 2)
+
+ggplot(hswound.endo.com@meta.data, aes(x = SCT_snn_res.0.8, fill = Condition, alpha = Patient)) +
+    geom_bar(position = "fill")
+
+library(future)
+plan("multisession", workers = 4)
+options(future.globals.maxSize = 15000 * 1024^2)
+
+####----Change to RNA assay to prepare the DE analysis----####
+DefaultAssay(hswound.endo.com) <- "RNA"
+Idents(hswound.endo.com) <- "SCT_snn_res.0.8" #marker genes with cluster number
+####----FindAllMarkers for all clusters----####
+markers <- FindAllMarkers(
+  hswound.endo.com,
+  only.pos = TRUE,
+  min.pct = 0.25,  #min.pct = 0.5, logfc.threshold = 0.5,
+  logfc.threshold = 0.25,
+  test.use = "MAST") #MAST has good FDR control and is faster than DESeq2, default test is wilcox
+
+####----add the gene description to the cluster marker genes----####
+annot <- readRDS("../Functions/humanAnnotation.rds")
+####----add the info and reorder the columns----####
+markers_f <- markers %>% left_join(., annot, by=c("gene" = "external_gene_name")) %>% 
+  dplyr::select(6, 7, 2:4, 1, 5, everything()) %>% arrange(cluster, desc(avg_log2FC))
+#marker genes with cluster number
+data.table::fwrite(markers_f, file="s1_clean_othercell_mg_res0.8.txt", sep="\t") 
+
+hswound.endo.com <- NormalizeData(hswound.endo.com, verbose = TRUE,  normalization.method = "LogNormalize", scale.factor = 10000)
+
+saveRDS(hswound.endo.com, file = "s1_clean_othercell.rds")
+```
+
+```{r fig.height=11}
+FeaturePlot(
+  hswound.endo.com,
+  features=c('KRT5', 'KRT10', 'COL1A1', 'COL1A2'), 
+  combine=T, cols = c("grey","red")
+)
+
+plotcom <- FeaturePlot(
+  hswound.endo.com,
+  features=c('CD68', 'CD163', 'CD14', 'CD209', 'FCGR2A', 'MRC1', 'CD207', 'CD1A', 'CD1C', 'CD1B', 'ITGAX', 
+             'CD83', 'LAMP3', 'THBD', 'CLEC9A', 'MKI67'), 
+  combine=F, cols = c("grey","red")
+)
+
+# apply theme to each feature plot
+for(i in 1:length(plotcom)){
+  plotcom[[i]] <- plotcom[[i]] + NoLegend() + NoAxes()
+}
+
+cowplot::plot_grid(plotlist = plotcom, ncol = 4)
+```
+
+# SessionInfo
+```{r}
+sessionInfo()
+```

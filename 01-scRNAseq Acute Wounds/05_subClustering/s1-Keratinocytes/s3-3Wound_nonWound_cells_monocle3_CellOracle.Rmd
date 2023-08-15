@@ -1,0 +1,527 @@
+---
+title: "Monocle 3 trajectory analysis"
+author: "Zhuang Liu"
+date: "28/02/2022 Updated: `r Sys.Date()`"
+output:
+  html_document:
+    toc: true #add a table of contents (TOC)
+    toc_depth: 3 #headers' level in the toc
+    toc_float: true #toc visible even when scrolled
+    theme: lumen
+    highlight: tango
+    code_folding: show
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.align='center', fig.width=12, fig.height = 8, warning=FALSE, message=FALSE)
+```
+
+```{r warning=FALSE, message=FALSE}
+library(Seurat)
+library(SeuratObject)
+library(SeuratWrappers)
+library(SeuratDisk)
+library(monocle3)
+library(tidyverse)
+library(magrittr)
+library(patchwork)
+```
+
+###########################################
+# Step 1: From Seurat object to Monocle3
+###########################################
+## 1.1 Subset the Seurat object
+```{r}
+rm(list = ls());gc()
+# wound cells
+hswound.krt.com <- readRDS("./p_try_KRT6A+_wound_cells.rds")
+table(hswound.krt.com$CellTypes)
+
+# healthy cells
+hswound.krt.com <- readRDS("./p_try_KRT6A-dim_healthy_cells.rds")
+table(hswound.krt.com$CellTypes)
+
+# add the new cell annotation from the finnal UMAP
+newmt_sub <- data.table::fread('/Users/zhuliu/Desktop/sc st/plotting scripts/Figure 3/newKeratinocyte_metadata.txt') %>% dplyr::select(1,31)
+## add the annotation of matrix
+mtdata_ori <- hswound.krt.com@meta.data %>% 
+  tibble::rownames_to_column(var = "CellID") %>% 
+  left_join(., newmt_sub, by=c("CellID" = "barcode"))
+hswound.krt.com$upCellTypes <- mtdata_ori$upCellTypes
+
+DimPlot(object = hswound.krt.com, 
+        reduction = "umap", 
+        label = TRUE, 
+        group.by = "SCT_snn_res.1") + NoAxes() + ggtitle("Cell Clusters")
+# make a copy
+hswound_krt_sub <- hswound.krt.com
+```
+
+## 1.2 Convert Seurat object to cell_data_set and Import cluster info from Seurat
+```{r}
+# Monocle3 requires an object of type cell_data_set, so we need to
+# create it by extracting the counts and metadata from the Seurat object:
+DefaultAssay(hswound_krt_sub) <- "RNA"
+
+feature_names <- as.data.frame(rownames(hswound_krt_sub))
+rownames(feature_names) <- rownames(hswound_krt_sub)
+colnames(feature_names) <- "gene_short_name"
+
+cds <- new_cell_data_set(expression_data = hswound_krt_sub@assays$RNA@counts,
+                         cell_metadata = hswound_krt_sub@meta.data,
+                         gene_metadata = feature_names)
+
+cds <- estimate_size_factors(cds)
+
+### Construct and assign the made up partition
+recreate.partition <- c(rep(1, length(cds@colData@rownames)))
+names(recreate.partition) <- cds@colData@rownames
+recreate.partition <- as.factor(recreate.partition)
+
+cds@clusters@listData[["UMAP"]][["partitions"]] <- recreate.partition
+
+### Assign the cluster info
+list_cluster <- hswound_krt_sub$SCT_snn_res.0.5
+names(list_cluster) <- colnames(hswound_krt_sub)
+
+cds@clusters@listData[["UMAP"]][["clusters"]] <- list_cluster
+
+### Could be a space-holder, but essentially fills out louvain parameters
+cds@clusters@listData[["UMAP"]][["louvain_res"]] <- "NA"
+
+### Assign UMAP coordinate
+cds@int_colData$reducedDims[["UMAP"]] <- hswound_krt_sub@reductions[["umap"]]@cell.embeddings
+
+### Assign feature loading for downstream module analysis
+#cds@preprocess_aux$gene_loadings <- hswound_krt_sub@reductions[["pca"]]@feature.loadings[,1:20]
+
+### Learn graph, this step usually takes a significant period of time for larger samples
+print("Learning graph, which can take a while depends on the sample")
+
+#cds <- cluster_cells(cds)
+#plot_cells(cds, reduction_method="UMAP", color_cells_by="cluster") + ggtitle('cds.umap')
+#plot_cells(cds, color_cells_by = "partition")
+```
+
+## 1.3 Learn the trajectory graph
+```{r}
+learncont <- list(minimal_branch_len = 10, rann.k = 30, orthogonal_proj_tip = FALSE) #defaults, minimal_branch_len:10, rann.k = 25
+cds <- learn_graph(cds, use_partition = T, 
+                   close_loop = T, 
+                   learn_graph_control = learncont)
+plot_cells(cds,
+           color_cells_by = "SCT_snn_res.0.5",
+           label_groups_by_cluster=FALSE,
+           label_leaves=FALSE,
+           label_branch_points=T,
+           group_label_size = 4)
+```
+
+## 1.4 Order the cells in pseudotime
+```{r}
+# option 1: manually select the root node
+#cds <- order_cells(cds, reduction_method = "UMAP") 
+
+# option 2: a helper function to identify the root principal points:
+get_earliest_principal_node <- function(cds, time_bin=c("Bas_I")){  
+  cell_ids <- which(colData(cds)[, "CellTypes"] == time_bin) 
+  
+  closest_vertex <-
+  cds@principal_graph_aux[["UMAP"]]$pr_graph_cell_proj_closest_vertex
+  closest_vertex <- as.matrix(closest_vertex[colnames(cds), ])
+  root_pr_nodes <-
+  igraph::V(principal_graph(cds)[["UMAP"]])$name[as.numeric(names
+  (which.max(table(closest_vertex[cell_ids,]))))]
+  
+  root_pr_nodes
+}
+cds <- order_cells(cds, root_pr_nodes=get_earliest_principal_node(cds))
+
+#pdf("/Users/zhuliu/Desktop/sc st/plotting scripts/Figure 3/Fig3_woundcell_pseudotime.pdf", useDingbats = F, width = 6, height = 4)
+plot_cells(cds = cds, 
+           color_cells_by = "pseudotime", 
+           label_cell_groups = FALSE, 
+           show_trajectory_graph = T, 
+           label_branch_points = F, 
+           label_leaves = F, 
+           label_roots = T,
+           graph_label_size=2) #+
+  #facet_wrap(~Condition, nrow = 2)
+#dev.off()
+```
+
+
+## 1.6 Graph-autocorrelation DE analysis through the trajectory
+### 1.6.1 List of DE genes
+```{r}
+##  Perform differential expression analysis
+# With graph autocorrelation:change the command in line 93 (Matrix:rBind to rbind)
+#trace('calculateLW', edit = T, where = asNamespace("monocle3"))
+
+#pr_graph_test_res <- graph_test(cds, neighbor_graph="principal_graph", cores=6)
+#data.table::fwrite(pr_graph_test_res, file = "p_try_KRT6A_monocle3_drivergenes_woundcell.txt", sep = "\t")
+#data.table::fwrite(pr_graph_test_res, file = "p_try_KRT6A_monocle3_drivergenes_healthycell.txt", sep = "\t")
+
+# reload the data
+pr_graph_test_res <- data.table::fread("p_try_KRT6A_monocle3_drivergenes_woundcell.txt")
+#pr_graph_test_res <- data.table::fread("p_try_KRT6A_monocle3_drivergenes_healthycell.txt")
+
+pr_graph_test_res_sort <- pr_graph_test_res %>% filter(q_value < 0.00001) %>% 
+  arrange(desc(morans_I))
+pr_deg_ids <- pr_graph_test_res_sort %>% pull(gene_short_name)
+```
+
+
+### 1.6.3 ComplexHeatmap of DE genes
+```{r eval = TRUE, fig.height=20}
+library(ComplexHeatmap)
+library(ggplot2)
+library(dplyr)
+library(RColorBrewer)
+library(circlize)
+# All significant Genes pseudotime heatmaps
+genes <- subset(pr_graph_test_res, q_value < 0.00001 & morans_I > 0.25) %>% 
+  arrange(desc(morans_I)) %>% pull(gene_short_name)
+
+pt.matrix_ori <- exprs(cds)[match(genes, rownames(rowData(cds))), order(pseudotime(cds))]
+dim(pt.matrix_ori)
+#Can also use "normalized_counts" instead of "exprs" to use various normalization methods, for example:
+#normalized_counts(cds, norm_method = "log")
+
+pt.matrix <- t(apply(pt.matrix_ori,1,function(x){smooth.spline(x, df=3)$y}))
+pt.matrix <- t(apply(pt.matrix,1,function(x){(x-mean(x))/sd(x)}))
+dim(pt.matrix)
+rownames(pt.matrix) <- rownames(pt.matrix_ori)
+colnames(pt.matrix) <- colnames(pt.matrix_ori)
+
+## add the annotation of matrix
+mtdata <- hswound_krt_sub@meta.data %>% rownames_to_column(var = "CellID") %>% dplyr::select(1,2,8,20, 31)
+
+# add the new cell annotatin
+newmt <- data.table::fread('/Users/zhuliu/Desktop/sc st/plotting scripts/Figure 3/newKeratinocyte_metadata.txt') %>% dplyr::select(1,31)
+
+mtdata <- mtdata %>% left_join(., newmt, by=c("CellID" = "barcode"))
+
+sm <- data.frame(sm = colnames(pt.matrix)) %>% left_join(., mtdata, by=c("sm" = "CellID")) %>% 
+  column_to_rownames(var = "sm") 
+
+#check if rownames of annotation equal to colnames of matrix (Very important)
+identical(rownames(sm), colnames(pt.matrix))
+
+cl.colors <- c('#807dba','#9e9ac8','#ccebc5',
+               '#fe9929','#fec44f','#fee391',
+               '#fb8072','#b3de69','#fccde5')
+fac_levs <- c("Bas_I", "Bas_prolif", "Bas_mig", 
+              "Spi_I", "Spi_II_a", "Spi_II_b",
+              "Spi_III", "Spi_mig",
+              "Gra_I")
+names(cl.colors) <- fac_levs
+
+ha = HeatmapAnnotation(CellTypes = sm[[5]],
+                       col = list(
+                         CellTypes = cl.colors)
+                       )
+
+#Ward.D2 Hierarchical Clustering
+hthc <- Heatmap(
+  pt.matrix,
+  name = "z-score",
+  col = colorRamp2(seq(from=-2,to=2,length=11),rev(brewer.pal(11, "Spectral"))),
+  show_row_names = FALSE,
+  show_column_names = FALSE,
+  row_names_gp = gpar(fontsize = 8),
+  clustering_method_rows = "ward.D2",
+  clustering_method_columns = "ward.D2",
+  row_title_rot  = 0,
+  cluster_rows = TRUE,
+  top_annotation = ha,
+  cluster_row_slices = FALSE,
+  cluster_columns = FALSE,
+  use_raster = TRUE,
+  border = TRUE)
+
+hthc = draw(hthc)
+
+km_HTgenes <- row_order(hthc)
+km_HTgenes <- lapply(km_HTgenes, FUN = function(x){
+  rownames(pt.matrix)[x]
+})
+km_HTgenes_uL<- unlist(km_HTgenes)
+# extract the TFs
+km_genes_tfs <- km_HTgenes_uL[km_HTgenes_uL %in% tfs]
+# filter the gene expression data
+pt.matrix.tf <- pt.matrix[km_genes_tfs, ]
+
+hthc.tf <- Heatmap(
+  pt.matrix.tf,
+  name = "z-score",
+  col = colorRamp2(seq(from=-2,to=2,length=11),rev(brewer.pal(11, "Spectral"))),
+  show_row_names = T,
+  show_column_names = FALSE,
+  row_names_gp = gpar(fontsize = 8),
+  row_title_rot  = 0,
+  cluster_rows = F,
+  top_annotation = ha,
+  cluster_row_slices = FALSE,
+  cluster_columns = FALSE,
+  use_raster = TRUE,
+  border = TRUE)
+
+print(hthc.tf)
+
+
+####---- K means analysis ----####
+#km = kmeans(pt.matrix, 7)
+km = kmeans(pt.matrix, 5)
+table(km$cluster)
+
+row_anno = rowAnnotation(foo = anno_mark(at = match(rownames(wound.dg[["htkm_tfs"]]@ht_list[["z-score"]]@matrix), rownames(pt.matrix)), 
+                                         labels = rownames(wound.dg[["htkm_tfs"]]@ht_list[["z-score"]]@matrix)),
+                         gp=gpar(fontsize = 4))
+
+htkm <- Heatmap(
+  pt.matrix,
+  name = "z-score",
+  col = colorRamp2(seq(from=-2,to=2,length=11),rev(brewer.pal(11, "Spectral"))),
+  
+  show_row_names = FALSE,
+  show_column_names = FALSE,
+  row_names_gp = gpar(fontsize = 4),
+  
+  #row_km = 7, 
+  #column_km = 6,
+  
+  split = factor(km$cluster, levels = c(1,5,4,2,3)), #Reorder the cluster numbers
+  
+  row_title_rot = 90,
+  cluster_rows = FALSE,
+  cluster_row_slices = FALSE,
+  cluster_columns = FALSE,
+  top_annotation = ha,
+  right_annotation = row_anno,
+  use_raster = TRUE,
+  border = TRUE
+) # row_gap = unit(0, 'cm'), column_gap = unit(0, 'cm')
+htkm = draw(htkm) #Draw this to initialize the heatmap
+
+pdf("p_try_KRT6A_woundcell_monocle3_new.pdf", width = 6, height = 5)
+draw(htkm) #Draw this to initialize the heatmap
+dev.off()
+
+km_genes <- row_order(htkm)
+km_genes <- lapply(km_genes, FUN = function(x){
+  rownames(pt.matrix)[x]
+})
+
+#
+tfs = data.table::fread("allNew_zs3_scVelo_preparation/hs_hgnc_tfs.txt", header = FALSE)
+tfs = unique(tfs$V1)
+# extract the TFs
+km_genes_tfs <- km$cluster[names(km$cluster) %in% tfs]
+# filter the gene expression data
+pt.matrix.tf <- pt.matrix[rownames(pt.matrix) %in% names(km_genes_tfs), ]
+
+htkm_tfs <- Heatmap(
+  pt.matrix.tf,
+  name = "z-score",
+  col = colorRamp2(seq(from=-2,to=2,length=11),rev(brewer.pal(11, "Spectral"))),
+  
+  show_row_names = TRUE,
+  show_column_names = FALSE,
+  row_names_gp = gpar(fontsize = 8),
+  
+  #row_km = 7, 
+  #column_km = 6,
+  
+  split = factor(km_genes_tfs, c(5,3,1,4,2)), #Reorder the cluster numbers
+  
+  row_title_rot = 90,
+  cluster_rows = FALSE,
+  cluster_row_slices = FALSE,
+  cluster_columns = FALSE,
+  top_annotation = ha,
+  use_raster = TRUE,
+  border = TRUE
+) # row_gap = unit(0, 'cm'), column_gap = unit(0, 'cm')
+
+htkm_tfs = draw(htkm_tfs) #Draw this to initialize the heatmap
+
+pdf("p_try_KRT6A_woundcell_monocle3_TFs.pdf", width = 5, height = 5)
+draw(htkm_tfs) #Draw this to initialize the heatmap
+dev.off()
+
+tmp.f <- list(htkm=htkm, km_genes=km_genes, htkm_tfs=htkm_tfs)
+saveRDS(tmp.f, file = "p_try_wound-healthy_cells/woundcell_DriverGenes.rds")
+saveRDS(tmp.f, file = "p_try_wound-healthy_cells/healthycell_DriverGenes.rds")
+
+# load the results of drive genes
+wound.dg <- readRDS("p_try_wound-healthy_cells/woundcell_DriverGenes.rds")
+wound.dg <- readRDS("p_try_wound-healthy_cells/healthycell_DriverGenes.rds")
+
+wound.dg$htkm@column_title_param
+draw(wound.dg$htkm)
+draw(wound.dg$htkm_tfs)
+```
+
+
+```{r eval = TRUE, fig.height=20}
+dg1 <- data.frame(ID="cluster5", gene=wound.dg$km_genes$`5`)
+dg2 <- data.frame(ID="cluster3", gene=wound.dg$km_genes$`3`)
+dg3 <- data.frame(ID="cluster1", gene=wound.dg$km_genes$`1`)
+dg4 <- data.frame(ID="cluster4", gene=wound.dg$km_genes$`4`)
+dg5 <- data.frame(ID="cluster3", gene=wound.dg$km_genes$`2`)
+dg_com <- rbind(dg1, dg2, dg3, dg4, dg5)
+data.table::fwrite(dg_com, "p_try_wound-healthy_cells/woundcell_DriverGenes.txt", sep = "\t")
+data.table::fwrite(dg_com, "p_try_wound-healthy_cells/healthycell_DriverGenes.txt", sep = "\t")
+
+cluster5 = GO_BP(genes = km_genes[[1]], Km_N = 5) #Kmeans Cluster 1
+data.table::fwrite(cluster5, file = "p_try_KRT6A_woundcell_monocle3_GO_cluster5.txt", sep = "\t")
+cluster3 = GO_BP(genes = km_genes[[2]], Km_N = 3) #Kmeans Cluster 2
+data.table::fwrite(cluster3, file = "p_try_KRT6A_woundcell_monocle3_GO_cluster3.txt", sep = "\t")
+cluster1 = GO_BP(genes = km_genes[[3]], Km_N = 1) #Kmeans Cluster 3
+data.table::fwrite(cluster1, file = "p_try_KRT6A_woundcell_monocle3_GO_cluster1.txt", sep = "\t")
+cluster4 = GO_BP(genes = km_genes[[4]], Km_N = 4) #Kmeans Cluster 4
+data.table::fwrite(cluster4, file = "p_try_KRT6A_woundcell_monocle3_GO_cluster4.txt", sep = "\t")
+cluster2 = GO_BP(genes = km_genes[[5]], Km_N = 2) #Kmeans Cluster 5
+data.table::fwrite(cluster2, file = "p_try_KRT6A_woundcell_monocle3_GO_cluster2.txt", sep = "\t")
+```
+
+
+### 1.6.4 Plot top DE genes pseudotime plots
+```{r fig.height=12}
+## sort the genes from each cluster according to morans_I values
+km_genes_df <- rbind(data.frame(Cluster = 1, Genes = km_genes[[1]]),
+                     data.frame(Cluster = 2, Genes = km_genes[[2]]),
+                     data.frame(Cluster = 3, Genes = km_genes[[3]]),
+                     data.frame(Cluster = 4, Genes = km_genes[[4]]),
+                     data.frame(Cluster = 5, Genes = km_genes[[5]]),
+                     data.frame(Cluster = 6, Genes = km_genes[[6]]))
+km_genes_df %<>% left_join(., pr_graph_test_res_sort, by=c("Genes" = "gene_short_name"))
+
+## Plot top 3 genes for each cluster
+top3genes <- km_genes_df %>% group_by(Cluster) %>% top_n(3, morans_I) %>% ungroup()
+
+col_ct <- c("Bas_I" = "#807dba", "Bas_prolif" = "#9e9ac8", "Bas_mig" = "#ccebc5", 
+            "Spi_I" = "#fe9929", "Spi_II_a" = "#fec44f", "Spi_II_b" = "#fee391", 
+            "Spi_III" = "#fb8072", "Spi_mig" = "#b3de69", "Gra_I" = "#fccde5")
+
+top3genes <- c("ASCL2", "IRX4", "IL24", "PHLDA2", "RAN", "BNC1")
+  
+pdf("p_try_KRT6A_woundcell_monocle3_TFs_OtherTFs.pdf", width = 14, height = 4)
+plot_genes_in_pseudotime(cds[top3genes,], 
+                         color_cells_by="upCellTypes", 
+                         min_expr=0.5, 
+                         cell_size = 0.5,
+                         ncol = 2,
+                         panel_order = top3genes,
+                         label_by_short_name = TRUE
+                         ) +
+  scale_fill_manual(values = col_ct) +
+  scale_color_manual(values = col_ct) +
+  theme(plot.title = element_text(size=22),
+        axis.title.x = element_text(size=12,color='black'),
+        axis.text.x = element_text(size=12,color='black'),
+        axis.text.y = element_text(size=12,color='black'))
+dev.off()
+```
+
+
+## GO Function
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+GO_BP <- function(genes=NULL, Km_N=NULL){
+  require(clusterProfiler) #loading the package if it is not loaded
+  require(org.Hs.eg.db)
+  gene.df <- bitr(genes, fromType = "SYMBOL",
+        toType = c("ENTREZID"),
+        OrgDb = org.Hs.eg.db)
+  
+  Enriched_gene_up <- as.character(unique(gene.df$ENTREZID))
+  ego_BP_up <- enrichGO(gene = Enriched_gene_up,
+                        OrgDb         = org.Hs.eg.db,
+                        ont           = "BP",
+                        keyType = "ENTREZID",
+                        pAdjustMethod = "BH",
+                        pvalueCutoff  = 0.05,
+                        qvalueCutoff  = 0.2,
+                        minGSSize = 10,
+                        maxGSSize = 500,
+                        readable = T)
+  ego_BP_up_f <- as.data.frame(ego_BP_up)
+  if (nrow(ego_BP_up_f) > 0) {
+    p1 <- dotplot(ego_BP_up, showCategory=15, label_format = 100) + 
+      ggtitle(paste0("Cluster ", Km_N, "-GO_BP")) + 
+      theme(
+        #panel.grid.major.x = element_blank(),
+        #panel.grid.major.y = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(size = 0.5, color = "black"),
+        axis.text.x = element_text(size = 14, color = "black"),
+        axis.text.y = element_text(size = 14, color = "black"))
+    print(p1)
+  } else{
+    print("No enriched terms")
+  }
+  return(ego_BP_up_f)
+}
+
+library(enrichR)
+dbs <- listEnrichrDbs()
+dbs <- c("GO_Biological_Process_2021")
+enriched <- enrichr(as.character(km_genes[[1]]), dbs)
+enriched_bp_up <- enriched$GO_Biological_Process_2021
+```
+
+
+# 2. export the Pseudotime value and prepare for the CellOracle analysis
+```{r}
+# add the pseudotime into metadata
+hswound_krt_sub <- AddMetaData(
+  object = hswound_krt_sub,
+  metadata = cds@principal_graph_aux@listData$UMAP$pseudotime,
+  col.name = "monocle3_pseudotime"
+)
+
+# export the variable genes
+vg <- VariableFeatures(hswound_krt_sub, assay = "SCT")
+vg <- data.frame(gene = vg) %>% unique()
+write.csv(vg, file = "woundcell_variablegene.csv", row.names = FALSE)
+
+# add the UMAP into metadata
+umap_df <- Embeddings(hswound_krt_sub, reduction = "umap") %>% as.data.frame()
+hswound_krt_sub$UMAP_1 <- umap_df$UMAP_1
+hswound_krt_sub$UMAP_2 <- umap_df$UMAP_2
+hswound_krt_sub$barcode <- as.character(colnames(hswound_krt_sub))
+
+# to keep the reductions even if removing SCT assay, change the assay.used
+hswound_krt_sub@reductions$harmony@assay.used = "RNA"
+hswound_krt_sub@reductions$umap@assay.used = "RNA"
+hswound_krt_sub@reductions$pca@assay.used = "RNA"
+
+# filter the metadata
+hswound_krt_sub$seurat_clusters <- hswound_krt_sub$SCT_snn_res.0.5
+mt_df <- hswound_krt_sub@meta.data %>% dplyr::select(1:7,29,32:36)
+hswound_krt_sub@meta.data <- mt_df
+
+# OBS! All factor columns are converted to numbers in scanpy, fix!
+cl = sapply(hswound_krt_sub@meta.data, is.factor)
+
+for (col in names(cl)[cl]){
+  print(col)
+  hswound_krt_sub[[col]] = as.character(hswound_krt_sub[[col]][,1])
+}
+hswound_krt_sub@active.assay = "RNA"
+hswound_krt_sub = DietSeurat(hswound_krt_sub, assays = "RNA", dimreducs = c("pca", "umap", "harmony"))
+
+outdir=getwd()
+SaveH5Seurat(hswound_krt_sub, filename = file.path(outdir,"woundcell_celloracle.h5Seurat"), overwrite = T)
+Convert(file.path(outdir,"woundcell_celloracle.h5Seurat"), dest = "h5ad", overwrite = T)
+file.remove(file.path(outdir,"woundcell_celloracle.h5Seurat"))
+```
+
+
+# SessionInfo
+```{r}
+sessionInfo()
+```

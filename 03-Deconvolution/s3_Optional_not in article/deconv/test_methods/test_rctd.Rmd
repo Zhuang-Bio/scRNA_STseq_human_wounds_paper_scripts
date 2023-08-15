@@ -1,0 +1,224 @@
+---
+title: "Test deconv with RCTD"
+author: "Åsa Björklund"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  html_document:
+    self_contained: true
+    highlight: tango
+    df_print: paged
+    toc: yes
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    toc_depth: 3
+    fig_caption: true
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message=FALSE, warning=FALSE, result='hold',fig.width=12,tidy=TRUE)
+knitr::opts_knit$set(progress=TRUE,verbose=TRUE)
+```
+
+Test RCTD using Secction Donor3_Wound7
+
+Following tutorial in:
+https://github.com/dmcable/RCTD/blob/master/vignettes/spatial-transcriptomics.Rmd
+
+## Load
+
+### Load packages
+
+```{r packages}
+
+
+library(RCTD)
+library(Matrix)
+```
+
+
+```{r}
+input_dir = "../../deconv/inputs/"
+output_dir = "../../deconv/results/rctd/"
+dir.create(output_dir, showWarnings = F)
+    
+sample = "Donor3_Wound7"
+
+outdir = file.path(output_dir,sample)
+dir.create(outdir, showWarnings = F)
+
+indir = file.path(input_dir,"st_data",sample)   
+    
+
+raw_path = readLines(file.path(indir,"rawdata_path.csv"))
+print(raw_path)   
+
+barcodes = read.csv(file.path(indir, "barcodes.csv"), header = F)
+```
+
+
+```{r}
+scC = readMM(file.path(input_dir, "sc_data", "s1_subsampled_counts.mtx"))
+# convert to dgCMatrix
+scC = scC*1
+
+genes = read.table(file.path(input_dir, "sc_data", "s1_subsampled_features.csv"), header = F)
+rownames(scC) = genes[,1]
+
+scMeta = read.csv(file.path(input_dir, "sc_data", "s1_subsampled_meta.csv"))
+colnames(scC) = scMeta$barcode
+```
+
+Create the reference object
+
+```{r}
+umi = scMeta$nUMI
+names(umi) = scMeta$barcode
+cl = factor(scMeta$cluster)
+names(cl) = scMeta$barcode
+
+reference = Reference(scC, cl, umi)
+
+table(reference@cell_types)
+
+rm(scC)
+g = gc(verbose = F)
+```
+
+
+Load ST data
+
+```{r}
+stC = readMM(file.path(indir,"counts.mtx"))
+stC = stC*1
+# read gene names
+genes = read.csv(file.path(input_dir, "st_data", "st_features.csv"), header = F)
+rownames(stC) = genes[,1]
+
+coord = read.csv(file.path(indir,"coordinates.csv"))
+colnames(stC) = coord$X
+
+```
+
+Create ST object
+
+```{r}
+nUMI = colSums(stC)
+
+cc = data.frame(xcoord=coord$imagerow, ycoord=coord$imagecol)
+rownames(cc) = coord$X
+
+puck <- SpatialRNA(cc, stC, nUMI)
+```
+
+
+```{r}
+hist(log(puck@nUMI,2))
+```
+
+```{r}
+barcodes = coord$X
+
+plot_puck_continuous(puck, barcodes, puck@nUMI, ylimit = c(0,round(quantile(puck@nUMI,0.9))), 
+                     title ='plot of nUMI') 
+```
+
+
+## Run RCTD
+
+```
+Default settings:
+
+create.RCTD(
+  spatialRNA,
+  reference,
+  max_cores = 8,
+  test_mode = FALSE,
+  gene_cutoff = 0.000125,  # for DGE detection (average expression) for platform effect
+  fc_cutoff = 0.5,          # for FC in DGE det
+  gene_cutoff_reg = 2e-04,    # for DGE detection (average expression) for RCTD step
+  fc_cutoff_reg = 0.75,
+  UMI_min = 100,  # cutoff for ST pixels
+  UMI_max = 2e+07,  # cutoff for ST pixels
+  UMI_min_sigma = 300,
+  class_df = NULL,
+  CELL_MIN_INSTANCE = 25,
+  cell_type_names = NULL
+)
+```
+
+
+
+```{r}
+# use all available cores, max is 8
+
+myRCTD <- create.RCTD(puck, reference)
+```
+
+DEGs from regression stored in: `myRCTD@internal_vars$gene_list_reg`
+DEGs from platform effect stored in `myRCTD@internal_vars$gene_list_bulk`
+
+All genes in gene_list_reg (1876) are also in gene_list_bulk (3342)
+
+```{r}
+# as this is Visium data, use doublet_mode "full" as any number of cells per pixel is possible
+
+myRCTD <- run.RCTD(myRCTD, doublet_mode = 'full')
+```
+
+
+
+Look at results, by defalult plots all files to a folder
+
+```{r}
+results <- myRCTD@results
+
+norm_weights = sweep(results$weights, 1, rowSums(results$weights), '/') 
+cell_type_names <- myRCTD@cell_type_info$info[[2]] #list of cell type names
+spatialRNA <- myRCTD@spatialRNA
+
+resultsdir <- file.path(outdir,'RCTD_Plots')
+dir.create(resultsdir, showWarnings = F)
+```
+
+Write results to a file
+
+```{r}
+write.csv(as.matrix(results$weights), file = file.path(outdir,"RCTD_res.csv"))
+```
+
+
+
+```{r}
+# Plots the confident weights for each cell type as in full_mode (saved as 
+# 'results/cell_type_weights_unthreshold.pdf')
+plot_weights(cell_type_names, spatialRNA, resultsdir, norm_weights) 
+# Plots all weights for each cell type as in full_mode. (saved as 
+# 'results/cell_type_weights.pdf')
+plot_weights_unthreshold(cell_type_names, spatialRNA, resultsdir, norm_weights) 
+# Plots the weights for each cell type as in doublet_mode. (saved as 
+# 'results/cell_type_weights_doublets.pdf')
+plot_weights_doublet(cell_type_names, spatialRNA, resultsdir, results$weights_doublet, 
+                     results$results_df) 
+# Plots the number of confident pixels of each cell type in 'full_mode'. (saved as 
+# 'results/cell_type_occur.pdf')
+plot_cond_occur(cell_type_names, resultsdir, norm_weights, spatialRNA)
+```
+
+
+```{r}
+# OBS! Does not work, have no slot results$results_df
+# is only in doublet mode...
+
+#plot_all_cell_types(results$results_df, spatialRNA@coords, cell_type_names, resultsdir) 
+
+
+```
+
+
+### Session info
+
+```{r}
+sessionInfo()
+```

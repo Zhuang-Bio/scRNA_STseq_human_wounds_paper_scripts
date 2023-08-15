@@ -1,0 +1,396 @@
+---
+title: "Diabetic foot ulcers"
+author: "Zhuang Liu"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true #add a table of contents (TOC)
+    toc_depth: 3 #headers' level in the toc
+    toc_float: true #toc visible even when scrolled
+    theme: lumen
+    highlight: tango
+    code_folding: show
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.align='center', fig.width=12, fig.height = 6, warning=FALSE, message=FALSE)
+```
+
+Download the data from Theocharidis et al. paper (GSE165816) https://www.nature.com/articles/s41467-021-27801-8 
+
+```{r warning=FALSE, message=FALSE}
+library(Seurat)
+library(SeuratObject)
+library(SeuratDisk)
+library(tidyverse)
+library(patchwork)
+library(sctransform)
+library(harmony)
+```
+
+
+# 1. load the data
+```{r eval=FALSE}
+rm(list = ls())
+# metadata
+meta <- readxl::read_xlsx("metadata.xlsx", sheet = 1) %>% as.data.frame()
+meta$Condition <- gsub("-", "_", meta$Condition)
+meta$Sample <- paste0(meta$Condition, "_", meta$sampleid)
+colnames(meta)[1] <- "GSMsample"
+rownames(meta) <- meta$Sample
+
+indir="/Users/zhuliu/Desktop/sc st/compareStudies/Diabetic foot ulcers/GSE165816_RAW"
+files = dir(indir, pattern = "*csv.gz")
+alldata = list()
+for (file in files) {
+  s = strsplit(file, "[_\\.]")
+  sname = sub("counts", "", s[[1]][2])
+  if (!(sname %in% meta$GSMsample)) {
+      next
+  }
+  sname = meta$Sample[meta$GSMsample == sname]
+  print(sname)
+  C = as.sparse(read.csv(gzfile(file.path(indir, file), "rt")))
+  colnames(C) = paste(colnames(C), sname, sep = "_")
+  tmp = meta[rep(sname, ncol(C)), ]
+  rownames(tmp) = colnames(C)
+  alldata[[sname]] = CreateSeuratObject(C, meta.data = tmp)
+}
+
+data_DFU = merge(alldata[[1]], alldata[2:length(alldata)])
+table(data_DFU$Sample)
+
+rm(alldata, C)
+g = gc(verbose = F)
+
+qc1 <- table(data_DFU$Donor1, data_DFU$Condition)
+
+data_DFU = SetIdent(data_DFU, value = "Donor1")
+data_DFU$Project="DFU"
+
+## QC
+data_DFU <- PercentageFeatureSet(data_DFU, "^MT-", col.name = "percent_mito")
+data_DFU <- PercentageFeatureSet(data_DFU, "^RP[SL]", col.name = "percent_ribo")
+data_DFU <- PercentageFeatureSet(data_DFU, "^HB[^(PES)]", col.name = "percent_hb")
+data_DFU <- PercentageFeatureSet(data_DFU, "MALAT1", col.name = "percent_malat1")
+
+VlnPlot(data_DFU, features = c("nFeature_RNA", "nCount_RNA", "percent_mito", "percent_ribo"), group.by = "Sample", pt.size = 0, ncol = 2)
+
+# Save raw data
+saveRDS(data_DFU, file = "step0_rawDFUdata.rds")
+```
+
+# Quality control
+```{r eval=TRUE}
+data_DFU <- readRDS("step0_rawDFUdata.rds")
+# filter the cells (use the sample criteria as in our wounds dataset)
+keep = colnames(data_DFU)[data_DFU$nFeature_RNA > 500 & data_DFU$percent_mito < 20 & data_DFU$percent_hb < 10 & data_DFU$nCount_RNA > 1000 & data_DFU$nCount_RNA < 150000]
+data_DFU = data_DFU[, keep]
+
+table(data_DFU$Donor1, data_DFU$Condition)
+
+# remove the MT genes
+data_DFU <- data_DFU[!grepl("^MT-", rownames(data_DFU)), ]
+
+# Filter Malat
+data_DFU <- data_DFU[!grepl("MALAT1", rownames(data_DFU)), ]
+
+# filter hemoglobin genes
+data_DFU <- data_DFU[!grepl("^HB[^(PES)]", rownames(data_DFU)), ]
+```
+
+
+# 2. Integration of diabetic foot ulcer skin data
+```{r eval=TRUE}
+DefaultAssay(data_DFU) <- "RNA"
+data_DFU <- DietSeurat(data_DFU, assays = "RNA")
+data_DFU <- NormalizeData(data_DFU)
+data_DFU <- CellCycleScoring(data_DFU, s.features = cc.genes.updated.2019$s.genes, g2m.features = cc.genes.updated.2019$g2m.genes, set.ident = F)
+data_DFU$CC.Difference <- data_DFU$S.Score - data_DFU$G2M.Score
+
+all.data_DFU = SplitObject(data_DFU, split.by = "Donor1")
+all.data_DFU <- lapply(X = all.data_DFU, FUN = SCTransform, method = "glmGamPoi", vars.to.regress = c("CC.Difference"))
+
+# Run rPCA using SCTransform
+options(future.globals.maxSize = 100000 * 1024^2) 
+features <- SelectIntegrationFeatures(object.list = all.data_DFU, nfeatures = 4000)
+
+all.data_DFU <- PrepSCTIntegration(object.list = all.data_DFU, anchor.features = features)
+inteData <- merge(all.data_DFU[[1]], y = c(all.data_DFU[2:length(all.data_DFU)]), merge.data = TRUE)
+VariableFeatures(inteData) <- features
+rm(all.data_DFU);gc()
+
+inteData <- RunPCA(inteData, npcs = 40, assay = "SCT")
+ElbowPlot(inteData, ndims = 40)
+inteData <- RunHarmony(inteData, assay.use = "SCT", reduction = "pca", dims.use = 1:30,
+    group.by.vars = "Donor1", plot_convergence = TRUE)
+
+inteData <- RunUMAP(inteData, dims = 1:30, assay = "SCT", reduction = "harmony")
+DimPlot(inteData, group.by = "Donor1") + NoAxes()
+
+inteData = FindNeighbors(inteData, dims = 1:30, reduction = "harmony", k.param = 30)
+inteData = FindClusters(inteData, resolution = 0.5)
+inteData = FindClusters(inteData, resolution = 1)
+inteData = FindClusters(inteData, resolution = 0.8)
+DimPlot(inteData, group.by = "SCT_snn_res.0.8", label = T)
+DimPlot(inteData, group.by = "SCT_snn_res.0.8", label = T, split.by = "Condition")  
+DefaultAssay(inteData) <- "RNA"
+inteData <- NormalizeData(inteData)
+saveRDS(inteData, file = "step1_diabetic_foot_ulcer_skin_integrated_harmony.rds")
+```
+
+
+```{r eval=TRUE, fig.height=20, fig.width=12}
+FeaturePlot(inteData, features = c("MMP1", "MMP3", "CHI3L1", "TNFAIP6", "KRT5", "KRT10","TAGLN", "ACTA2", "IL1B", "CD14", "CD163", "CD3D", "COL1A2", "PECAM1", "CCL21", "ACKR1", "TPSAB1", "MS4A1", "CD79A", "DCD"), cols = c("grey", "red"), ncol = 4)
+
+markers = c("DCN", "CFD", "TAGLN", "ACTA2", "CD14", "S100A9", "ACKR1", "CD3D", "CD8A",
+    "KRT1", "KRT10", "KRT5", "KRT14", "CHI3L1", "MS4A1", "CD79A", "ITGAM", "IL1B",
+    "NCAM1", "CCL5", "CD163", "FCGR3A", "MLANA", "CDH19", "TPSAB1", "DCD", "CCL21",
+    "MZB1", "GZMB", "IRF8", "FOSL1")
+DotPlot(inteData, markers, assay = "RNA", group.by = "SCT_snn_res.1") + RotatedAxis()
+
+
+markers = c("KRT15", "KRT14", "KRT1", "KRT10", "KRT7", "KRT19",
+            "MMP1", "MMP3", "CHI3L1", "DCN", "CFD", 
+            "TAGLN", "ACTA2", "CENPF", "MKI67", 
+            "IL1B", "CXCL8", "CD163", "C1QA", "MS4A1", "CD79A",
+            "CD3D", "CD69", "CCL21", "SELE", "MLANA", "HSPH1")
+FeaturePlot(inteData, features=markers, cols = c("grey", "red"), ncol = 5)
+
+# Find markers
+Idents(inteData) <- "SCT_snn_res.0.8" 
+table(inteData$SCT_snn_res.0.8)
+markers <- FindAllMarkers(
+  inteData,
+  only.pos = TRUE,
+  min.pct = 0.25,  #min.pct = 0.5, logfc.threshold = 0.5,
+  logfc.threshold = 0.3,
+  test.use = "MAST") #MAST has good FDR control and is faster than DESeq2, default test is wilcox
+
+cluster_markers_anno <- markers %>% arrange(cluster, desc(avg_log2FC))
+data.table::fwrite(cluster_markers_anno, "step1_diabetic_foot_ulcer_skin_markergene_sct_08.txt", sep="\t")
+
+
+# Find markers
+Idents(inteData) <- "SCT_snn_res.1" 
+table(inteData$SCT_snn_res.1)
+markers2 <- FindAllMarkers(
+  inteData,
+  only.pos = TRUE,
+  min.pct = 0.25,  #min.pct = 0.5, logfc.threshold = 0.5,
+  logfc.threshold = 0.3,
+  test.use = "MAST") #MAST has good FDR control and is faster than DESeq2, default test is wilcox
+
+cluster_markers_anno2 <- markers2 %>% arrange(cluster, desc(avg_log2FC))
+data.table::fwrite(cluster_markers_anno2, "step1_diabetic_foot_ulcer_skin_markergene_sct_1.txt", sep="\t")
+```
+
+```{r}
+cl.cols <- c("#d94701", "#fdae61", "#fd8d3c", "#fdbe85", #Basal clusters
+             "#33A02C", "#72BF5A", "#B2DF8A", #Spinous clusters
+             "#f768a1", "#d4b9da", #Granular, Hair follicle
+             "#737373", #MEL
+             "#0570b0", "#3690c0", "#92c5de", "#d1e5f0", #Fibroblast clusters
+             "#c0a700", "#1a9850", "#fb9a99", "#8d4720",  # Schwann,PCvSMC,LE,VE
+             "#35978f", "#41b6c4", "#80cdc1","#df65b0", #"NK-cell", "Th", "Plasma_Bcell", "Mast-cell", 
+             "#dd3497", "#807dba","#6a3d9a","#9e9ac8", "#b15928", #"Mono-Mac", "cDC1", "cDC2", "DC3", "LC"
+             "#d94701", "#fdae61", "#fd8d3c", "#fdbe85", #Basal clusters
+             "#33A02C", "#72BF5A", "#B2DF8A", #Spinous clusters
+             "#f768a1", "#d4b9da", #Granular, Hair follicle
+             "#737373", #MEL
+             "#0570b0"
+)
+```
+
+
+```{r eval=FALSE}
+inteData <- readRDS("step1_diabetic_foot_ulcer_skin_integrated_harmony.rds")
+FeaturePlot(inteData, features = c("FOSL1"), cols = c("grey", "red"), order = T, split.by = "Condition")
+
+DimPlot(inteData, group.by = "SCT_snn_res.1", label = T, label.size = 5)#, cols = ct.cols)
+
+marker1 <- data.table::fread("step1_diabetic_foot_ulcer_skin_markergene_sct_1.txt")
+transfer_marker <- data.table::fread("step3_transfer_wounds_DFU_subClusters.txt")
+identical(colnames(inteData), transfer_marker$barcode)
+# reorder the transfer marker
+transfer_marker <- transfer_marker[match(colnames(inteData), transfer_marker$barcode),]
+identical(colnames(inteData), transfer_marker$barcode)
+
+inteData$predicted_celltype <- transfer_marker$predicted.id
+DimPlot(inteData, group.by = "predicted_celltype", cols = cl.cols, label = T)
+DimPlot(inteData, group.by = "predicted_celltype", cols = cl.cols, label = T, split.by = "Condition")
+
+DimPlot(inteData, group.by = "SCT_snn_res.1", cols = ct.cols, label = T, split.by = "Condition")
+FeaturePlot(inteData, features = c("MKI67", "ACTA2"), cols = c("grey", "red"))
+FeaturePlot(inteData, features = c("FOSL1"), cols = c("grey", "red"), split.by = "Condition")
+
+
+# re-annotate the cell clusters
+anno.cl <- list()
+anno.cl$HE_Fibro = c(12) #MMP3, MMP1, CHI3L2, CHI3L1, TNFAIP6
+anno.cl$FB_I_III_DFU = c(2,8,25) #ASPN, POSTN, WISP2, IGFBP6, COMP, APCDD1, PI16, ELN
+anno.cl$FB_II_DFU = c(1,18) #APOD, CXCL14, C3, APOE, C2orf40
+anno.cl$NKT_Lympho = c(5) #CD69, IL32, CD52, IL7R, PTPRC, NKG7
+anno.cl$M1_Macro = c(11) #IL1B,EREG,
+anno.cl$M2_Macro = c(9) #C1QA, C1QB, CD14, CD163
+anno.cl$B_Lympho = c(23) #CD79A,MS4A1
+anno.cl$VasEndo_art = c(16) #"IGFBP3","HEY1","SEMA3G"
+anno.cl$VasEndo_ven = c(3) #RGCC
+anno.cl$LymphEndo = c(21)
+anno.cl$SMC2 = c(15) #MKI67, CENPF
+anno.cl$SMC1 = c(0,4,7,13,24)
+anno.cl$Melano_Schwann = c(19) #DCT, SOX10, SOX2
+anno.cl$Mast = c(20) #TPSAB1, MS4A2
+anno.cl$Sweat_Seba = c(17) #DCD, SCGB2A2, MUCL1, KRT19
+anno.cl$OtherKera = c(14,22) #KRT17, KRT6B, KRT6A, S100A2, KRT16
+anno.cl$BasalKera = c(10) #COL17A1, KRT5
+anno.cl$DiffKera = c(6) #KRT1, KRT10, KRT16, KRT6A
+
+trans = rep(names(anno.cl), times = unlist(lapply(anno.cl, length)))
+names(trans) = unlist(anno.cl)
+inteData$CellType = trans[as.character(inteData$SCT_snn_res.1)]
+DimPlot(inteData, group.by = "SCT_snn_res.1", cols = ct.cols, label = T)
+DimPlot(inteData, group.by = "CellType", label = T) + ggtitle("") + NoLegend()
+
+fac_levs <- c("BasalKera", "DiffKera", "OtherKera", "Sweat_Seba", 
+              "HE_Fibro", "FB_I_III_DFU", "FB_II_DFU", "SMC1", "SMC2",
+              "M1_Macro", "M2_Macro", "B_Lympho", "NKT_Lympho", 
+              "LymphEndo", "VasEndo_art", "VasEndo_ven", "Melano_Schwann", "Mast")
+ct.cols <- c("#d94701", "#fdae61", "#fd8d3c", "#35978f", 
+             "#0570b0", "#33A02C", "#72BF5A", "#B2DF8A", "#3690c0", 
+             "#f768a1", "#d4b9da", "#92c5de", "#d1e5f0",
+             "#c0a700", "#1a9850", "#fb9a99", "#8d4720", "#fdbe85"
+             )
+names(ct.cols) <- fac_levs
+
+inteData$CellType <- factor(inteData$CellType, levels = fac_levs)
+DimPlot(inteData, group.by = "CellType", label = T, cols = ct.cols) + ggtitle("") + NoLegend()
+mt <- inteData@meta.data %>% rownames_to_column(var = "barcode")
+data.table::fwrite(mt, file = "step1_diabetic_foot_ulcers_metadata.txt", sep = "\t")
+
+DimPlot(inteData, group.by = "CellType", cols = ct.cols, label = T, label.size = 4, split.by = "Condition") + NoAxes() + NoLegend() + ggtitle("")
+
+markers = c("KRT5", "COL17A1", "KRT1", "KRT10", "KRT17", "DCD", "SCGB2A2",
+            "MMP1", "MMP3", "CHI3L1", "ASPN", "COMP", "APOD", "APOE", "ACTA2", "TAGLN", "MKI67", "CENPF",
+            "IL1B", "EREG", "C1QA", "CD14", "CD163", "CD79A", "MS4A1", "CD3D", "CD69", "IL7R",
+            "PECAM1", "CCL21", "IGFBP3", "HEY1", "ACKR1", "SELE", "DCT", "SOX10", "SOX2", "TPSAB1")
+
+inteData$CellType <- factor(inteData$CellType, levels = rev(fac_levs))
+plot_marker <- DotPlot(inteData, features = markers, 
+                       group.by = "CellType", cols = c("white", "#cb181d"), 
+                       dot.scale = 4, col.min = 0, dot.min = 0
+) + theme(axis.text.x = element_text(angle = 90, hjust = 1),
+          panel.border = element_rect(colour = "black", fill=NA)) + labs(x="", y="")
+
+plot_marker
+pdf("00-Dotplot-markers.pdf", useDingbats = F, width = 8, height = 4)
+plot_marker
+dev.off()
+
+inteData$CellType <- factor(inteData$CellType, levels = fac_levs)
+pdf("00-UMAP-SCT_snn_res1.pdf", useDingbats = F, width = 8, height = 6)
+DimPlot(inteData, group.by = "SCT_snn_res.1", label = T)
+dev.off()
+
+pdf("00-UMAP-CellType.pdf", useDingbats = F, width = 6, height = 6)
+DimPlot(inteData, group.by = "CellType", cols = ct.cols, label = T, label.size = 3) + NoAxes() + NoLegend() + ggtitle("")
+dev.off()
+
+pdf("00-UMAP-CellType-splitCondition.pdf", useDingbats = F, width = 12, height = 6)
+DimPlot(inteData, group.by = "CellType", cols = ct.cols, label = T, label.size = 3, split.by = "Condition") + NoAxes() + NoLegend() + ggtitle("")
+dev.off()
+
+
+# cell type proportion analysis
+clusters <- fac_levs
+df <- data.frame()
+for(i in 1:length(clusters)){
+  SmCell_sum <- table(inteData$Donor1)
+  tmp.df1 <- inteData@meta.data %>% subset(CellType == clusters[i]) %>% select(Donor1) %>% table()
+  if(length(tmp.df1) == 20){
+    #First normalize the total cell counts per Donor1
+    cur_df <- as.data.frame(tmp.df1 / SmCell_sum)
+    colnames(cur_df) <- c("Sample", "Freq")
+    #Calculate the normalized proportion 
+    cur_df$Freq <- cur_df$Freq * 1/(sum(cur_df$Freq))
+    cur_df$Cluster <- clusters[i]
+    df <- rbind(df, cur_df)
+  } else {
+    match.sample <- SmCell_sum[names(SmCell_sum) %in% names(tmp.df1)]
+    cur_df <- as.data.frame(tmp.df1 / match.sample)
+    colnames(cur_df) <- c("Sample", "Freq")
+    cur_df$Freq <- cur_df$Freq * 1/(sum(cur_df$Freq))
+    cur_df$Cluster <- clusters[i]
+    df <- rbind(df, cur_df)
+  }
+}
+
+df.group <- df %>% mutate(Sample = gsub("[0-9]$", "", Sample)) %>% 
+  group_by(Cluster, Sample) %>% 
+  summarise(Freq = sum(Freq)) %>% ungroup()
+
+df.group$Sample <- factor(df.group$Sample, levels = c("DFU_NH", "DFU_H", "H"))
+df.group$Cluster <- factor(df.group$Cluster, levels = fac_levs)
+
+ggplot(df.group, aes(x = Cluster, y = Freq, fill = Sample)) +
+  geom_bar(position = "stack", stat = "identity") +
+  scale_fill_brewer(palette = "Dark2") + # Paired or Set3 maximum variable = 12
+  xlab('') +
+  geom_hline(yintercept=0.25, linetype="dashed", color = "black") +
+  geom_hline(yintercept=0.5, linetype="dashed", color = "black") +
+  geom_hline(yintercept=0.75, linetype="dashed", color = "black") +
+  scale_y_continuous(breaks = seq(0, 1, 0.2),
+                     expand = c(0, 0.01),
+                     name = 'Percentage') +
+  theme_bw() +
+  theme(
+    panel.grid.major.x = element_blank(),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    strip.background = element_blank(),
+    axis.ticks = element_blank(),
+    axis.text.x = element_text(size = 10, color = "black", angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 10, color = "black")
+  )
+
+pdf("00-CellProportion.pdf", useDingbats = F, width = 5, height = 4)
+dev.off()
+
+FeaturePlot(inteData, features = c("FOSL1"), split.by = "Condition", cols = c("grey", "red"), order = T)
+VlnPlot(inteData, features = c("FOSL1"), group.by="CellType",split.by = "Condition")
+exp <- AverageExpression(inteData, assays = "RNA", features = c("FOSL1"), group.by = c("Condition","CellType"))
+exp$RNA %>% as.data.frame()
+```
+
+
+
+
+```{r eval=FALSE}
+fac_levs <- c("BasalKera", "DiffKera", "Sweat_Seba", "HE_Fibro", "Fibro", 
+              "SMC1", "SMC2", "M1_Macro", "M2_Macro", "B_Lympho", 
+              "NKT_Lympho", "LymphEndo", "VasEndo", "MelanoMix", "Unclear")
+ct.cols <- c("#ce8b1a","#d4b9da", "#3690c0", "#1a9850", '#74add1', 
+              "#fb9a99", "#e36767", "#df65b0", "#807dba", "#35978f",
+              "#8dd3c7", "#31c783", "#c6cc85", "#c072fd", "#c0a700")
+names(ct.cols) <- fac_levs
+
+# reset the cell type orders
+inteData$CellType <- factor(inteData$CellType, levels = fac_levs)
+
+markersgene <- readxl::read_xlsx("/Users/zhuliu/Desktop/sc st/plotting scripts/Figure 2/TF_regulon_targets/FOSO1 targets.xlsx", sheet = 1)
+spi <- list(spi_score=c(markersgene %>% filter(Group == "Spi_mig") %>% pull(Target)))
+bas <- list(bas_score=c(markersgene %>% filter(Group == "Bas_mig") %>% pull(Target)))
+inteData <- AddModuleScore(object = inteData, features = spi, name = "Spi_mig_score", assay = "RNA") 
+inteData <- AddModuleScore(object = inteData, features = bas, name = "Bas_mig_score", assay = "RNA") 
+VlnPlot(inteData, features = "Bas_mig_score1", pt.size = 0, group.by = 'CellType', split.by = "Condition")
+VlnPlot(inteData, features = "Spi_mig_score1", pt.size = 0, group.by = 'CellType', split.by = "Condition")
+```
+
+
+# SessionInfo
+```{r}
+sessionInfo()
+```
+

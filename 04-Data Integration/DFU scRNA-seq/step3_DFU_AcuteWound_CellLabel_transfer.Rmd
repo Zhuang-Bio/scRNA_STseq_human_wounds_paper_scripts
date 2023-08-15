@@ -1,0 +1,348 @@
+---
+title: "Integration of wounds and published skin data"
+author: "Zhuang Liu"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true #add a table of contents (TOC)
+    toc_depth: 3 #headers' level in the toc
+    toc_float: true #toc visible even when scrolled
+    theme: lumen
+    highlight: tango
+    code_folding: show
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.align='center', fig.width=12, fig.height = 6, warning=FALSE, message=FALSE)
+```
+
+```{r warning=FALSE, message=FALSE}
+library(Seurat)
+library(SeuratObject)
+library(SeuratDisk)
+library(tidyverse)
+library(patchwork)
+library(RColorBrewer)
+library(viridis)
+library(pheatmap)
+```
+
+# S1. Transfer the CellType from wounds to DFU samples
+```{r}
+wounds <- readRDS("../step6integrated_wounds_rPCA.rds")
+# remove the cells and also add the new annotation data
+mt <- data.table::fread("Subclusters.txt")
+wounds_n <- wounds[,mt$barcode]
+identical(colnames(wounds_n), mt$barcode)
+wounds_n$upCellType <- mt$CellType
+wounds_n <- RunPCA(wounds_n, npcs = 40, verbose = FALSE)
+wounds_n <- RunUMAP(object = wounds_n, assay = "RNA", reduction = "pca", dims = 1:40, n.neighbors = 40, min.dist = 0.3, n.epochs = 200, spread = 1, learning.rate = 1)
+
+DimPlot(wounds_n, group.by = "upCellType", label = T)
+
+DFU.sc <- readRDS("step0_rawDFUdata.rds")
+# filter the cells (use the sample criteria as in our wounds dataset)
+keep = colnames(DFU.sc)[DFU.sc$nFeature_RNA > 500 & DFU.sc$percent_mito < 20 & DFU.sc$percent_hb < 10 & DFU.sc$nCount_RNA > 1000 & DFU.sc$nCount_RNA < 150000]
+DFU.sc = DFU.sc[, keep]
+# remove the MT genes, Malat, hemoglobin genes
+DFU.sc <- DFU.sc[!grepl("^MT-", rownames(DFU.sc)), ]
+DFU.sc <- DFU.sc[!grepl("MALAT1", rownames(DFU.sc)), ]
+DFU.sc <- DFU.sc[!grepl("^HB[^(PES)]", rownames(DFU.sc)), ]
+DFU.sc <- NormalizeData(DFU.sc)
+
+# First use the wounds as reference, fetal as query data
+DFU.sc.anchors <- FindTransferAnchors(reference = wounds_n, query = DFU.sc,
+                                      dims = 1:40, reference.reduction = "pca")
+predictions.DFU <- TransferData(anchorset = DFU.sc.anchors, refdata = wounds_n$upCellType,
+                                dims = 1:40)
+DFU.sc <- AddMetaData(DFU.sc, metadata = predictions.DFU)
+metadata1 <- DFU.sc@meta.data %>% rownames_to_column(var = "barcode")
+data.table::fwrite(metadata1, "step3_transfer_wounds_DFU_subClusters.txt", sep="\t")
+```
+
+
+# S2. Recheck the cell type annotation
+```{r}
+# load the metadata annotated by ourself
+ct.DFU <- data.table::fread("step1_diabetic_foot_ulcers_metadata.txt")
+
+# load the predicted values again
+pred.value <- data.table::fread("step3_transfer_wounds_DFU_subClusters.txt")
+
+pred.value.f <- pred.value %>% select(1, 14:55) %>% left_join(., ct.DFU[,c(1,24)])
+corre <- pred.value.f %>% dplyr::select(44, 3:42) %>% group_by(CellType) %>%
+  mutate(Bas_I = median(prediction.score.Bas_I)) %>%
+  mutate(Bas_prolif = median(prediction.score.Bas_prolif)) %>%
+  mutate(Bas_mig = median(prediction.score.Bas_mig)) %>%
+  mutate(Spi_I = median(prediction.score.Spi_I)) %>%
+  mutate(Spi_II_a = median(prediction.score.Spi_II_a)) %>%
+  mutate(Spi_II_b = median(prediction.score.Spi_II_b)) %>%
+  mutate(Spi_III = median(prediction.score.Spi_III)) %>%
+  mutate(Spi_mig = median(prediction.score.Spi_mig)) %>%
+  mutate(Gra_I = median(prediction.score.Gra_I)) %>%
+  mutate(MEL = median(prediction.score.MEL)) %>%
+  mutate(FB_I = median(prediction.score.FB.I)) %>%
+  mutate(FB_II = median(prediction.score.FB.II)) %>%
+  mutate(FB_III = median(prediction.score.FB.III)) %>%
+  mutate(FB_prolif = median(prediction.score.FB.prolif)) %>%
+  mutate(Schwann = median(prediction.score.Schwann)) %>%
+  mutate(M1 = median(prediction.score.M1)) %>%
+  mutate(Mac_inf = median(prediction.score.Mac_inf)) %>%
+  mutate(Mac_mig = median(prediction.score.Mac_mig)) %>%
+  mutate(M2 = median(prediction.score.M2)) %>%
+  mutate(pDC = median(prediction.score.pDC)) %>%
+  mutate(cDC1 = median(prediction.score.cDC1)) %>%
+  mutate(cDC2 = median(prediction.score.cDC2)) %>%
+  mutate(DC3 = median(prediction.score.DC3)) %>%
+  mutate(LC = median(prediction.score.LC)) %>%
+  mutate(Treg = median(prediction.score.Treg)) %>%
+  mutate(Th = median(prediction.score.Th)) %>%
+  mutate(ILCs = median(prediction.score.ILCs)) %>%
+  mutate(Tc = median(prediction.score.Tc)) %>%
+  mutate(ILC1_NK = median(prediction.score.ILC1.NK)) %>%
+  mutate(NK = median(prediction.score.NK)) %>%
+  mutate(Ttol = median(prediction.score.Ttol)) %>%
+  mutate(Plasma = median(prediction.score.Plasma)) %>%
+  mutate(Bcell = median(prediction.score.Bcell)) %>%
+  mutate(SMC = median(prediction.score.SMC)) %>%
+  mutate(Pericytes = median(prediction.score.Pericytes)) %>%
+  mutate(LE = median(prediction.score.LE)) %>%
+  mutate(VE_arteriole = median(prediction.score.VE_arteriole)) %>%
+  mutate(VE_capillary = median(prediction.score.VE_capillary)) %>%
+  mutate(VE_venule1 = median(prediction.score.VE_venule1)) %>%
+  mutate(VE_venule2 = median(prediction.score.VE_venule2)) %>%
+  ungroup() %>% dplyr::select(1, 42:81) %>% distinct()
+
+DFU_fac_levs=c("BasalKera", "DiffKera", "OtherKera", "Sweat_Seba", 
+              "HE_Fibro", "FB_I_III_DFU", "FB_II_DFU", "SMC1", "SMC2",
+              "M1_Macro", "M2_Macro", "B_Lympho", "NKT_Lympho", 
+              "LymphEndo", "VasEndo_art", "VasEndo_ven", "Melano_Schwann", "Mast")
+a_ord <- match(DFU_fac_levs, corre$CellType)
+corre <- corre[c(a_ord),]
+htmap <- corre %>% column_to_rownames(var = "CellType")
+
+pheatmap::pheatmap(htmap, cluster_rows = F, cluster_cols = F, color = magma(9), breaks = c(0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1))
+
+
+# calculate the overlapped number
+overlap_genes <- pred.value.f %>% select(1,2,44)
+data.table::fwrite(overlap_genes, "step3_predictedCellType_AnnotatedCellType.txt", sep = "\t")
+overlap_n <- table(overlap_genes$predicted.id, overlap_genes$CellType) %>% as.data.frame() %>% setNames(c("WoundsCellType", "DFUCellType", "NumberCells"))
+wounds_celltype <- levels(overlap_n$WoundsCellType)
+```
+
+
+# S3. Cell proportion analysis
+```{r}
+rm(list = ls())
+# load the metadata annotated by ourself
+ct.DFU <- data.table::fread("step1_diabetic_foot_ulcers_metadata.txt")
+sm.tol <- table(ct.DFU$Donor1) %>% as.data.frame() %>% setNames(c("Donor", "TotalNumber"))
+
+# load the filtered cell types by removing mismatched cell types
+ct.fil <- readxl::read_xlsx("step3_predictedCellType_AnnotatedCellType.xlsx", sheet = 2) %>% left_join(., ct.DFU[, c(1,6,7)], by="barcode") %>% rename("PredictedCellType" = "predicted.id")
+#data.table::fwrite(ct.fil, file = "/Users/zhuliu/Desktop/scRNA_STseq/proj_10X_woundhealing/03_results/01-Seurat-PreAnalysis/02_Seurat_BatchCorrection/s1_Seurat_allSample_harmony/s8_Cell_Cell_L_R_analysis_upCellTypes/CellPhoneDB/metadata/DFU_metadata.txt", sep = "\t")
+
+# step 1. Samples divided into cell types and their numbers
+step1 <- table(ct.fil$Donor1, ct.fil$PredictedCellType) %>% as.data.frame() %>% setNames(c("Donor", "CellType", "Freq"))
+step1$CellType <- as.character(step1$CellType) 
+
+# step 2. calculate the proportion of each cell type for each individual
+step2 <- step1 %>% left_join(., sm.tol, by="Donor") %>% distinct() %>% 
+  mutate(Prop=Freq/TotalNumber)
+
+unique(step2$CellType)
+
+###########################
+# Choose the sub cell type
+## Keratinocytes
+fac_levs <- c("Bas_I", "Bas_prolif", "Bas_mig", 
+              "Spi_I", "Spi_II_a", "Spi_II_b",
+              "Spi_III", "Spi_mig",
+              "Gra_I")
+ct.cols <- c('#807dba','#9e9ac8','#ccebc5',
+             '#fe9929','#fec44f','#fee391',
+             '#fb8072','#b3de69','#fccde5')
+
+## Fibroblasts
+fac_levs <- c("FB-I", "FB-II", "FB-III", 
+              "HE_Fibro")
+ct.cols <- c("#57a9e2", "#31c783", "#c6cc85", "#e36767")
+
+## Myeloid cells
+fac_levs <- c("Mac_inf", "M1", "M2","Mac_mig", 
+              "pDC", "cDC1", "cDC2", "DC3", 
+              "LC")
+ct.cols <- c('#f1b6da', '#df65b0','#41ab5d',  '#addd8e',
+             "#810f7c", "#807dba", "#9970ab", "#b2abd2", 
+             "#bf812d")
+
+## Lymphoid cells
+fac_levs <- c("Treg", "Th", 
+              "ILC1/NK", "NK", "Ttol", 
+              "Plasma", "Bcell")
+ct.cols <- c('#807dba','#9970ab',
+             '#74add1', '#8dd3c7','#76d72f',
+             '#f768a1', '#fdb462')
+
+## Other cells
+fac_levs <- c("SMC", "Pericytes", "LE",
+              "VE_arteriole", "VE_capillary",
+              "VE_venule1", "VE_venule2", "SMC2")
+ct.cols <- c('#12a22d', '#ce8b1a', '#fe8Bac', 
+             '#d93860', '#3ba4db', 
+             '#807dba', '#d4b9da', "#31c783")
+
+# only extract the interested cell types
+step3 <- step2[step2$CellType %in% fac_levs, ]
+
+# step 3. calculate the total normalized proportions of each cell type per condition
+df.group <- step3 %>% mutate(Sample = gsub("[0-9]$", "", Donor)) %>% 
+  group_by(Sample, CellType) %>% summarise(Freq=sum(Prop)) %>% 
+  ungroup() %>% group_by(Sample) %>% 
+  mutate(Freq_new = Freq/sum(Freq), lbl = scales::percent(Freq_new)) %>% ungroup()
+
+df.group$Sample <- factor(df.group$Sample, levels = c("H", "DFU_H", "DFU_NH"))
+df.group$CellType <- factor(df.group$CellType, levels = fac_levs)
+
+p_cp_5 <- ggplot(df.group, aes(x = Sample, y = Freq_new, fill = CellType)) +
+  geom_bar(position = "fill", stat = "identity") +
+  scale_fill_manual(values = ct.cols) + 
+  xlab('') +
+  scale_y_continuous(breaks = seq(0, 1, .2), 
+                     expand = c(0, 0.01),
+                     labels = c("0%", "20%", "40%", "60%", "80%", "100%"),
+                     name = 'Percentage') +
+  #geom_text(aes(label = lbl), 
+  #          size = 4, 
+  #          position = position_stack(vjust = 0.5)) +
+  theme_bw() +
+  theme(
+    panel.grid.major.x = element_blank(),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    strip.background = element_blank(),
+    axis.text.x = element_text(size = 14, color = "black", angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 14, color = "black"),
+    axis.title.y = element_text(size = 16, color = "black"),
+    legend.position = "right",
+    legend.text = element_text(size = 12, color = "black")
+  ) 
+p_cp_5
+
+#pdf("DFU_cellproportion_Endo.pdf", useDingbats = F, width = 3.5, height = 4.5)
+p_cp_5
+#dev.off()
+```
+
+
+# S4. Quasibinomial test
+```{r}
+# prepare the data for quasibinomial test
+df.prop <- step2 %>% mutate(Condition = gsub("[0-9]$", "", Donor))
+str(df.prop)
+df.prop$Condition <- factor(df.prop$Condition, levels = c("H", "DFU_NH", "DFU_H"))
+
+# First compare the DFU_H to H
+df.prop.io <- df.prop %>% filter(Condition %in% c("DFU_H", "H"))
+df.prop.io <- droplevels(df.prop.io)
+str(df.prop.io)
+# Second compare the DFU_H to DFU_NH
+df.prop.io <- df.prop %>% filter(Condition %in% c("DFU_H", "DFU_NH"))
+df.prop.io <- droplevels(df.prop.io)
+# Third overall comparison
+df.prop.io <- df.prop
+
+celltypes <- unique(df.prop.io$CellType) %>% as.character()
+
+pvalues.all <- list()
+#i=1
+for (i in seq_along(celltypes)) {
+  ct <- celltypes[i]
+  df.prop.f <- df.prop.io %>% filter(CellType == ct) %>% select(6,5) %>% mutate(Prop = round(Prop, 4))
+  test.quasi = glm(formula = Prop ~ Condition, data = df.prop.f, family=quasibinomial)
+  print(summary(test.quasi))
+  pvalues.all[[ct]] <- test.quasi$coefficients
+  pav_tot_val <- anova(test.quasi, test = "LRT")$`Pr(>Chi)`[2]
+  print(pav_tot_val)
+  pvalues.all[[ct]] <- append(pvalues.all[[ct]], pav_tot_val)
+}
+# First compare the DFU_H to H
+pvalues.all.com_DFUH <- do.call("rbind", pvalues.all)
+colnames(pvalues.all.com_DFUH)[3] <- "Pvalue_DFUH_H"
+
+# Second compare the DFU_H to DFU_NH
+pvalues.all.com_DFUH_NH <- do.call("rbind", pvalues.all)
+colnames(pvalues.all.com_DFUH_NH)[3] <- "Pvalue_DFUH_NH"
+
+# Third overall comparison
+pvalues.all.com_DFUall <- do.call("rbind", pvalues.all)
+colnames(pvalues.all.com_DFUall)[4] <- "Pvalue_all"
+
+allsig <- cbind(pvalues.all.com_DFUall, pvalues.all.com_DFUH_NH, pvalues.all.com_DFUH)
+
+```
+
+
+
+# S5. negative-binomial test
+```{r}
+# prepare the data for quasibinomial test
+df.prop <- step1 %>% left_join(., sm.tol, by="Donor") %>% mutate(Condition = gsub("[0-9]$", "", Donor))
+str(df.prop)
+df.prop$Condition <- factor(df.prop$Condition, levels = c("H", "DFU_NH", "DFU_H"))
+
+# First compare the DFU_H to H
+df.prop.io <- df.prop %>% filter(Condition %in% c("DFU_H", "H"))
+df.prop.io <- droplevels(df.prop.io)
+str(df.prop.io)
+
+# Second compare the DFU_H to DFU_NH
+df.prop.io <- df.prop %>% filter(Condition %in% c("DFU_H", "DFU_NH"))
+df.prop.io <- droplevels(df.prop.io)
+
+# Third overall comparison
+df.prop.io <- df.prop
+
+celltypes <- unique(df.prop.io$CellType) %>% as.character()
+
+pvalues.all <- list()
+#i=30
+for (i in seq_along(celltypes)) {
+  ct <- celltypes[i]
+  df.prop.f <- df.prop.io %>% filter(CellType == ct) %>% select(5,3,4)
+  try(test.nb <- MASS::glm.nb(formula = Freq ~ Condition + offset(log(as.numeric(df.prop.f$TotalNumber))), data = df.prop.f, maxit = 1000), silent = TRUE)
+           
+ #test.nb = MASS::glm.nb(formula = Freq ~ Condition + offset(log(as.numeric(df.prop.f$TotalNumber))), data = df.prop.f, maxit = 1000)
+  print(summary(test.nb))
+  pvalues.all[[ct]] <- test.nb$coefficients
+  tryCatch(pav_tot_val <- anova(test.nb, test = "LRT")$`Pr(>Chi)`[2], error=function(e){pav_tot_val<<-"NA"})
+  print(pav_tot_val)
+  pvalues.all[[ct]] <- append(pvalues.all[[ct]], pav_tot_val)
+}
+# First compare the DFU_H to H
+pvalues.all.com_DFUH <- do.call("rbind", pvalues.all)
+colnames(pvalues.all.com_DFUH)[3] <- "Pvalue_DFUH_H"
+
+# Second compare the DFU_H to DFU_NH
+pvalues.all.com_DFUH_NH <- do.call("rbind", pvalues.all)
+colnames(pvalues.all.com_DFUH_NH)[3] <- "Pvalue_DFUH_NH"
+
+# Third overall comparison
+pvalues.all.com_DFUall <- do.call("rbind", pvalues.all)
+colnames(pvalues.all.com_DFUall)[4] <- "Pvalue_all"
+
+allsig <- cbind(pvalues.all.com_DFUall, pvalues.all.com_DFUH_NH, pvalues.all.com_DFUH)
+
+```
+
+
+# SessionInfo
+```{r}
+sessionInfo()
+```
+
+
+

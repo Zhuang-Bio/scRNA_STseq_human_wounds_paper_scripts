@@ -1,0 +1,632 @@
+---
+title: "Sub-clustering of Keratinocytes"
+author: "Zhuang Liu"
+date: "30/11/2021 Updated: `r Sys.Date()`"
+output:
+  html_document:
+    toc: true #add a table of contents (TOC)
+    toc_depth: 3 #headers' level in the toc
+    toc_float: true #toc visible even when scrolled
+    theme: lumen
+    highlight: tango
+    code_folding: hide
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.align='center', fig.width = 12, warning = FALSE, message = FALSE)
+```
+
+```{r warning=FALSE, message=FALSE}
+library(Seurat)
+library(SeuratObject)
+library(SeuratDisk)
+library(tidyverse)
+library(magrittr)
+library(ggplot2)
+library(patchwork)
+library(harmony)
+```
+
+#############################################
+# Step 2. Rerun the subclustering analysis
+#############################################
+## 2.1 Load and exclude unneeded clusters
+```{r}
+wds_kc <- readRDS("00-s1_subcluster_keratinocytes_delBasal4.rds")
+table(wds_kc$Condition)
+table(wds_kc$orig.ident)
+
+wds_kc <- FindClusters(object = wds_kc, resolution = 1.0) # add the resolution 1.0 to the subclustering results
+wds_kc@active.ident <- wds_kc$SCT_snn_res.1
+table(wds_kc$SCT_snn_res.1)
+####----Annotate the cell types----####
+current_cluster_ids <- c(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18) # List of current cluster IDs
+new_cluster_ids <- c("Spi_I_cl0", "Spi_I_cl1","Spi_N_cl2", "Bas_I_cl3", "Spi_II_cl4",
+                     "Bas_I_cl5", "Bas_II_cl6", "Gra_I_cl7", "Spi_I_cl8", "Bas_III_cl9",
+                     "Spi_III_cl10", "Gra_II_cl11", "Spi_N_cl12", "Spi_III_cl13", "Spi_III_cl14",
+                     "cl15_immune", "cl16_fib", "Gra_II_cl17", "Spi_III_cl18") # List of new cluster IDs
+# Changing IDs to cell type and add the cell type into metadata
+Idents(wds_kc) <- plyr::mapvalues(x=Idents(wds_kc), from=current_cluster_ids, to=new_cluster_ids)
+##relevel the cell types
+wds_kc$newCellTypes <- wds_kc@active.ident
+
+(DimPlot(object = wds_kc, 
+        reduction = "umap", 
+        label = TRUE, 
+        group.by = "SCT_snn_res.1", label.size = 6) + NoAxes() + ggtitle("Cell Clusters")) 
+  (DimPlot(object = wds_kc, 
+        reduction = "umap", 
+        label = TRUE, 
+        group.by = "CellTypes", label.size = 6) + NoAxes() + ggtitle("Cell Types"))
+  (DimPlot(object = wds_kc, 
+        reduction = "umap", 
+        label = TRUE, 
+        group.by = "newCellTypes", label.size = 6) + NoAxes() + ggtitle("Cell Types"))
+
+doublet_scores <- data.table::fread("/Users/zhuliu/Desktop/scRNA_STseq/proj_10X_woundhealing/03_results/01-Seurat-PreAnalysis/02_Seurat_BatchCorrection/s1_Seurat_allSample_harmony/py_doublet_OriScores.txt")
+
+doublet_scores_f <- colnames(wds_kc) %>% as.data.frame() %>% rename("ID" = ".") %>% left_join(., doublet_scores, by=c("ID" = "barcodename"))
+wds_kc$doublet_scores <- doublet_scores_f$doublet_scores
+
+# Determine metrics to plot present in wds_kc@meta.data
+metrics <-  c("nCount_RNA", "nFeature_RNA", "S.Score", "G2M.Score", "percent.mt", "doublet_scores")
+
+p3 <- FeaturePlot(
+  wds_kc,
+  features = metrics,
+  cols = c("gray","red"), combine = FALSE)
+p2_list <- lapply(p3, function(x) {x + NoAxes() + theme(text = element_text(size = 10))})
+cowplot::plot_grid(plotlist = p2_list, ncol = 3)
+
+table(wds_kc$newCellTypes)
+(DimPlot(object = wds_kc, 
+        reduction = "umap", 
+        label = TRUE, 
+        group.by = "SCT_snn_res.1", label.size = 6, split.by = "Condition") + NoAxes() + ggtitle("Cell Clusters")) 
+
+#sweat gland cell markers (αSMA, SOX9, CK18, and CK19, CK8) 
+FeaturePlot(kc_rm, features = c("KRT79","KRT75", #hair follicle cells
+                                "KRT8", "ACTA2", "SOX9", "KRT18",#sweat gland cells
+                                "KRT17", "KRT6A", "KRT6B", "KRT5", "KRT14", "KRT10"), ncol = 4,
+            cols = c("grey", "red"))
+
+wds_kc$fil <- ifelse((wds_kc$newCellTypes %in% c("Spi_III_cl10", "Spi_III_cl13", "Spi_III_cl14", "Spi_III_cl18", "cl15_immune", "cl16_fib")) | (wds_kc$CellTypes %in% c("Spinous-III")), "YES", "NO")
+
+
+#wds_kc$fil <- ifelse((wds_kc$SCT_snn_res.0.5 %in% c("11", "12")), "YES", "NO")
+#kc_rm <- subset(wds_kc, subset = fil == "NO")
+#kc_rm@meta.data <- droplevels(kc_rm@meta.data)
+#table(kc_rm$Condition)
+# Export the cell ID
+#cellid <- colnames(kc_rm)
+#saveRDS(cellid, file = "allKerat_clean_DelBas4Doublets_InclSpi3_CellID.rds")
+
+(DimPlot(object = kc_rm, 
+        reduction = "umap", 
+        label = F, 
+        group.by = "newCellTypes", label.size = 6) + NoAxes() + ggtitle("Cell Types"))
+p1 <- (DimPlot(object = kc_rm, 
+        reduction = "umap", 
+        label = TRUE, 
+        group.by = "SCT_snn_res.0.8", label.size = 6) + NoAxes() + ggtitle("Cell Clusters")) 
+cells.located <- CellSelector(plot = p1)
+
+rm(wds_kc);gc()
+```
+
+Next steps
+## 2.2 Rerun the SCT and clustering (all Conditions)
+```{r}
+DefaultAssay(kc_rm) <- "RNA"
+kc_rm <- DietSeurat(kc_rm, counts = TRUE, data = TRUE, scale.data = FALSE,
+                    assays = "RNA", dimreducs = NULL)
+#Remove unneeded columns
+kc_rm@active.ident <- kc_rm$orig.ident
+kc_rm$SCT_snn_res.0.5 <- NULL
+kc_rm$SCT_snn_res.0.8 <- NULL
+kc_rm$SCT_snn_res.1 <- NULL
+kc_rm$seurat_clusters <- NULL
+kc_rm$nCount_SCT <- NULL
+kc_rm$nFeature_SCT <- NULL
+kc_rm$fil <- NULL
+kc_rm$SubCellTypes <- kc_rm$newCellTypes
+kc_rm$newCellTypes <- NULL
+kc_rm$MainCellTypes <- kc_rm$CellTypes
+kc_rm$CellTypes <- NULL
+
+hswound.list <- SplitObject(kc_rm, split.by = "orig.ident")
+rm(kc_rm);invisible(gc())
+hswound.list <- lapply(X = hswound.list, FUN = function(x) {
+  x <- NormalizeData(x)
+  x <- CellCycleScoring(object = x, g2m.features = cc.genes$g2m.genes, s.features = cc.genes$s.genes, set.ident = FALSE)
+  x$CC.Difference <- x$S.Score - x$G2M.Score
+  x <- SCTransform(x, vars.to.regress = c("percent.mt", "CC.Difference"), variable.features.n = 3000, verbose = FALSE, return.only.var.genes = TRUE, method = "glmGamPoi")
+  x <- RunPCA(x, npcs = 60, ndims.print = 1:5, nfeatures.print = 5, features = VariableFeatures(object = x))
+})
+
+features.all <- SelectIntegrationFeatures(object.list = hswound.list, nfeatures = 3000) #First select 4.5K genes
+rn <- lapply(hswound.list, rownames) 
+nE <- colSums(Reduce(rbind, lapply(rn, function(x) features.all %in% x))) 
+features.all <- features.all[nE == length(hswound.list)]
+
+eachvg <- list(
+  PWH26D0=VariableFeatures(hswound.list$PWH26D0), 
+  PWH26D1=VariableFeatures(hswound.list$PWH26D1),
+  PWH26D30=VariableFeatures(hswound.list$PWH26D30),
+  PWH26D7=VariableFeatures(hswound.list$PWH26D7),
+  PWH27D0=VariableFeatures(hswound.list$PWH27D0),
+  PWH27D1=VariableFeatures(hswound.list$PWH27D1),
+  PWH27D30=VariableFeatures(hswound.list$PWH27D30),
+  PWH27D7=VariableFeatures(hswound.list$PWH27D7),
+  PWH28D0=VariableFeatures(hswound.list$PWH28D0),
+  PWH28D1=VariableFeatures(hswound.list$PWH28D1),
+  PWH28D30=VariableFeatures(hswound.list$PWH28D30),
+  PWH28D7=VariableFeatures(hswound.list$PWH28D7),
+  krtallvg=features.all)
+source("../Functions/overlap_phyper2.R")
+overlap_phyper2(eachvg, eachvg)
+
+####----Prepare the integration----####
+hswound.list <- PrepSCTIntegration(object.list = hswound.list, anchor.features = features.all)
+
+hswound.krt.com <- merge(hswound.list[[1]], 
+                         y = hswound.list[2:length(hswound.list)],
+                         project = "woundkrt",
+                         merge.data = TRUE)
+
+VariableFeatures(hswound.krt.com) <- features.all
+hswound.krt.com <- RunPCA(object = hswound.krt.com, assay = "SCT", npcs = 50, features = VariableFeatures(hswound.krt.com))
+ElbowPlot(hswound.krt.com, ndims = 50, reduction = "pca")
+
+rm(hswound.list);invisible(gc())
+
+hswound.krt.com <- RunHarmony(object = hswound.krt.com,
+                                    assay.use = "SCT",
+                                    reduction = "pca",
+                                    dims.use = 1:30,
+                                    group.by.vars = "orig.ident",
+                                    plot_convergence = TRUE)
+
+#rn pca, umap, clustering
+hswound.krt.com <- FindNeighbors(object = hswound.krt.com, assay = "SCT", reduction = "harmony", dims = 1:30, k.param = 40)
+hswound.krt.com <- FindClusters(object = hswound.krt.com, resolution = 0.8)
+hswound.krt.com <- FindClusters(object = hswound.krt.com, resolution = 0.5)
+hswound.krt.com <- FindClusters(object = hswound.krt.com, resolution = 1.0)
+
+hswound.krt.com <- RunUMAP(object = hswound.krt.com, assay = "SCT", reduction = "harmony", dims = 1:30, n.neighbors = 40, min.dist = 0.3, n.epochs = 500, spread = 1.0, learning.rate = 1)
+
+hswound.krt.com$orig.ident <- factor(x = hswound.krt.com$orig.ident, levels =
+                                            c("PWH26D0", "PWH26D1", "PWH26D7","PWH26D30",
+                                              "PWH27D0", "PWH27D1", "PWH27D7","PWH27D30",
+                                              "PWH28D0", "PWH28D1", "PWH28D7","PWH28D30"))
+hswound.krt.com$Condition <- factor(x = hswound.krt.com$Condition, levels =
+                                            c("Skin", "Wound1", "Wound7","Wound30"))
+
+hswound.krt.com <- readRDS(file = "allNew_subcluster_keratinocytes_dels.rds")
+
+table(hswound.krt.com$SCT_snn_res.0.8)
+DimPlot(object = hswound.krt.com, 
+        reduction = "umap", 
+        label = TRUE, 
+        group.by = "SCT_snn_res.0.5", label.size = 4.5) + NoAxes() + ggtitle("Cell Clusters")
+
+table(hswound.krt.com$SCT_snn_res.1)
+DimPlot(object = hswound.krt.com, 
+        reduction = "umap", 
+        label = TRUE, 
+        group.by = "SCT_snn_res.1", label.size = 4.5) + NoAxes() + ggtitle("Cell Clusters")
+
+DimPlot(object = hswound.krt.com, 
+        reduction = "umap", 
+        label = TRUE, 
+        group.by = "MainCellTypes", label.size = 5) + NoAxes() + ggtitle("")
+
+DimPlot(object = hswound.krt.com, 
+        reduction = "umap", 
+        label = TRUE, 
+        group.by = "SubCellTypes", label.size = 5) + NoAxes() + NoLegend() + ggtitle("")
+
+#hswound.krt.com$fil <- ifelse(hswound.krt.com$SCT_snn_res.1 %in% c(12,13), "YES", "NO")
+#hswound.krt.com_rm <- subset(hswound.krt.com, subset = fil == "NO")
+#hswound.krt.com_rm <- RunUMAP(object = hswound.krt.com_rm, assay = "SCT", reduction = "harmony", #dims = 1:30, n.neighbors = 40, min.dist = 0.3, n.epochs = 200, spread = 1.0, learning.rate = 1)
+#
+#table(hswound.krt.com_rm$SCT_snn_res.1)
+#DimPlot(object = hswound.krt.com_rm, 
+#        reduction = "umap", 
+#        label = TRUE, 
+#        group.by = "SCT_snn_res.1", label.size = 4.5) + NoAxes() + ggtitle("Cell Clusters")
+##rm(hswound.krt.com_rm);invisible(gc())
+#hswound.krt.com$fil <- NULL
+
+hswound.krt.com@active.ident <- as.factor(hswound.krt.com$SCT_snn_res.1)
+
+current_cluster_ids <- c(0, 1, 2, 3, 4, 
+                         5, 6, 7, 8, 9, 
+                         10, 11, 12, 13) # List of current cluster IDs
+
+new_cluster_ids <- c("Spi_II", "Spi_V", "Bas_I", "Spi_I", "Spi_III", 
+                     "Bas_I", "Spi_II", "Bas_II", "Gra_III", "Bas_III", 
+                     "Gra_I", "Gra_II", "Spi_IV", "Spi_IV")
+
+
+hswound.krt.com@active.ident <- as.factor(hswound.krt.com$SCT_snn_res.0.5)
+current_cluster_ids <- c(0, 1, 2, 3, 4, 
+                         5, 6, 7, 8) # List of current cluster IDs
+
+new_cluster_ids <- c("Spi_II", "Bas_I", "Spi_V", "Spi_I", "Spi_III", 
+                     "Bas_II", "Bas_III", "Gra_I", "Spi_IV")
+
+# List of new cluster IDs
+# Changing IDs to cell type and add the cell type into metadata
+Idents(hswound.krt.com) <- plyr::mapvalues(x=Idents(hswound.krt.com), from=current_cluster_ids, to=new_cluster_ids)
+hswound.krt.com$CellTypes <- hswound.krt.com@active.ident
+
+DimPlot(object = hswound.krt.com, 
+        reduction = "umap", 
+        label = TRUE, group.by = "SCT_snn_res.0.5", label.size = 5) + NoAxes() + NoLegend() + ggtitle("")
+
+DimPlot(object = hswound.krt.com, 
+        reduction = "umap", 
+        label = TRUE, group.by = "CellTypes", label.size = 5) + NoAxes() + NoLegend() + ggtitle("")
+
+DimPlot(hswound.krt.com, reduction = "umap", pt.size = .001,group.by = "CellTypes", split.by = 'Condition', ncol = 4, label = F) + NoLegend()+ ggtitle("")
+
+genes <-  c("KRT5", "KRT14", "KRT1", "KRT10", "KRT17", "KRT16", "KRT6A", "KRT2", "IVL", "FLG", "MKI67", "ITGA6")
+genes <-  c("KRT5", "KRT14", "CDK1", "PCNA", "KRT1", "KRT10","SPINK5", "LORICRIN", "FLG", "IVL")
+p3 <- FeaturePlot(
+  hswound.krt.com,
+  features = genes,
+  cols = c("grey", "red"), min.cutoff = 0.001, combine = FALSE)
+p2_list <- lapply(p3, function(x) {x + NoAxes() + theme(text = element_text(size = 10))})
+wrap_plots(p2_list, ncol = 4)
+
+####----Change to RNA assay to prepare the DE analysis----####
+DefaultAssay(hswound.krt.com) <- "RNA" #DE for all genes instead of only using variable gene
+hswound.krt.com <- NormalizeData(hswound.krt.com, verbose = TRUE,  normalization.method = "LogNormalize", scale.factor = 10000)
+
+saveRDS(hswound.krt.com, file = "allNew_subcluster_keratins_220203.rds")
+```
+
+### 2.2.1 marker genes
+```{r}
+library(future)
+plan("multisession", workers = 4)
+options(future.globals.maxSize = 15000 * 1024^2)
+
+Idents(hswound.krt.com) <- "CellTypes" # marker genes with annotated clusters 
+####----FindAllMarkers for all clusters----####
+library(MAST)
+markers <- FindAllMarkers(
+  hswound.krt.com,
+  only.pos = TRUE,
+  min.pct = 0.25,  #min.pct = 0.5, logfc.threshold = 0.5,
+  logfc.threshold = 0.25,
+  test.use = "MAST") #MAST has good FDR control and is faster than DESeq2, default test is wilcox
+
+####----add the gene description to the cluster marker genes----####
+annot <- readRDS("../Functions/humanAnnotation.rds")
+####----add the info and reorder the columns----####
+markers_f <- markers %>% left_join(., annot, by=c("gene" = "external_gene_name")) %>% 
+  dplyr::select(6, 7, 2:4, 1, 5, everything()) %>% arrange(cluster, desc(avg_log2FC))
+#marker genes with cluster number
+data.table::fwrite(markers_f, file="allNew_subcluster_keratins_220203_mgClusters.txt", sep="\t") ## marker genes with annotated clusters 
+data.table::fwrite(markers_f, file="allNew_subcluster_keratins_220203_mgCellTypes.txt", sep="\t")
+
+table(hswound.krt.com$SCT_snn_res.1)
+DimPlot(object = hswound.krt.com, 
+        reduction = "umap", 
+        label = TRUE, 
+        cells.highlight = colnames(subset(hswound.krt.com, subset = CellTypes == c("Gra_III"))),
+        group.by = "CellTypes", label.size = 5) + NoAxes() + NoLegend() + ggtitle("")
+
+FeaturePlot(hswound.krt.com, features = "TNFAIP2")
+```
+
+
+```{r}
+hswound.krt.com <- readRDS("allNew_subcluster_keratins_220203.rds")
+
+DefaultAssay(hswound.krt.com) <- "SCT"
+hswound.krt.com <- BuildClusterTree(object = hswound.krt.com, assay = "SCT", slot = "data")
+suppressMessages(library(scales))
+cluster.color <- hue_pal()(length(levels(hswound.krt.com)))
+# pull the tree
+hswound.clustertree <- Tool(object = hswound.krt.com, slot = "BuildClusterTree")
+# plot the tree
+suppressMessages(require(ape))
+{plot.phylo(x = hswound.clustertree, direction = "rightwards", use.edge.length = TRUE, font = 10, tip.color = cluster.color, edge.width = 1.5, label.offset = 80, no.margin = TRUE)
+tiplabels(pch = 19, col = cluster.color, adj = 3, cex = 2)}
+
+####----Please pay attentions to the original numbers of cells per sample----####
+clusters <- unique(hswound.krt.com@meta.data[["CellTypes"]])
+fac_levs <- c("Bas_I", "Bas_II", "Bas_III", 
+              "Spi_I", "Spi_II", "Spi_III","Spi_IV", "Spi_V",
+              "Gra_I")
+
+SmCell_sum <- table(hswound.krt.com$orig.ident, hswound.krt.com$CellTypes) %>% as.data.frame()
+
+levels(clusters) <- fac_levs
+clusters <- clusters[order(clusters)]
+df <- data.frame()
+for(i in 1:length(clusters)){
+  SmCell_sum <- table(hswound.krt.com$orig.ident)
+  tmp.df1 <- hswound.krt.com@meta.data %>% subset(CellTypes == clusters[i]) %>% select(orig.ident) %>% table()
+  if(length(tmp.df1) == 12){
+    #First normalize the total cell counts per sample
+    cur_df <- as.data.frame(tmp.df1 / SmCell_sum)
+    colnames(cur_df) <- c("Sample", "Freq")
+    #Calculate the normalized proportion 
+    cur_df$Freq <- cur_df$Freq * 1/(sum(cur_df$Freq))
+    cur_df$Cluster <- clusters[i]
+    df <- rbind(df, cur_df)
+  } else {
+    #print(i);print(tmp.df1)
+    #only include the matched samples
+    match.sample <- SmCell_sum[names(SmCell_sum) %in% names(tmp.df1)]
+    #print(match.sample)
+    #First normalize the total cell counts per sample
+    cur_df <- as.data.frame(tmp.df1 / match.sample)
+    colnames(cur_df) <- c("Sample", "Freq")
+    #Calculate the normalized proportion 
+    cur_df$Freq <- cur_df$Freq * 1/(sum(cur_df$Freq))
+    cur_df$Cluster <- clusters[i]
+    df <- rbind(df, cur_df)
+  }
+}
+
+df.group <- df %>% mutate(Sample = gsub("PWH..", "", Sample)) %>% group_by(Cluster, Sample) %>% 
+  summarise(Freq = sum(Freq)) %>% mutate(Group = Sample)
+df.group$Group <- gsub("D0", "Skin", df.group$Group)
+df.group$Group <- gsub("D1", "Wound1", df.group$Group)
+df.group$Group <- gsub("D7", "Wound7", df.group$Group)
+df.group$Group <- gsub("D30", "Wound30", df.group$Group)
+
+df.group$Group <- factor(df.group$Group, levels = c("Skin", "Wound1", "Wound7", "Wound30"))
+ggplot(df.group, aes(x = Cluster, y = Freq, fill = Group)) +
+  geom_bar(position = "stack", stat = "identity") +
+  scale_fill_brewer(palette = "Dark2") + # Paired or Set3 maximum variable = 12
+  xlab('Cell Types') +
+  scale_y_continuous(breaks = seq(0, 1, 0.1),
+                     expand = c(0, 0),
+                     name = 'Percentage') +
+  geom_hline(yintercept=0.25, linetype="dashed", color = "black") +
+  geom_hline(yintercept=0.5, linetype="dashed", color = "black") +
+  geom_hline(yintercept=0.75, linetype="dashed", color = "black") +
+  theme_bw() +
+  theme(
+    panel.grid.major.x = element_blank(),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    strip.background = element_blank(),
+    #panel.border = element_rect(size = 0.35),
+    axis.ticks = element_blank(),
+    axis.text.x = element_text(size = 12, color = "black", angle = 45, vjust = 0.6),
+    axis.title.y = element_text(size = 14, color = "black"),
+    axis.text.y = element_text(size = 12, color = "black"),
+    legend.position = "top"
+  ) 
+
+(DimPlot(object = hswound.krt.com, 
+        reduction = "umap", 
+        label = TRUE, 
+        group.by = "seurat_clusters", label.size = 6) + NoAxes() + NoLegend() + ggtitle("Cell Clusters")) +
+  (DimPlot(object = hswound.krt.com, 
+        reduction = "umap", 
+        label = TRUE, 
+        group.by = "subCellTypes", label.size = 6) + NoAxes() + NoLegend() + ggtitle("Cell Types"))
+#plot marker genes of each subcluster
+canonical_markers <- c("CCL2", "IGFBP3", "H4C3", "HMGB2", "CENPF", "MMP1", "MMP3", "AREG",
+                       "MT1H", "MAP1B", "LGALS3", "DBI", "SOD2", "CCL27", "TNFAIP2", "AKR1B10",
+                       "KRT2", "SLURP1", "FLG", "LORICRIN", "KRT17", "KRT16", "KRT6B")
+
+canonical_markers <- c("KRT15", "POSTN", "ASS1", "STMN1", "TOP2A", "CENPF",
+                       "MMP1", "MMP3", "AREG", "MT1H", "MT1G", "ITPRIPL2", 
+                       "APOE", "CCND1", "LGALS3", "DBI",
+                       "SOD2", "CCL27", "TNFAIP2", "KRT17", "KRT16", "KRT6B",
+                       "FLG", "LORICRIN","SLURP1")
+
+clono_markers <- c("KRT14", "TP63", "ITGA6", "ITGB1", "BIRC5", "ANLN", "AURKB", "CCNA2", "CKAP2L", "FOXM1", "LMNB1", "SERPINB3", "SFN", "KRT10", "TGM1", "IVL", "SPINK5")
+
+FeaturePlot(hswound.krt.com, features = c("KRT17", "KRT16", "KRT6B"))
+
+hswound.krt.com$seurat_clusters <- factor(hswound.krt.com$seurat_clusters, levels = rev(fac_levs))
+hswound.krt.com$CellTypes <- factor(hswound.krt.com$CellTypes, levels = fac_levs)
+P1 <- DotPlot(hswound.krt.com, features = clono_markers, 
+        group.by = "CellTypes", cols = c("lightgrey", "red"), 
+        dot.scale = 5, col.min = 0, dot.min = 0.1
+        ) + RotatedAxis()
+P1 
+
+DimPlot(object = hswound.krt.com, 
+        reduction = "umap", 
+        label = TRUE, 
+        group.by = "CellTypes", label.size = 5) + NoAxes() + NoLegend() + ggtitle("")
+
+#add the migration score (GO:0051549) to meta.data (KET16 AND KRT6A/B/C from literatures)
+mig_gene <- list(mig_score=c("HAS2", "KRT16", "KRT6A", "KRT6B", "KRT6C", "FGF7",
+                             "MAPRE2", "IQSEC1", "FGF10", "ADAM9", "MMP9"))
+
+#add the proliferation score(Science, 374 (6574), abe6474. • DOI: 10.1126/science.abe6474)
+prolif_gene <- list(prolif_score=c("ZWINT", "E2F1", "FEN1", "FOXM1", "H2AZ1", "HMGB2", "MCM2", "MCM3", "MCM4", "MCM5", "MCM6", "MKI67", "MYBL2", "PCNA", "PLK1", "CCND1", "AURKA", "BUB1", "TOP2A", "TYMS", "DEK", "CCNB1", "CCNE1"))
+
+#holoclone genes
+hg <- readxl::read_xlsx("/Users/zhuliu/Desktop/SC_ST RNAseq references/Analysis codes/holoclonegenes.xlsx") %>% pull(Holoclonesignature)
+hg <- list(holoclonesig=hg)
+
+hswound.krt.com <- AddModuleScore(object = hswound.krt.com, features = mig_gene, name = "mig_score", assay = "RNA") 
+hswound.krt.com <- AddModuleScore(object = hswound.krt.com, features = prolif_gene, name = "prolif_score", assay = "RNA") 
+hswound.krt.com <- AddModuleScore(object = hswound.krt.com, features = hg, name = "holoclonesig", assay = "RNA") 
+
+
+hswound.krt.com$CellTypes <- factor(hswound.krt.com$CellTypes, levels = fac_levs)
+VlnPlot(hswound.krt.com, features = "mig_score1", pt.size = 0, group.by = 'CellTypes') + ggtitle("Migration scores in keratinocytes") + NoLegend()
+
+VlnPlot(hswound.krt.com, features = "prolif_score1", pt.size = 0, group.by = 'CellTypes') + ggtitle("Proliferation scores in keratinocytes") + NoLegend()
+
+VlnPlot(hswound.krt.com, features = "holoclonesig1", pt.size = 0, group.by = 'CellTypes') + ggtitle("Holoclone signature in keratinocytes") + NoLegend()
+
+```
+
+## Check the doublet scores
+```{r}
+hswound.krt.com <- readRDS("allNew_subcluster_keratins_220203.rds")
+
+doublet_scores <- data.table::fread("/Users/zhuliu/Desktop/scRNA_STseq/proj_10X_woundhealing/03_results/01-Seurat-PreAnalysis/02_Seurat_BatchCorrection/s1_Seurat_allSample_harmony/py_doublet_OriScores.txt")
+
+doublet_scores_f <- colnames(hswound.krt.com) %>% as.data.frame() %>% rename("ID" = ".") %>% left_join(., doublet_scores, by=c("ID" = "barcodename"))
+hswound.krt.com$doublet_scores <- doublet_scores_f$doublet_scores
+
+metrics <-  c("nCount_RNA", "nFeature_RNA", "S.Score", "G2M.Score", "percent.mt", "doublet_scores")
+
+p3 <- FeaturePlot(
+  hswound.krt.com,
+  features = metrics,
+  cols = c("gray","red"), combine = FALSE)
+p2_list <- lapply(p3, function(x) {x + NoAxes() + theme(text = element_text(size = 10))})
+cowplot::plot_grid(plotlist = p2_list, ncol = 3)
+
+VlnPlot(hswound.krt.com, features = metrics, group.by='CellTypes', pt.size = 0, ncol = 2)
+```
+
+
+```{r}
+hswound.krt.com <- readRDS("./allNew_subcluster_keratins_220203.rds") #skin, wound1, wound7, wound30, wounds
+DefaultAssay(hswound.krt.com) <- "SCT"
+vg <- VariableFeatures(hswound.krt.com)
+write.csv(vg, file="allkera_variableGenes_seurat.csv", row.names = F, quote = F)
+
+genes <-  c("KRT16", "KRT17", "KRT6A", "KRT6B", "KRT6C", "MKI67")
+genes <-  c("KRT15", "POSTN", "ASS1", "MMP1", "MMP3", "AREG")
+genes <- c("ASCL2", "IRX4", "IL24", "PHLDA2", "FOSL1", "RAN", "BNC1", "MAF", "E2F4")
+genes <- c("GIT2", "FOSL1", "ETS1", "ELK3", "ERG", "PSMD12", "E2F4", "ENO1", "NELFE", "ASCL2")
+genes <- c("IRF7", "RELA", "FOSL1", "SIRT6", "BANP", "ZNF831", "PSMD12", "XBP1", "CEBPG", "E2F4")
+
+genes <- c("ASCL2", "IRX4", "IL24", "MAF", "PHLDA1", "FOSL1", "RAN", "BNC1")
+
+p3 <- FeaturePlot(
+  hswound.krt.com,
+  features = genes,
+  cols = c("grey", "red"), min.cutoff = 0.001, combine = F)
+p2_list <- lapply(p3, function(x) {x + theme(text = element_text(size = 10))})
+wrap_plots(p2_list, ncol = 4) #wrap_plots(p2_list, guides = "collect", ncol = 2) & theme(legend.position = "bottom")
+
+VlnPlot(hswound.krt.com, features = genes, split.by = "Condition", pt.size = 0)
+DotPlot(hswound.krt.com, features = genes, 
+        group.by = "CellTypes", cols = c("lightgrey", "red"), 
+        dot.scale = 5, col.min = 0, dot.min = 0.1, 
+        ) + RotatedAxis()
+
+FeaturePlot(
+  hswound.krt.com,
+  features = c("E2F4"), cols = c("grey", "red"))
+table(hswound.krt.com$Condition, hswound.krt.com$CellTypes)
+
+
+regulon_mt <- data.table::fread("pySCENIC/z_hswoundWound_cellType_metadata_addRegulons.csv")
+identical(colnames(hswound.krt.com), regulon_mt$V1)
+grep("FOSL1", colnames(regulon_mt))
+reac <- regulon_mt[, 96]
+hswound.krt.com$Regulon_FOSL1 <- reac$`Regulon_FOSL1_(+)`
+
+grep("ASCL2", colnames(regulon_mt))
+reac <- regulon_mt[, 17]
+hswound.krt.com$Regulon_ASCL2 <- reac$`Regulon_ASCL2_(+)`
+
+FeaturePlot(
+  hswound.krt.com,
+  features = c("IRF7"), cols = c("grey", "red"))
+
+FeaturePlot(
+  hswound.krt.com,
+  features=c("Regulon_ASCL2"), 
+  #split.by = "Condition",
+  combine=T, cols = c("#850aff","#400080","yellow"), pt.size = 0.2, max.cutoff = "q95"#, pt.size = 1.2
+)
+DefaultAssay(hswound.krt.com) <- "RNA"
+hswound.krt.com <- NormalizeData(hswound.krt.com)
+pdf("FOSL1_regulon_umap.pdf", useDingbats = FALSE, width = 6, height = 4)
+FeaturePlot(
+  hswound.krt.com,
+  features=c("Regulon_FOSL1"), 
+  #split.by = "Condition",
+  combine=T, cols = c("#850aff","#400080","yellow"), pt.size = 0.2, max.cutoff = "q95"#, pt.size = 1.2
+) + NoAxes() + ggtitle("Regulon_FOSL1(+)")
+dev.off()
+
+pdf("FOSL1_expression_umap.pdf", useDingbats = FALSE, width = 6, height = 4)
+FeaturePlot(
+  hswound.krt.com,
+  features=c("FOSL1"), order = T,
+  #split.by = "Condition",
+  combine=T, cols = c("grey90","red"), pt.size = 0.2, max.cutoff = "q95"#, pt.size = 1.2
+) + NoAxes() + ggtitle("FOSL1 expression")
+dev.off()
+
+
+# extract bas/spi-mig clusters
+bas_spi <- subset(hswound.krt.com, subset = CellTypes == "Bas_III" | CellTypes == "Spi_V")
+bas_spi$CellTypes <- gsub("Bas_III", "Bas_mig", bas_spi$CellTypes)
+bas_spi$CellTypes <- gsub("Spi_V", "Spi_mig", bas_spi$CellTypes)
+bas_spi@meta.data <- droplevels(bas_spi@meta.data)
+VlnPlot(bas_spi, features = c("FOSL1", "Regulon_FOSL1"), group.by = "CellTypes", split.by = "Condition", ncol = 1, cols = c('#1b9e77','#d95f02','#7570b3','#e7298a'), pt.size = 0.0001)
+pdf("FOSL1_exp_activity_vlnplot.pdf", useDingbats = FALSE, width = 8, height = 6)
+dev.off()
+```
+
+
+## Regulon Z-score point plot
+```{r}
+library(ggrepel)
+
+regulons <- readxl::read_xlsx("pySCENIC/z_hswoundWound_cellType_RSSs_zscores.xlsx", sheet = 1) %>% select(-1) %>% group_by(CellTypes) %>% arrange(CellTypes, desc(Z)) %>% ungroup() %>% 
+  mutate(Rank = rep(1:384, 9))
+
+regulons$regulon <- gsub("_","", regulons$regulon)
+
+zscore_plot <- function(Cluster = NULL){
+  inputDF <- regulons %>% filter(CellTypes == Cluster)
+  ggplot(inputDF, aes(x=Rank, y= Z)) +
+  geom_point(colour = "#3b5cc4", size = 0.8) +
+  geom_point(data = inputDF %>% dplyr::slice(1:10), mapping = aes(x = Rank, y=Z), colour = "red", size = 1.2) +
+  ylab('Regulon specificity Z-scores') +
+  ggtitle(paste0(Cluster)) +
+  #scale_y_continuous(limits = c(-3,3), breaks = c(-3,-2,-1,0,1,2,3)) +
+  scale_x_continuous(limits = c(0, 400), breaks = c(0, 100, 200, 300)) +
+  theme_bw() +
+  theme(
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text.x = element_text(size= 12),
+    axis.title.x = element_text(size= 12),
+    axis.text.y = element_text(size= 12),
+    axis.title.y = element_text(size= 12),
+    axis.title=element_text(size=14,face="bold"),
+    plot.title = element_text(size = 14, face = "bold")
+  ) +
+  geom_text_repel(data = inputDF %>% dplyr::slice(1:10), 
+                  mapping = aes(x = Rank, y=Z, label = regulon),
+                  color = "red",
+                  nudge_x      = 100,
+                  direction    = "y",
+                  hjust        = 0,
+                  segment.size = 0.2,
+                  segment.color = "red"
+  )
+}
+
+zscore_plot(Cluster = "Bas_III")
+zscore_plot(Cluster = "Spi_V")
+
+zscore_plot(Cluster = "Bas_I")
+zscore_plot(Cluster = "Bas_II")
+
+z.plots <- lapply(unique(regulons$CellTypes), function(x) zscore_plot(x))
+wrap_plots(z.plots, ncol = 3)
+```
+
+# SessionInfo
+```{r}
+sessionInfo()
+```

@@ -1,0 +1,367 @@
+---
+title: "Bulk_RNA-seq_deconvolution_using_BayesPrism"
+author: "Ruby_Luo"
+date: '2023-01-27'
+output: 
+  html_document:
+    toc: true
+    toc_depth: 6
+    toc_collapsed: true
+    number_sections: false
+    toc_float:
+      collapsed: false
+      smooth_scroll: false
+    df_print: paged
+---
+
+# Step1: load R packages
+```{r echo=TRUE,message=FALSE, warning=FALSE}
+library(Seurat)
+library(dplyr)
+library("devtools")
+library("org.Hs.eg.db")
+library(reshape2)
+library(ggplot2)
+#devtools::install_github("Danko-Lab/BayesPrism/BayesPrism")
+suppressWarnings(library(BayesPrism))
+```
+
+
+# Step2: load datasets
+## 2.1 load bulk RNAseq data & process
+```{r echo=TRUE,message=FALSE, warning=FALSE}
+bk.dat <- read.table("d01_bulkRNAseq_whole_biopsy_allgeneFPKM.txt",header=T,sep="\t")
+head(bk.dat)
+bk.dat <- bk.dat[,c(2,as.numeric(4:23))]
+colnames(bk.dat)[1] <- "ENSEMBL"
+# genename: ENSG00000002586.20_PAR_Y and ENSG00000214717.12_PAR_Y were deleted
+bk.dat <- bk.dat[which(bk.dat$ENSEMBL != "ENSG00000002586.20_PAR_Y"),]
+bk.dat <- bk.dat[which(bk.dat$ENSEMBL != "ENSG00000214717.12_PAR_Y"),]
+library(stringr)
+split_data <-str_split(bk.dat$ENSEMBL,"[.]")
+bk.dat$ENSEMBL <-sapply(split_data,"[",1)
+infile <- bk.dat
+
+data = infile[,"ENSEMBL"]
+data = as.vector(data)
+annots <- select(org.Hs.eg.db, keys=data, 
+                 columns="SYMBOL", keytype="ENSEMBL")
+bk.data <- merge(infile, annots, by.x="ENSEMBL", by.y="ENSEMBL")
+head(bk.data)
+# remove duplicate of symbol
+bk.data$sum <- rowSums(bk.data[, 2:21])
+bk.data2 <- bk.data %>%
+  group_by(SYMBOL) %>%
+  top_n(sum, n = 1)
+bk.data2 <- as.data.frame(bk.data2)
+bk.data2 <- bk.data2[bk.data2$sum > 11,]
+bk.dat <- bk.data2[,c(22,2:21)] #23588
+#bk.dat$SYMBOL <- toupper(bk.dat$SYMBOL)
+bk.dat <- bk.dat[!is.na(bk.dat$SYMBOL),]
+
+rownames(bk.dat) <- bk.dat[,1]
+bk.dat <- bk.dat[,-1]
+head(bk.dat)
+bk.dat <- t(bk.dat)
+# bk.dat: The sample-by-gene raw count matrix of bulk RNA-seq expression. rownames are bulk sample IDs, while colnames are gene names/IDs.
+bk.dat[,1:10]
+ls()
+rm("annots","bk.data","bk.data2","data","infile","split_data");ls()
+```
+
+## 2.1 load single cell data & process
+```{r echo=TRUE,message=FALSE, warning=FALSE}
+rds <- readRDS("d02_allcombined_wounds_newAnnotation.rds")
+rds
+head(rds)
+# sc.dat: The cell-by-gene raw count matrix of single expression. rownames are bulk cell IDs, while colnames are gene names/IDs.
+sc.dat <- as.matrix(rds[["RNA"]]@counts)
+sc.dat <- t(sc.dat)
+sc.dat[1:5,1:10]
+
+# cell.type.labels is a character vector of the same length as nrow(sc.dat) to denote the cell type of each cell in the reference.
+cell.type.labels <- as.character(rds$newCellTypes)
+class(cell.type.labels);length(cell.type.labels)
+sort(table(cell.type.labels))
+
+# cell.state.labels is a character vector of the same length as nrow(sc.dat) to denote the cell state of each cell in the reference. In our example, cell states of malignant cells were obtained by sub-clustering the malignant cells from each patient, and cell states of myeloid cells were obtained by clustering myeloid cells from all patients. We define multiple cell states for these two cell types, as they contain substantial heterogeneity while also having sufficient number of cells for sub-clustering.
+cell.state.labels <- as.character(rds$newCellTypes)
+class(cell.state.labels);length(cell.state.labels)
+sort(table(cell.state.labels))
+
+# save dataset
+rm("rds");ls()
+save(bk.dat,cell.state.labels,cell.type.labels,sc.dat,file = "d03_BayesPrism_Input.rdata")
+```
+
+# Step3: QC of cell type and state labels
+```{r echo=TRUE,message=FALSE, warning=FALSE}
+#We recommend first plotting the pairwise correlation matrix between cell states and between cell types. This will give us a sense of their quality. In cases where cell types/states are not represented by sufficient amount of information (low cell count and/or low library size), the low-quality cell types/states tend to cluster together. Users may re-cluster the data at higher granularity, or merge those cell types/states with the most similar cell types/states, or remove them (if re-clustering and merging is not appropriate).
+plot.cor.phi (input=sc.dat,
+                         input.labels=cell.state.labels,
+                         title="cell state correlation",
+                         #specify pdf.prefix if need to output to pdf
+                         #pdf.prefix="gbm.cor.cs", 
+                         cexRow=0.4, cexCol=0.4,
+                         margins=c(2,2))
+
+plot.cor.phi (input=sc.dat, 
+                         input.labels=cell.type.labels, 
+                         title="cell type correlation",
+                         #specify pdf.prefix if need to output to pdf
+                         #pdf.prefix="gbm.cor.ct",
+                         cexRow=0.4, cexCol=0.4,
+                         )
+```
+
+# Step4: Filter outlier genes
+```{r echo=TRUE,message=FALSE, warning=FALSE}
+# Gene expressed at high magnitude, such as ribosomal protein genes and mitochondrial genes, may dominate the distribution and bias the inference. These genes are often not informative in distinguishing cell types and can be a source of large spurious variance. As a result, they can be detrimental to deconvolution. We recommend the removal of these genes.
+
+# Users may visualize the distribution of outlier genes from scRNA-seq reference. We compute the mean expression and of each gene across all cell types, and their cell type specificity scores.
+
+#Visualize and determine outlier genes from scRNA-seq data
+sc.stat <- plot.scRNA.outlier(
+  input=sc.dat, #make sure the colnames are gene symbol or ENSMEBL ID 
+  cell.type.labels=cell.type.labels,
+  species="hs", #currently only human(hs) and mouse(mm) annotations are supported
+  return.raw=TRUE #return the data used for plotting. 
+  #pdf.prefix="gbm.sc.stat" specify pdf.prefix if need to output to pdf
+)
+#> EMSEMBLE IDs detected.
+
+# As shown by the plot, ribosomal protein genes often show high mean expression and low cell type specificity scores.
+#Users may also subset genes from sc.dat based on the statistics outputted by the function if needed.
+head(sc.stat) 
+
+#sc.stat shows the log of normalized mean expression (x-axis) and the maximum specificity (y-axis) of each gene, and if each gene belongs to a potential outlier category. other_Rb are a group of curated genes mostly consists of ribosomal psuedo-genes.
+
+#Similarly, we may also visualize outlier genes from bulk RNA-seq. We compute the mean expression and of each gene across all cell types. As we do not have cell type level information from bulk data, we compute cell type specificity score from scRNA-seq, same as above.
+#Visualize outlier genes in bulk RNA-seq
+bk.stat <- plot.bulk.outlier(
+  bulk.input=bk.dat,#make sure the colnames are gene symbol or ENSMEBL ID 
+    sc.input=sc.dat, #make sure the colnames are gene symbol or ENSMEBL ID 
+  cell.type.labels=cell.type.labels,
+  species="hs", #currently only human(hs) and mouse(mm) annotations are supported
+  return.raw=TRUE
+  #pdf.prefix="gbm.bk.stat" specify pdf.prefix if need to output to pdf
+)
+#> EMSEMBLE IDs detected.
+
+# check statistics from bulk RNA-seq data
+head(bk.stat)
+# Filter outlier genes from scRNA-seq data
+# Next, we remove the genes from selected groups. Note that when sex is not identical between the reference and mixture, we recommend excluding genes from chrX and chrY. We also remove lowly transcribed genes, as the measurement of transcription of these genes tend to be noise-prone. Removal of these genes can also speed up computation.
+
+sc.dat.filtered <- cleanup.genes (input=sc.dat,
+                                  input.type="count.matrix",
+                                    species="hs", 
+                                    gene.group=c( "Rb","Mrp","other_Rb","chrM","MALAT1","chrX","chrY") ,
+                                    exp.cells=5)
+dim(sc.dat.filtered)
+# Next, we check the concordance of gene expression for different types of genes. As bulk and single cell data are usually collected by different experimental protocols, they may have different sensitivity to different types of genes.
+#note this function only works for human data. For other species, you are advised to make plots by yourself.
+plot.bulk.vs.sc (sc.input = sc.dat.filtered,
+                            bulk.input = bk.dat
+                            #pdf.prefix="gbm.bk.vs.sc" specify pdf.prefix if need to output to pdf
+)
+#> EMSEMBLE IDs detected.
+
+#We observe that protein coding genes are the most concordant group between two assays. To reduce batch effects and speed up computation, we perform deconvolution on protein coding genes. We have also tried to run BayesPrism on all genes. The results were similar.
+
+#Subset protein coding genes.
+sc.dat.filtered.pc <-  select.gene.type (sc.dat.filtered,
+                                        gene.type = "protein_coding")
+
+#Optionally, in cases where cell types are defined in a way that some of them show very similar transcription or severe batch effects exist, e.g., reference and mixture are from very different assays (ribo-depleted RNA-seq vs poly-A tail RNA-seq or PRO-seq (nascent RNA-seq) vs RNA-seq (steady state RNA)), selecting signature genes can be beneficial. This is because the selection of signature genes can enrich for genes informative for deconvolution while reducing the impact of noise caused by technical batch effects.
+
+#We provide a function for selecting genes by performing differential expression using pair-wise t-test between cell states from different cell types. Other differential expression analysis can also be used.
+# Select marker genes (Optional)
+# performing pair-wise t test for cell states from different cell types
+
+diff.exp.stat <- get.exp.stat(sc.dat=sc.dat[,colSums(sc.dat>0)>3],# filter genes to reduce memory use
+                                          cell.type.labels=cell.type.labels,
+                                          cell.state.labels=cell.state.labels,
+                                          psuedo.count=0.1, #a numeric value used for log2 transformation. =0.1 for 10x data, =10 for smart-seq. Default=0.1.
+                                          cell.count.cutoff=50, # a numeric value to exclude cell state with number of cells fewer than this value for t test. Default=50.
+                                          n.cores=1 #number of threads
+                                          )
+#Ideally, we would like to have sufficient number of genes selected for each cell type (>50). If not, users may lower the cutoff.
+
+#To subset our count matrix over the signature genes, do
+sc.dat.filtered.pc.sig <- select.marker (sc.dat=sc.dat.filtered.pc,
+                                                  stat=diff.exp.stat,
+                                                  pval.max=0.01,
+                                                  lfc.min=0.1)
+dim(sc.dat.filtered.pc.sig)
+#To run BayesPrism using the signature genes, use reference=sc.dat.filtered.sig when call new.prism (see below).
+```
+
+# Step5: Construct a prism object.
+```{r echo=TRUE,message=FALSE, warning=FALSE}
+#When using scRNA-seq count matrix as the input (recommended), user needs to specify input.type = "count.matrix". The other option for input.type is "GEP" (gene expression profile) which is a cell state by gene matrix. This option is used when using reference derived from other assays, such as sorted bulk data.
+
+#The parameter key is a character in cell.type.labels that corresponds to the malignant cell type. Set to NULL if there are no malignant cells or the malignant cells between reference and mixture are from matched samples, in which case all cell types will be treated equally.
+myPrism <- new.prism(
+  reference=sc.dat.filtered.pc, 
+  mixture=bk.dat,
+  input.type="count.matrix", 
+  cell.type.labels = cell.type.labels, 
+  cell.state.labels = cell.state.labels,
+  key=NULL,
+  outlier.cut=0.01,
+    outlier.fraction=0.1,
+)
+```
+
+# Step6: Run BayesPrism
+```{r echo=TRUE,message=FALSE, warning=FALSE}
+#Next, we start the run of BayesPrism.
+
+#Parameters to control Gibbs sampling and optimization can be specified using gibbs.control and opt.control. Do ?run.prism for details. We recommend the use of default parameters.
+bp.res <- run.prism(prism = myPrism, n.cores=50)
+#Report the summary statistics.
+bp.res
+
+save(bp.res, file="d04_bp.res_resultFromBayesPrism.rdata")
+```
+
+# Step7: Extract results
+```{r echo=TRUE,message=FALSE, warning=FALSE,out.height='80%', out.width='60%'}
+library(ggplot2)
+library(reshape2)
+# The output from bp.res is an S4 object of the class "BayesPrism". Let’s take a look at what’s inside:
+slotNames(bp.res)
+# We provide utility functions to extract deconvolved cell type fraction and expression from the output of run.prism.
+
+# extract posterior mean of cell type fraction theta
+theta <- get.fraction (bp=bp.res,
+            which.theta="final",
+            state.or.type="type")
+theta <- as.data.frame(theta)
+head(theta)
+write.csv(theta,"d05_posteriorMeanOfCellTypeFractionTheta.csv",quote = F)
+
+theta <- as.data.frame(theta)
+theta$Group <- c(rep("VU",5),rep("D0",5),rep("D1",5),rep("D7",5))
+theta$Donor <- row.names(theta)
+theta2 <- melt(theta,id.vars=c("Donor","Group"))
+
+theta2$variable <- factor(theta2$variable,levels = c("Bas-I", "Bas-II", "Bas-prolif", "Bas-mig",
+                                                     "Spi-I", "Spi-II", "Spi-mig",
+                                                     "Gra-I", "HF",
+                                                     "MEL", 
+                                                     "FB-I", "FB-II", "FB-III", "FB-prolif", 
+                                                     "Schwann", "PC-vSMC", "LE", "VE", 
+                                                     "NK-cell", "Th", "Plasma_Bcell", "Mast-cell",
+                                                     "Mono-Mac", "cDC1", "cDC2", "DC3", "LC"))
+
+ggplot(theta2,aes(x=Donor,y=value,fill=variable))+
+  geom_bar(stat="identity",position = "stack")+
+  scale_fill_manual(values=c("#d94701", "#fdae61", "#fd8d3c", "#fdbe85", #Basal clusters
+                             "#33A02C", "#72BF5A", "#B2DF8A", #Spinous clusters
+                             "#f768a1", "#d4b9da", #Granular, Hair follicle
+                             "#737373", #MEL
+                             "#0570b0", "#3690c0", "#92c5de", "#d1e5f0", #Fibroblast clusters
+                             "#c0a700", "#1a9850", "#fb9a99", "#8d4720",# Schwann,PCvSMC,LE,VE
+                             "#35978f", "#41b6c4", "#80cdc1","#df65b0", #"NK-cell", "Th", "Plasma_Bcell", "Mast-cell",
+                             "#dd3497", "#807dba","#6a3d9a","#9e9ac8", "#b15928" ))+
+  xlab("")+ylab("The posterior mean of cell type fraction theta")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, hjust = 0.5, vjust = 0.5))
+
+library(dplyr)
+theta3 <- theta2%>%
+  group_by(Group,variable)%>%
+  summarise(y=mean(value))
+theta3 <- as.data.frame(theta3)
+
+theta3$variable <- factor(theta3$variable,levels = c("Bas-I", "Bas-II", "Bas-prolif", "Bas-mig",
+                                                     "Spi-I", "Spi-II", "Spi-mig",
+                                                     "Gra-I", "HF",
+                                                     "MEL", 
+                                                     "FB-I", "FB-II", "FB-III", "FB-prolif", 
+                                                     "Schwann", "PC-vSMC", "LE", "VE", 
+                                                     "NK-cell", "Th", "Plasma_Bcell", "Mast-cell",
+                                                     "Mono-Mac", "cDC1", "cDC2", "DC3", "LC"))
+
+ggplot(theta3,aes(x=Group,y=y,fill=variable))+
+  geom_bar(stat="identity",position = "stack")+
+  scale_fill_manual(values=c("#d94701", "#fdae61", "#fd8d3c", "#fdbe85", #Basal clusters
+                             "#33A02C", "#72BF5A", "#B2DF8A", #Spinous clusters
+                             "#f768a1", "#d4b9da", #Granular, Hair follicle
+                             "#737373", #MEL
+                             "#0570b0", "#3690c0", "#92c5de", "#d1e5f0", #Fibroblast clusters
+                             "#c0a700", "#1a9850", "#fb9a99", "#8d4720",# Schwann,PCvSMC,LE,VE
+                             "#35978f", "#41b6c4", "#80cdc1","#df65b0", #"NK-cell", "Th", "Plasma_Bcell", "Mast-cell",
+                             "#dd3497", "#807dba","#6a3d9a","#9e9ac8", "#b15928" ))+
+  xlab("")+ylab("The posterior mean of cell type fraction theta")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, hjust = 0.5, vjust = 0.5))
+
+# extract coefficient of variation (CV) of cell type fraction
+theta.cv <- bp.res@posterior.theta_f@theta.cv
+
+head(theta.cv)
+write.csv(theta.cv,"d06_coefficientOfVariationOfCellTypeFraction.csv",quote = F)
+
+theta.cv <- as.data.frame(theta.cv)
+theta.cv$Group <- c(rep("VU",5),rep("D0",5),rep("D1",5),rep("D7",5))
+theta.cv$Donor <- row.names(theta.cv)
+theta.cv2 <- melt(theta.cv,id.vars=c("Donor","Group"))
+
+theta.cv2$variable <- factor(theta.cv2$variable,levels = c("Bas-I", "Bas-II", "Bas-prolif", "Bas-mig",
+                                                     "Spi-I", "Spi-II", "Spi-mig",
+                                                     "Gra-I", "HF",
+                                                     "MEL", 
+                                                     "FB-I", "FB-II", "FB-III", "FB-prolif", 
+                                                     "Schwann", "PC-vSMC", "LE", "VE", 
+                                                     "NK-cell", "Th", "Plasma_Bcell", "Mast-cell",
+                                                     "Mono-Mac", "cDC1", "cDC2", "DC3", "LC"))
+
+ggplot(theta.cv2,aes(x=Donor,y=value,fill=variable))+
+  geom_bar(stat="identity",position = "stack")+
+  scale_fill_manual(values=c("#d94701", "#fdae61", "#fd8d3c", "#fdbe85", #Basal clusters
+                             "#33A02C", "#72BF5A", "#B2DF8A", #Spinous clusters
+                             "#f768a1", "#d4b9da", #Granular, Hair follicle
+                             "#737373", #MEL
+                             "#0570b0", "#3690c0", "#92c5de", "#d1e5f0", #Fibroblast clusters
+                             "#c0a700", "#1a9850", "#fb9a99", "#8d4720",# Schwann,PCvSMC,LE,VE
+                             "#35978f", "#41b6c4", "#80cdc1","#df65b0", #"NK-cell", "Th", "Plasma_Bcell", "Mast-cell",
+                             "#dd3497", "#807dba","#6a3d9a","#9e9ac8", "#b15928" ))+
+  xlab("")+ylab("The coefficient of variation (CV) of cell type fraction")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, hjust = 0.5, vjust = 0.5))
+
+library(dplyr)
+theta.cv3 <- theta.cv2%>%
+  group_by(Group,variable)%>%
+  summarise(y=mean(value))
+theta3 <- as.data.frame(theta3)
+
+theta3$variable <- factor(theta3$variable,levels = c("Bas-I", "Bas-II", "Bas-prolif", "Bas-mig",
+                                                     "Spi-I", "Spi-II", "Spi-mig",
+                                                     "Gra-I", "HF",
+                                                     "MEL", 
+                                                     "FB-I", "FB-II", "FB-III", "FB-prolif", 
+                                                     "Schwann", "PC-vSMC", "LE", "VE", 
+                                                     "NK-cell", "Th", "Plasma_Bcell", "Mast-cell",
+                                                     "Mono-Mac", "cDC1", "cDC2", "DC3", "LC"))
+  
+ggplot(theta.cv3,aes(x=Group,y=y,fill=variable))+
+  geom_bar(stat="identity",position = "stack")+
+  scale_fill_manual(values=c("#d94701", "#fdae61", "#fd8d3c", "#fdbe85", #Basal clusters
+                             "#33A02C", "#72BF5A", "#B2DF8A", #Spinous clusters
+                             "#f768a1", "#d4b9da", #Granular, Hair follicle
+                             "#737373", #MEL
+                             "#0570b0", "#3690c0", "#92c5de", "#d1e5f0", #Fibroblast clusters
+                             "#c0a700", "#1a9850", "#fb9a99", "#8d4720",# Schwann,PCvSMC,LE,VE
+                             "#35978f", "#41b6c4", "#80cdc1","#df65b0", #"NK-cell", "Th", "Plasma_Bcell", "Mast-cell",
+                             "#dd3497", "#807dba","#6a3d9a","#9e9ac8", "#b15928" ))+
+  xlab("")+ylab("The coefficient of variation (CV) of cell type fraction")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, hjust = 0.5, vjust = 0.5))
+
+
+#theta.cv quantifies how concentrated the posterior distribution is. Higher theta value is associated with lower CV. When performing rank-ordered statistics, such as Spearman’s rank correlation, users may mask (fix at zero) theta where the CV is below some number, say < 0.1. Lower sequencing depth, which is the case for spatial transcriptomics, is generally associated with higher CV. A reasonable cutoff of CV for deconvolving Visium data may be ~0.5.
+```

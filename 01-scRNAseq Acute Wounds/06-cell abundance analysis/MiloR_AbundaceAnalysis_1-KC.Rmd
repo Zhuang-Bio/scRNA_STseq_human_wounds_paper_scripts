@@ -1,0 +1,348 @@
+---
+title: "MiloR differential abundance analysis"
+author: "Zhuang Liu"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true #add a table of contents (TOC)
+    toc_depth: 3 #headers' level in the toc
+    toc_float: true #toc visible even when scrolled
+    theme: lumen
+    highlight: tango
+    code_folding: show
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.align='center', fig.width=12, fig.height = 6, warning=FALSE, message=FALSE)
+```
+
+```{r warning=FALSE, message=FALSE}
+library(Seurat)
+library(SeuratObject)
+library(tidyverse)
+
+library(miloR)
+library(SingleCellExperiment)
+library(scater)
+library(scran)
+library(dplyr)
+library(patchwork)
+```
+
+#############################################
+# Differential abundance analysis
+#############################################
+# 1. Create a Milo object
+```{r}
+rm(list = ls());gc()
+output_path <- "/Users/zhuliu/Desktop/scRNA_STseq/proj_10X_woundhealing/03_results/01-Seurat-PreAnalysis/02_Seurat_BatchCorrection/s2_Seurat_subKeratinocytes/"
+kera_sub <- readRDS(paste0(output_path, "allNew_subcluster_keratins_220203.rds"))
+
+# load the annotations from main clusters
+mt <- data.table::fread("/Users/zhuliu/Desktop/sc st/plotting scripts/Figure 1/allcombined_wounds_newAnnotation_metadata.txt")
+mt_sub <- colnames(kera_sub) %>% as_tibble() %>% setNames("barcode") %>% 
+  left_join(., mt[, c(1, 24, 25, 27)], by=c("barcode"="barcode"))
+kera_sub$newCellTypes <- mt_sub$newCellTypes
+kera_sub$newMainCellTypes <- mt_sub$newMainCellTypes
+kera_sub$doublet_scores <- mt_sub$doublet_scores
+
+# re-annotate the cell clusters
+fac_levs <- c("Bas_I", "Bas_prolif", "Bas_mig", 
+              "Spi_I", "Spi_II_a", "Spi_II_b",
+              "Spi_III", "Spi_mig",
+              "Gra_I")
+current_cluster_ids <- c(1,5,6,3,0,4,8,2,7) # List of current cluster IDs
+tmp <- plyr::mapvalues(x=kera_sub$SCT_snn_res.0.5, from=current_cluster_ids, to=fac_levs)
+
+kera_sub$upCellTypes <- tmp
+kera_sub$upCellTypes <- factor(kera_sub$upCellTypes, levels = fac_levs)
+
+ct.cols <- c('#807dba','#9e9ac8','#ccebc5',
+               '#fe9929','#fec44f','#fee391',
+               '#fb8072','#b3de69','#fccde5')
+names(ct.cols) <- fac_levs
+
+DimPlot(kera_sub, group.by = "upCellTypes", label = F, cols = ct.cols) +
+  NoAxes() + ggtitle("")
+
+## convert back to singleCellExperiment
+kera_sce <- as.SingleCellExperiment(kera_sub, assay = "RNA")
+kera_milo <- Milo(kera_sce)
+kera_milo
+plotUMAP(kera_milo, colour_by="upCellTypes") + plotUMAP(kera_milo, colour_by="Condition")
+
+rm(mt, mt_sub, tmp);gc() #remove unneeded files
+```
+
+
+# 2. Define cell neighbourhoods
+```{r}
+# build KNN graph
+kera_milo <- buildGraph(kera_milo, k = 40, d = 30, reduced.dim = "HARMONY")
+
+# Defining representative neighbourhoods on the KNN graph
+kera_milo <- makeNhoods(kera_milo, prop = 0.1, k = 40, d=30, refined = TRUE, reduced_dims = "HARMONY", refinement_scheme="reduced_dim")
+plotNhoodSizeHist(kera_milo)
+
+# Counting cells in neighbourhoods
+kera_milo <- countCells(kera_milo, meta.data = as.data.frame(colData(kera_milo)), sample="orig.ident")
+head(nhoodCounts(kera_milo))
+
+# Defining experimental design
+kera_milo_design <- data.frame(colData(kera_milo))[,c("orig.ident", "Condition")] %>% 
+  distinct()
+# Change the sample order since it is misordered due to the factor variables
+kera_milo_design <- kera_milo_design %>% dplyr::slice(1,2,4,3,5,6,8,7,9,10,12,11)
+rownames(kera_milo_design) <- kera_milo_design$orig.ident
+kera_milo_design
+
+table(kera_milo_design$Condition)
+```
+
+
+# 3 Differential abundance analysis with contrasts
+## 3.1 Create the function for differential abundance (DA) testing
+```{r}
+# Function
+DA_analysis <- function(milo_obj=NULL, contrast = NULL){
+  print(contrast)
+  da_results <- testNhoods(milo_obj, design = ~ 0 + Condition, # Change the Condition if you have different GroupName
+                           design.df = kera_milo_design, # contrast design
+                           model.contrasts = contrast, # contrast methods
+                           fdr.weighting="graph-overlap", 
+                           reduced.dim = "HARMONY")
+  # check the results
+  print(table(da_results$SpatialFDR < 0.1))
+  da_results %>%
+    arrange(SpatialFDR) %>%
+    head() %>% print()
+  
+  milo_obj <- buildNhoodGraph(milo_obj)
+  ## Plot neighbourhood graph
+  nh_graph_pl <- plotNhoodGraphDA(milo_obj, da_results, layout="UMAP", alpha=0.1) +
+    scale_fill_gradient2(name="log2FC",
+                       low = "blue",
+                       mid = "grey90",
+                       high = "red")
+  
+  # visualizing wheather DA is particularly evident in certain cell types
+  da_results <- annotateNhoods(milo_obj, da_results, coldata_col = "upCellTypes")
+  print(head(da_results))
+  
+  print(ggplot(da_results, aes(upCellTypes_fraction)) + geom_histogram(bins=50))
+  #da_results$upCellTypes <- ifelse(da_results$upCellTypes_fraction < 0.7, "Mixed", da_results$upCellTypes)
+
+  da_results$upCellTypes <- factor(da_results$upCellTypes, levels = rev(fac_levs))
+  
+  #trace('plotDAbeeswarm', edit = T, where = asNamespace("miloR"))
+  
+  beeplot <- plotDAbeeswarm(da_results, group.by = "upCellTypes") + 
+    scale_color_gradient2(low = "blue",
+                          mid = "grey90",
+                          high = "red") +
+    #scale_y_continuous(breaks = c(-8,-6,-4,-2,0,2,4,6,8), limits = c(-9,9)) +
+    labs(x="", y="Log2(Fold Change)") +
+    theme(
+      panel.grid.minor = element_blank(),
+      panel.grid.major = element_line(colour = "grey90", size = 0.6))
+  
+  print(nh_graph_pl + beeplot)
+  tmp_list <- list(da_results, nh_graph_pl, beeplot, milo_obj)
+  names(tmp_list) <- c("da_results", "nh_graph_pl", "beeplot", "milo_obj")
+  return(tmp_list)
+}
+```
+
+
+## 3.2 Pair-wise comparisons
+```{r}
+# pair-wise comparisons sequentially run at one time
+contrast.all <- c("ConditionWound1 - ConditionSkin", "ConditionWound7 - ConditionWound1", "ConditionWound30 - ConditionWound7", "ConditionWound30 - ConditionSkin", "ConditionWound30 - ConditionWound1", "ConditionWound7 - ConditionSkin") # the syntax is <VariableName><ConditionLevel> - <VariableName><ControlLevel>
+
+# this is the edgeR code called by `testNhoods`
+model <- model.matrix(~ 0 + Condition, data=kera_milo_design)
+mod.constrast <- makeContrasts(contrasts=contrast.all, levels=model)
+mod.constrast
+```
+
+### 3.2.1 Run the DA testing (Wound1 vs. Skin)
+```{r}
+da_results <- DA_analysis(milo_obj = kera_milo, contrast = contrast.all[1])
+# extract significant neighbourhoods (spatialFDR < 0.1)
+my_nhoods <- da_results$da_results %>% dplyr::filter(SpatialFDR < 0.1 & upCellTypes_fraction >= 1) %>% dplyr::pull(Nhood)
+# Increased differential abundance in Wound1
+my_nhoods_w1 <- da_results$da_results %>% dplyr::filter(SpatialFDR < 0.1 & upCellTypes_fraction >= 1 & logFC > 0) %>% dplyr::pull(Nhood)
+# get the index of cell IDs of significant neighbourhoods
+my_cells_ixs <- which(rowSums(nhoods(da_results$milo_obj)[,my_nhoods_w1]) >= 1)
+my_cells_w1 <- colnames(da_results$milo_obj)[my_cells_ixs] %>% unique()
+length(my_cells_w1)
+
+# Decreased differential abundance in Skin
+my_nhoods_skin1 <- da_results$da_results %>% dplyr::filter(SpatialFDR < 0.1 & upCellTypes_fraction >= 1 & logFC < 0) %>% dplyr::pull(Nhood)
+# get the index of cell IDs of significant neighbourhoods
+my_cells_ixs <- which(rowSums(nhoods(da_results$milo_obj)[,my_nhoods_skin1]) >= 1)
+my_cells_skin1 <- colnames(da_results$milo_obj)[my_cells_ixs] %>% unique()
+length(my_cells_skin1)
+
+DimPlot(kera_sub, 
+        cells.highlight = list(Skin = my_cells_skin1, Wound1 = my_cells_w1), 
+        cols.highlight = c("#b3de69", "pink"),
+        sizes.highlight = 0.1)
+pdf("Fig2_milo_wound1_skin_cells.pdf", useDingbats = FALSE, width = 6, height = 4)
+dev.off()
+
+table(kera_sub$upCellTypes)
+sigcells <- list(wound1=my_cells_w1, skin1=my_cells_skin1)
+saveRDS(sigcells, "Fig2_milo_wound1_skin_sigCells.rds")
+
+cells_int <- intersect(my_cells_w1, my_cells_skin1)
+DimPlot(kera_sub, 
+        cells.highlight = list(Inters = cells_int), 
+        cols.highlight = c("#b3de69"),
+        sizes.highlight = 0.1)
+
+# Draw the plot
+da_results$nh_graph_pl + 
+  (da_results$beeplot + scale_y_continuous(breaks = c(-8,-6,-4,-2,0,2,4,6,8), limits = c(-9,9))) + 
+  plot_layout(widths = c(1.6, 1))
+pdf("Fig2_milo_wound1_skin.pdf", useDingbats = FALSE, width = 12, height = 6)
+dev.off()
+```
+
+### 3.2.2 Run the DA testing (Wound7 vs. Skin)
+```{r}
+da_results <- DA_analysis(milo_obj = kera_milo, contrast = contrast.all[6])
+
+# extract significant neighbourhoods (spatialFDR < 0.1)
+my_nhoods <- da_results$da_results %>% dplyr::filter(SpatialFDR < 0.1 & upCellTypes_fraction >= 1) %>% dplyr::pull(Nhood)
+# Increased differential abundance in Wound7
+my_nhoods_w7 <- da_results$da_results %>% dplyr::filter(SpatialFDR < 0.1 & upCellTypes_fraction >= 1 & logFC > 0) %>% dplyr::pull(Nhood)
+# get the index of cell IDs of significant neighbourhoods
+my_cells_ixs <- which(rowSums(nhoods(da_results$milo_obj)[,my_nhoods_w7]) >= 1)
+my_cells_w7 <- colnames(da_results$milo_obj)[my_cells_ixs] %>% unique()
+length(my_cells_w7)
+
+# Decreased differential abundance in Skin
+my_nhoods_skin1 <- da_results$da_results %>% dplyr::filter(SpatialFDR < 0.1 & upCellTypes_fraction >= 1 & logFC < 0) %>% dplyr::pull(Nhood)
+# get the index of cell IDs of significant neighbourhoods
+my_cells_ixs <- which(rowSums(nhoods(da_results$milo_obj)[,my_nhoods_skin1]) >= 1)
+my_cells_skin1 <- colnames(da_results$milo_obj)[my_cells_ixs] %>% unique()
+length(my_cells_skin1)
+
+DimPlot(kera_sub, 
+        cells.highlight = list(Skin = my_cells_skin1, Wound7 = my_cells_w7), 
+        cols.highlight = c("#b3de69", "pink"),
+        sizes.highlight = 0.1)
+pdf("Fig2_milo_Wound7_skin_cells.pdf", useDingbats = FALSE, width = 6, height = 4)
+dev.off()
+
+table(kera_sub$upCellTypes)
+sigcells <- list(Wound7=my_cells_w7, skin1=my_cells_skin1)
+saveRDS(sigcells, "Fig2_milo_Wound7_skin_sigCells.rds")
+
+cells_int <- intersect(my_cells_w7, my_cells_skin1)
+DimPlot(kera_sub, 
+        cells.highlight = list(Inters = cells_int), 
+        cols.highlight = c("#b3de69"),
+        sizes.highlight = 0.1)
+
+# Draw the plot
+da_results$nh_graph_pl + 
+  (da_results$beeplot + scale_y_continuous(breaks = c(-8,-6,-4,-2,0,2,4,6,8), limits = c(-8,8))) +
+  plot_layout(widths = c(1.6, 1))
+pdf("Fig2_milo_wound7_skin.pdf", useDingbats = FALSE, width = 12, height = 6)
+dev.off()
+```
+
+### 3.2.3 Run the DA testing (Wound30 vs. Skin)
+```{r}
+da_results <- DA_analysis(milo_obj = kera_milo, contrast = contrast.all[4])
+
+# extract significant neighbourhoods (spatialFDR < 0.1)
+my_nhoods <- da_results$da_results %>% dplyr::filter(SpatialFDR < 0.1 & upCellTypes_fraction >= 1) %>% dplyr::pull(Nhood)
+# Increased differential abundance in Wound30
+my_nhoods_w30 <- da_results$da_results %>% dplyr::filter(SpatialFDR < 0.1 & upCellTypes_fraction >= 1 & logFC > 0) %>% dplyr::pull(Nhood)
+# get the index of cell IDs of significant neighbourhoods
+my_cells_ixs <- which(rowSums(nhoods(da_results$milo_obj)[,my_nhoods_w30]) >= 1)
+my_cells_w30 <- colnames(da_results$milo_obj)[my_cells_ixs] %>% unique()
+length(my_cells_w30)
+
+# Decreased differential abundance in Skin
+my_nhoods_skin1 <- da_results$da_results %>% dplyr::filter(SpatialFDR < 0.1 & upCellTypes_fraction >= 1 & logFC < 0) %>% dplyr::pull(Nhood)
+# get the index of cell IDs of significant neighbourhoods
+my_cells_ixs <- which(rowSums(nhoods(da_results$milo_obj)[,my_nhoods_skin1]) >= 1)
+my_cells_skin1 <- colnames(da_results$milo_obj)[my_cells_ixs] %>% unique()
+length(my_cells_skin1)
+
+DimPlot(kera_sub, 
+        cells.highlight = list(Skin = my_cells_skin1, Wound30 = my_cells_w30), 
+        cols.highlight = c("#b3de69", "pink"),
+        sizes.highlight = 0.1)
+pdf("Fig2_milo_Wound30_skin_cells.pdf", useDingbats = FALSE, width = 6, height = 4)
+dev.off()
+
+table(kera_sub$upCellTypes)
+sigcells <- list(Wound30=my_cells_w30, skin1=my_cells_skin1)
+saveRDS(sigcells, "Fig2_milo_Wound30_skin_sigCells.rds")
+
+cells_int <- intersect(my_cells_w30, my_cells_skin1)
+DimPlot(kera_sub, 
+        cells.highlight = list(Inters = cells_int), 
+        cols.highlight = c("#b3de69"),
+        sizes.highlight = 0.1)
+
+# Draw the plot
+da_results$nh_graph_pl + 
+  (da_results$beeplot + scale_y_continuous(breaks = c(-6,-4,-2,0,2,4,6), limits = c(-6.1,6.1))) + 
+  plot_layout(widths = c(1.6, 1))
+pdf("Fig2_milo_wound30_skin.pdf", useDingbats = FALSE, width = 12, height = 6)
+dev.off()
+```
+
+
+```{r}
+# Run the DA testing (Wound7 vs. Wound1)
+da_results <- DA_analysis(milo_obj = kera_milo, contrast = contrast.all[2])
+# Draw the plot
+da_results$nh_graph_pl + 
+  (da_results$beeplot + scale_y_continuous(breaks = c(-8,-6,-4,-2,0,2,4,6), limits = c(-8,6.2))) + 
+  plot_layout(widths = c(1.6, 1))
+pdf("Fig2_milo_wound7_wound1.pdf", useDingbats = FALSE, width = 12, height = 6)
+dev.off()
+
+
+# Run the DA testing (Wound30 vs. Wound7)
+da_results <- DA_analysis(milo_obj = kera_milo, contrast = contrast.all[3])
+# Draw the plot
+da_results$nh_graph_pl + 
+  (da_results$beeplot + scale_y_continuous(breaks = c(-6,-4,-2,0,2,4,6), limits = c(-6,6))) + 
+  plot_layout(widths = c(1.6, 1))
+pdf("Fig2_milo_wound30_wound7.pdf", useDingbats = FALSE, width = 12, height = 6)
+dev.off()
+```
+
+
+## 3.3 One-vs-others(>1 group) comparisons 
+```{r}
+# one group (Skin) compared to other groups (Wounds)
+ave.contrast <- c("(ConditionWound1 + ConditionWound7 + ConditionWound30)/3 - ConditionSkin")
+model <- model.matrix(~ 0 + Condition, data=kera_milo_design)
+mod.constrast <- makeContrasts(contrasts=ave.contrast, levels=model)
+mod.constrast
+
+# Run the DA testing
+da_results <- DA_analysis(milo_obj = kera_milo, contrast = ave.contrast)
+# Draw the plot
+#pdf("Fig2_cellabundance_analysis.pdf", useDingbats = FALSE, width = 10, height = 6)
+da_results$nh_graph_pl + 
+  (da_results$beeplot + scale_y_continuous(breaks = c(-6,-4,-2,0,2,4,6), limits = c(-7,7)))
+#dev.off()
+```
+
+
+# SessionInfo
+```{r}
+sessionInfo()
+```

@@ -1,0 +1,259 @@
+---
+title: "Sub-clustering of Fibroblasts"
+author: "Zhuang Liu"
+date: "30/11/2021 Updated: `r Sys.Date()`"
+output:
+  html_document:
+    toc: true #add a table of contents (TOC)
+    toc_depth: 3 #headers' level in the toc
+    toc_float: true #toc visible even when scrolled
+    theme: lumen
+    highlight: tango
+    code_folding: hide
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.align='center', fig.width = 12, warning = FALSE, message = FALSE)
+```
+
+```{r warning=FALSE, message=FALSE}
+library(Seurat)
+library(SeuratObject)
+library(SeuratDisk)
+library(tidyverse)
+library(magrittr)
+library(ggplot2)
+library(patchwork)
+library(harmony)
+```
+
+####################################################
+# Step. Plots
+####################################################
+## S. Load the data
+```{r fig.width=8, fig.height=6}
+hswound.fib.com <- readRDS("s1_clean_fibroblast.rds") 
+
+DimPlot(hswound.fib.com, reduction = "umap", group.by='SCT_snn_res.0.5', label=TRUE, label.size = 8) + NoAxes()
+
+FeaturePlot(
+  hswound.fib.com,
+  features="ADAM12",
+  combine=T, cols = c("gray","red")
+)
+```
+
+## FeaturePlot (Single)
+```{r}
+canonical_markers <- c("ASPN", "APOE", "LEPR", "PCLAF",
+                       "POSTN", "CCL19", "COL13A1", "H1-5",
+                       "COL11A1", "C3", "F13A1", "MKI67")
+
+plot_list <- FeaturePlot(
+  hswound.fib.com,
+  features=unlist(canonical_markers),
+  combine=FALSE, cols = c("gray","red")
+)
+
+# apply theme to each feature plot
+for(i in 1:length(plot_list)){
+  plot_list[[i]] <- plot_list[[i]] + NoLegend() + NoAxes()
+}
+
+pdf("Wellknown_markers.pdf", useDingbats = F, width = 8, height = 6)
+wrap_plots(plot_list, ncol = 4)
+dev.off()
+
+```
+
+## Dotplot
+```{r eval=TRUE}
+canonical_markers <- c("ASPN", "TAGLN", "LEPR", "KLF4", "HSPA6", "MMP11",
+                       "APOD", "IGF1", "CCN5", "SFRP4", "CCL19", "APOE",
+                       "H4C3", "H1-5", "G0S2", "PTX3", "COL4A1", "COL5A1",
+                       "COCH", "CRABP1")
+fac_levs <- seq(0,9)
+hswound.fib.com$SCT_snn_res.0.5 <- factor(hswound.fib.com$SCT_snn_res.0.5, levels = rev(fac_levs))
+
+DotPlot(hswound.fib.com, features = canonical_markers, 
+        group.by = "SCT_snn_res.0.5", cols = c("lightgrey", "red"), 
+        dot.scale = 4, col.min = 0, dot.min = 0.1
+        ) + theme(axis.text.x = element_text(angle = 45, hjust = 1)) + labs(x="", y="")
+
+
+plot_list <- FeaturePlot(
+  hswound.fib.com,
+  features=unlist(canonical_markers),
+  combine=FALSE, cols = c("gray","red")
+)
+
+# apply theme to each feature plot
+for(i in 1:length(plot_list)){
+  plot_list[[i]] <- plot_list[[i]] + NoLegend() + NoAxes()
+}
+
+wrap_plots(plot_list, ncol = 4)
+```
+
+## cell proportion
+```{r}
+clusters <- unique(hswound.fib.com@meta.data[["SCT_snn_res.0.5"]])
+df <- data.frame()
+for(i in 1:length(clusters)){
+  SmCell_sum <- table(hswound.fib.com$orig.ident)
+  tmp.df1 <- hswound.fib.com@meta.data %>% subset(SCT_snn_res.0.5 == clusters[i]) %>% select(orig.ident) %>% table()
+  if(length(tmp.df1) == 12){
+    #First normalize the total cell counts per sample
+    cur_df <- as.data.frame(tmp.df1 / SmCell_sum)
+    colnames(cur_df) <- c("Sample", "Freq")
+    #Calculate the normalized proportion 
+    cur_df$Freq <- cur_df$Freq * 1/(sum(cur_df$Freq))
+    cur_df$Cluster <- clusters[i]
+    df <- rbind(df, cur_df)
+  } else {
+    #print(i);print(tmp.df1)
+    #only include the matched samples
+    match.sample <- SmCell_sum[names(SmCell_sum) %in% names(tmp.df1)]
+    #print(match.sample)
+    #First normalize the total cell counts per sample
+    cur_df <- as.data.frame(tmp.df1 / match.sample)
+    colnames(cur_df) <- c("Sample", "Freq")
+    #Calculate the normalized proportion 
+    cur_df$Freq <- cur_df$Freq * 1/(sum(cur_df$Freq))
+    cur_df$Cluster <- clusters[i]
+    df <- rbind(df, cur_df)
+  }
+}
+
+df.group <- df %>% mutate(Sample = gsub("PWH..", "", Sample)) %>% group_by(Cluster, Sample) %>% 
+  summarise(Freq = sum(Freq)) %>% mutate(Group = Sample) %>% ungroup()
+df.group$Group <- gsub("D0", "Skin", df.group$Group)
+df.group$Group <- gsub("D1", "Wound1", df.group$Group)
+df.group$Group <- gsub("D7", "Wound7", df.group$Group)
+df.group$Group <- gsub("D30", "Wound30", df.group$Group)
+
+df.group$Group <- factor(df.group$Group, levels = c("Skin", "Wound1", "Wound7", "Wound30"))
+df.group$Cluster <- factor(df.group$Cluster, levels = fac_levs)
+ggplot(df.group, aes(x = Cluster, y = Freq, fill = Group)) +
+  geom_bar(position = "stack", stat = "identity") +
+  scale_fill_brewer(palette = "Dark2") + # Paired or Set3 maximum variable = 12
+  xlab('Cell Types') +
+  scale_y_continuous(breaks = seq(0, 1, 0.1),
+                     expand = c(0, 0),
+                     name = 'Percentage') +
+  geom_hline(yintercept=0.25, linetype="dashed", color = "black") +
+  geom_hline(yintercept=0.5, linetype="dashed", color = "black") +
+  geom_hline(yintercept=0.75, linetype="dashed", color = "black") +
+  theme_bw() +
+  theme(
+    panel.grid.major.x = element_blank(),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    strip.background = element_blank(),
+    #panel.border = element_rect(size = 0.35),
+    axis.ticks = element_blank(),
+    axis.text.x = element_text(size = 12, color = "black", angle = 45, vjust = 0.6),
+    axis.text.y = element_text(size = 10, color = "black")
+  ) 
+
+```
+
+## prepare file for scvelo
+```{r}
+hswound.fib.com <- readRDS("s1_clean_fibroblast.rds") 
+DefaultAssay(hswound.fib.com) <- "RNA"
+# save metadata table: (first change the data type of cell clusters)
+hswound.fib.com$nCount_SCT <- NULL
+hswound.fib.com$nFeature_SCT <- NULL
+hswound.fib.com$fil <- NULL
+hswound.fib.com$orig.ident <- as.character(hswound.fib.com$orig.ident)
+hswound.fib.com$Age <- as.character(hswound.fib.com$Age)
+hswound.fib.com$Condition <- as.character(hswound.fib.com$Condition)
+hswound.fib.com$SCT_snn_res.0.4 <- NULL
+hswound.fib.com$SCT_snn_res.0.3 <- as.character(hswound.fib.com$SCT_snn_res.0.3)
+hswound.fib.com$SCT_snn_res.0.5 <- as.character(hswound.fib.com$SCT_snn_res.0.5)
+hswound.fib.com$SCT_snn_res.0.8 <- as.character(hswound.fib.com$SCT_snn_res.0.8)
+hswound.fib.com$SCT_snn_res.1 <- as.character(hswound.fib.com$SCT_snn_res.1)
+hswound.fib.com$seurat_clusters <- as.character(hswound.fib.com$seurat_clusters)
+str(hswound.fib.com@meta.data)
+
+hswound.fib.com$barcode <- as.character(colnames(hswound.fib.com))
+hswound.fib.com$UMAP_1 <- hswound.fib.com@reductions$umap@cell.embeddings[,1]
+hswound.fib.com$UMAP_2 <- hswound.fib.com@reductions$umap@cell.embeddings[,2]
+write.csv(hswound.fib.com@meta.data, file='s4_scVelo_preparation/metadata.csv', quote=F, row.names=F)
+
+# write expression counts matrix
+library(Matrix)
+counts_matrix <- GetAssayData(hswound.fib.com, assay='RNA', slot='counts')
+writeMM(counts_matrix, file='s4_scVelo_preparation/counts.mtx')
+
+# write dimesnionality reduction matrix, pca and harmony
+write.csv(hswound.fib.com@reductions$pca@cell.embeddings, file='s4_scVelo_preparation/pca.csv', quote=F, row.names=F)
+
+write.csv(hswound.fib.com@reductions$harmony@cell.embeddings, file='s4_scVelo_preparation/harmony.csv', quote=F, row.names=F)
+
+# write gene names
+write.table(
+  data.frame('gene'=rownames(counts_matrix)),file='s4_scVelo_preparation/gene_names.csv',
+  quote=F,row.names=F,col.names=F)
+```
+
+## Check the doublet scores
+```{r}
+hswound.fib.com <- readRDS("s1_clean_fibroblast.rds") 
+
+doublet_scores <- data.table::fread("/Users/zhuliu/Desktop/scRNA_STseq/proj_10X_woundhealing/03_results/01-Seurat-PreAnalysis/02_Seurat_BatchCorrection/s1_Seurat_allSample_harmony/py_doublet_OriScores.txt")
+
+doublet_scores_f <- colnames(hswound.fib.com) %>% as.data.frame() %>% rename("ID" = ".") %>% left_join(., doublet_scores, by=c("ID" = "barcodename"))
+hswound.fib.com$doublet_scores <- doublet_scores_f$doublet_scores
+
+metrics <-  c("nCount_RNA", "nFeature_RNA", "S.Score", "G2M.Score", "percent.mt", "doublet_scores")
+
+p3 <- FeaturePlot(
+  hswound.fib.com,
+  features = metrics,
+  cols = c("gray","red"), combine = FALSE)
+p2_list <- lapply(p3, function(x) {x + NoAxes() + theme(text = element_text(size = 10))})
+cowplot::plot_grid(plotlist = p2_list, ncol = 3)
+
+VlnPlot(hswound.fib.com, features = metrics, group.by='SCT_snn_res.0.5', pt.size = 0, ncol = 2)
+```
+
+# rerun the marker genes identification
+```{r}
+# use the main annotation to recalculate the marker genes
+DimPlot(hswound.fib.com, reduction = "umap", group.by='MainCellTypes', label=TRUE, label.size = 8) + NoAxes()
+
+DefaultAssay(hswound.fib.com) <- "RNA"
+Idents(hswound.fib.com) <- "MainCellTypes" #marker genes with cluster number
+####----FindAllMarkers for all clusters----####
+markers <- FindAllMarkers(
+  hswound.fib.com,
+  only.pos = TRUE,
+  min.pct = 0.25,  #min.pct = 0.5, logfc.threshold = 0.5,
+  logfc.threshold = 0.25,
+  test.use = "MAST") #MAST has good FDR control and is faster than DESeq2, default test is wilcox
+
+####----add the gene description to the cluster marker genes----####
+annot <- readRDS("../Functions/humanAnnotation.rds")
+####----add the info and reorder the columns----####
+markers_f <- markers %>% left_join(., annot, by=c("gene" = "external_gene_name")) %>% 
+  dplyr::select(6, 7, 2:4, 1, 5, everything()) %>% arrange(cluster, desc(avg_log2FC))
+#marker genes with cluster number
+data.table::fwrite(markers_f, file="s1_clean_fibroblast_mg_MianCellTypes.txt", sep="\t") 
+
+
+FeaturePlot(
+  hswound.fib.com,
+  features="ADAM12",
+  combine=T, cols = c("gray","red"), split.by = "Condition"
+)
+
+```
+
+# SessionInfo
+```{r}
+sessionInfo()
+```

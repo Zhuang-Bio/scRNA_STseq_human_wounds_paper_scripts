@@ -1,0 +1,217 @@
+---
+title: "pySCENIC TF analysis"
+author: "Zhuang Liu"
+date: "21/02/2022 Updated: `r Sys.Date()`"
+output:
+  html_document:
+    toc: true #add a table of contents (TOC)
+    toc_depth: 3 #headers' level in the toc
+    toc_float: true #toc visible even when scrolled
+    theme: lumen
+    highlight: tango
+    code_folding: show
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.align='center', fig.width=12, fig.height = 6, warning=FALSE, message=FALSE)
+```
+
+```{r warning=FALSE, message=FALSE}
+library(Seurat)
+library(SeuratObject)
+library(SeuratDisk)
+library(tidyverse)
+library(magrittr)
+library(SCENIC)
+library(SCopeLoomR)
+library(AUCell)
+
+# For some of the plots:
+#library(dplyr)
+library(KernSmooth)
+library(RColorBrewer)
+library(plotly)
+library(BiocParallel)
+library(grid)
+library(ComplexHeatmap)
+```
+
+
+## 1.2 Run the pySCENIC in the linux (rackham.uppmax)
+```{r eval=FALSE}
+import os,sys
+import numpy as np
+import pandas as pd
+import scanpy as sc
+import loompy as lp
+
+#Slurm to the linux cluster
+`sbatch pySCENIC-mice_allpipeline.sh`
+
+#Containging major commands as below
+cd /crex/proj/snic2021-23-156/proj_10XscRNAseq/proj_human/pySCENIC
+
+conda activate pyscenic
+
+arboreto_with_multiprocessing.py \
+hswound_pySCENIC.loom \
+hs_hgnc_tfs.txt \
+--method grnboost2 \
+--output hswound_adj_all.tsv \
+--num_workers 20 \
+--seed 777
+
+pyscenic ctx \
+hswound_adj_all.tsv \
+hg38__refseq-r80__500bp_up_and_100bp_down_tss.mc9nr.feather hg38__refseq-r80__10kb_up_and_down_tss.mc9nr.feather \
+--annotations_fname motifs-v9-nr.hgnc-m0.001-o0.0.tbl \
+--expression_mtx_fname hswound_pySCENIC.loom \
+--output hswound_reg.csv \
+--mode "dask_multiprocessing" \
+--mask_dropouts \
+--num_workers 20
+
+pyscenic aucell \
+hswound_pySCENIC.loom \
+hswound_reg.csv \
+--output hswound_SCENIC_AUC.loom \
+--num_workers 20
+```
+
+
+############################################
+# Step 2. Import pySCENIC results into R
+############################################
+## 2.1 Read the Seurat analysis results
+```{r eval=TRUE}
+hswound <- readRDS("../allNew_subcluster_keratins_220203.rds")
+```
+
+## 2.2 Add additional col, cell annotations into loom file
+```{r eval=FALSE}
+scenicLoomPath='hswound_SCENIC_AUC.loom' #here loom file is the original one from Step 1
+loom <- open_loom(scenicLoomPath, mode = "r+")
+
+#Add additional embeddings and meta data
+add_embedding(loom = loom, 
+              embedding = hswound@reductions$umap@cell.embeddings,
+              name = "umap.harmony",
+              is.default = TRUE)
+
+add_embedding(loom = loom,
+              embedding = hswound@reductions$pca@cell.embeddings,
+              name = "pca",
+              is.default = FALSE)
+
+# Add metadata (categorical variable)
+add_col_attr(loom = loom, 
+             key = "orig.ident",
+             value = as.character(hswound@meta.data$orig.ident), 
+             as.annotation = TRUE)
+
+add_col_attr(loom = loom, 
+             key = "Conditions",
+             value = as.character(hswound@meta.data$User_ID), 
+             as.annotation = TRUE)
+
+add_col_attr(loom=loom, 
+             key = "SCT_snn_res.0.8",
+             value= as.character(hswound@meta.data$SCT_snn_res.0.8), 
+             as.annotation=TRUE)
+
+# Add metric (numerical variable)
+add_col_attr(loom=loom,
+             key = "percent.mito",
+             value = hswound@meta.data$percent.mt,
+             as.metric = TRUE)
+add_cell_annotation(loom, cellInfo)
+
+close_loom(loom) #remember to close the file for saving
+```
+
+## 2.3 Reload the loom file
+```{r eval=TRUE}
+scenicLoomPath='hswound_SCENIC_AUC.loom' #here loom file contains multi-annotations from Step 2.2
+loom <- open_loom(scenicLoomPath, mode="r") #only read mode
+exprMat <- get_dgem(loom) #get expression matrix
+exprMat_log <- log2(exprMat+1) # Better if it is logged/normalized
+
+# Read regulons from loom file: 
+regulons_incidMat <- get_regulons(loom, column.attr.name="Regulons")
+
+regulons <- regulonsToGeneLists(regulons_incidMat)
+
+regulonAUC <- get_regulons_AUC(loom, column.attr.name="RegulonsAUC")
+
+regulonAUC <- regulonAUC[onlyNonDuplicatedExtended(rownames(regulonAUC)),]
+
+regulonsAucThresholds <- get_regulonThresholds(loom, column.attr.name="RegulonsAUC")
+
+embeddings <- get_embeddings(loom)
+cellanno <- get_cell_annotation(loom)
+close_loom(loom)
+```
+
+### 2.3.1 Motif enrichment analysis from cisTarget()
+```{r eval=TRUE}
+#read motif TFs results
+enrich_motif_TFs <- read_csv("hswound_reg.csv") #modified the header
+enrich_motif_TFs[1,]
+enrich_motif_TFs[2,]
+
+colnames(enrich_motif_TFs) <- c("TF", "MotifID", "AUC", "NES", "MotifSimilarityQvalue",
+                                "OrthologousIdentity", "Annotation", "Context",
+                                "TargetGenes", "RankAtMax")
+enrich_motif_TFs <- enrich_motif_TFs[-1:-2, ]
+
+# Extract the TF FOSL1
+fosl1 <- enrich_motif_TFs[enrich_motif_TFs$TF %in% c("FOSL1", "ASCL2"),] %>% 
+  mutate(AUC = parse_number(AUC)) %>% 
+  mutate(RankAtMax = parse_number(RankAtMax)) %>% 
+  dplyr::filter(AUC < 0.05 & Annotation == "gene is directly annotated")
+str(fosl1)
+
+grep("KRT16", fosl1$TargetGenes) #[1]  1  2  3  5  6  7  8  9 10 11 12 13
+
+fosl1$TargetGenes[4]
+
+
+
+# Visualize
+tableSubset <- enrich_motif_TFs %>% dplyr::filter(TF == "FOSL1") #%>% slice(1:20)
+colsToShow <- colnames(enrich_motif_TFs)[-9] #select columns to show
+
+viewMotifs(tableSubset, 
+           dbVersion = "v9", #database version v8 / v9
+           nSignif = 3, #Number of significant digits to show for numeric columns
+           colsToShow=colsToShow, 
+           options = list(pageLength = 20))
+```
+
+### 2.3.2 Explore regulon for known cell types or clusters
+```{r}
+# Split the cells by cluster:
+cellsPerCluster <- split(rownames(cellClusters), cellClusters[,selectedResolution]) 
+regulonAUC <- regulonAUC[onlyNonDuplicatedExtended(rownames(regulonAUC)),]
+# Calculate average expression:
+regulonActivity_byCellType <- sapply(cellsPerCluster,
+                                     function(cells) rowMeans(getAUC(regulonAUC)[,cells]))
+# Scale expression:
+regulonActivity_byCellType_Scaled <- t(scale(t(regulonActivity_byCellType), center = T, scale=T))
+
+
+#Show the regulon names
+regulonAUC@NAMES
+
+regulon_auc_matr <- regulonAUC@assays@data$AUC
+aucellApp <- plotTsne_AUCellApp(scenicOptions, regulons_incidMat)
+shiny::runApp(aucellApp)
+```
+
+
+# SessionInfo
+```{r}
+sessionInfo()
+```

@@ -1,0 +1,687 @@
+---
+title: "DE analysis across different conditions"
+author: "Zhuang Liu"
+date: "07/11/3021 Updated: `r Sys.Date()`"
+output:
+  html_document:
+    toc: true #add a table of contents (TOC)
+    toc_depth: 3 #headers' level in the toc
+    toc_float: true #toc visible even when scrolled
+    theme: lumen
+    highlight: tango
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.align='center', fig.width=12, fig.height = 6, warning=FALSE, message=FALSE)
+```
+
+```{r warning=FALSE, message=FALSE}
+library(Seurat)
+library(SeuratObject)
+library(tidyverse)
+library(magrittr)
+library(ggplot2)
+library(patchwork)
+library(cowplot)
+library(ggrepel)
+library(future)
+options(future.globals.maxSize = 20000 * 1024^2)
+plan("multisession", workers = 4)
+```
+
+###################################################
+# 1. Preparations of DE analysis across conditions
+###################################################
+## 1.1 Load the data
+```{r warning=FALSE, message=FALSE, fig.width=9, fig.height=6}
+hswound.combined.sct <- readRDS("s1_cleanSeurat_harmony_allSamples_clusters.rds")
+
+anno <- readxl::read_xlsx("s5_cell_types_for_each_cluster_manually_updated.xlsx", sheet = 1)
+
+source("../Functions/GOanalysis.R")
+anno_human <- readRDS("../Functions/humanAnnotation.rds")
+
+####----DE functions----####
+DE.genes <- function(group1 = NULL, group2 = NULL, groupby = NULL, subsetIdent = NULL, minPct = 0.25, fc = 0){
+  tmp <- FindMarkers(hswound.combined.sct, 
+                     ident.1 = group1, 
+                     ident.2 = group2, 
+                     group.by = groupby, 
+                     subset.ident = subsetIdent,
+                     assay = "RNA",
+                     test.use = "MAST",
+                     latent.vars = c("orig.ident"),
+                     min.pct = minPct, 
+                     logfc.threshold = fc)
+  tmp <- tmp %>% tibble::rownames_to_column(var = "gene") %>% 
+    arrange(desc(avg_log2FC)) %>% 
+    left_join(., anno_human, by=c("gene" = "external_gene_name")) %>% 
+    dplyr::select(1, 3, 2, 6, everything()) %>% 
+    #filter(p_val_adj < 0.05) %>% #or filter out the genes with p-value < 0.05
+    mutate(Type = factor(ifelse(p_val_adj < 0.05 & abs(avg_log2FC) >= 0.3, ifelse(avg_log2FC >= 0.3 ,'Up','Down'),'Not'))) #add a column with regulation direction
+  return(tmp)
+}
+
+DE.volcano <- function(data = NULL, avgfc = 1, padj = 0.05){
+  data.fil <- data %>% filter(abs(avg_log2FC) >= avgfc & p_val_adj < padj)
+  ggplot(data=data, aes(x=avg_log2FC, y=-log10(p_val_adj), color=Type, fill=Type)) +
+    geom_point(size=1.5)+
+    scale_color_manual(values=c("blue","#B3B3B3", "red"))+
+    coord_fixed()+
+    #geom_vline(xintercept=c(-1,1), lty=4, col="grey", lwd=0.6)+ 
+    #geom_hline(yintercept = -log10(0.05), lty=4, col="grey", lwd=0.6)+
+    #scale_x_continuous(limits = c(-5,5),breaks = c(-4,-3,-2,-1,0,1,2,3,4)) +
+    #scale_y_continuous(limits = c(0,10),breaks = c(0,2,4,6,8,10)) +
+    theme_classic() +
+    theme(
+      panel.grid.major = element_line(colour = "grey90",size = 0.5,linetype = 2),
+      panel.grid.minor = element_line(colour = "grey90",size = 0.5,linetype = 2),
+      axis.text.x = element_text(size = 12), 
+      axis.text.y = element_text(size = 12),
+      axis.title.x = element_text(size = 14),
+      axis.title.y = element_text(size = 14),
+      legend.position = "right",#top,bottom,left,right
+      legend.spacing = unit(0,"cm"),
+      aspect.ratio = 1) +
+    geom_text_repel(data = data.fil, mapping = aes(x=avg_log2FC, y=-log10(p_val_adj), label = gene), show.legend = FALSE,
+                    max.overlaps = 50)
+}
+  
+####----Annotate the cell types----####
+current_cluster_ids <- anno$Cluster %>% c() # List of current cluster IDs
+new_cluster_ids <- anno$CellType %>% c() # List of new cluster IDs
+# Changing IDs to cell type and add the cell type into metadata
+Idents(hswound.combined.sct) <- plyr::mapvalues(x=Idents(hswound.combined.sct), from=current_cluster_ids, to=new_cluster_ids)
+##relevel the cell types
+hswound.combined.sct$CellTypes <- hswound.combined.sct@active.ident
+table(Idents(hswound.combined.sct))
+DimPlot(object = hswound.combined.sct, 
+        reduction = "umap", 
+        label = TRUE, 
+        group.by = "CellTypes", label.size = 3) + NoAxes() + NoLegend() + ggtitle("Cell Types")
+
+```
+
+############################################
+# 2. DE analysis of Wound1 vs. Skin
+############################################
+## 2.1 Keratinocytes
+### 2.1.1 Basal-I
+```{r fig.width=8, fig.height=8}
+celltypename = "Basal-I"
+DE.genes.sorted <- DE.genes(group1 = "Wound1", group2 = "Skin", groupby = "Condition", subsetIdent = c(celltypename))
+DE.volcano(data = DE.genes.sorted)
+```
+
+```{r}
+####----Filtering and printing all the DE genes----####
+DE.genes.sorted %<>% filter(p_val_adj < 0.05 & abs(avg_log2FC) >= 0.3) %>% mutate(Group = "Wound1_Skin")
+data.table::fwrite(DE.genes.sorted, file = paste0("s7_Wound1_Skin_", celltypename, "_DEgenes.txt"), sep="\t")
+
+#GO_BP(data = DE.genes.sorted) #Default: using all genes together
+GO_BP(data = DE.genes.sorted, regulation = "Up")
+GO_BP(data = DE.genes.sorted, regulation = "Down")
+
+#KEGG(data = DE.genes.sorted) #Default: using all genes together
+KEGG(data = DE.genes.sorted, regulation = "Up")
+KEGG(data = DE.genes.sorted, regulation = "Down")
+```
+
+### 2.1.2 Basal-II
+```{r fig.width=8, fig.height=8}
+celltypename = "Basal-II"
+DE.genes.sorted <- DE.genes(group1 = "Wound1", group2 = "Skin", groupby = "Condition", subsetIdent = c(celltypename))
+DE.volcano(data = DE.genes.sorted)
+```
+
+```{r}
+####----Filtering and printing all the DE genes----####
+DE.genes.sorted %<>% filter(p_val_adj < 0.05 & abs(avg_log2FC) >= 0.3) %>% mutate(Group = "Wound1_Skin")
+data.table::fwrite(DE.genes.sorted, file = paste0("s7_Wound1_Skin_", celltypename, "_DEgenes.txt"), sep="\t")
+
+#GO_BP(data = DE.genes.sorted) #Default: using all genes together
+GO_BP(data = DE.genes.sorted, regulation = "Up")
+GO_BP(data = DE.genes.sorted, regulation = "Down")
+
+#KEGG(data = DE.genes.sorted) #Default: using all genes together
+KEGG(data = DE.genes.sorted, regulation = "Up")
+KEGG(data = DE.genes.sorted, regulation = "Down")
+```
+
+### 2.1.3 Basal-III
+```{r fig.width=8, fig.height=8}
+celltypename = "Basal-III"
+DE.genes.sorted <- DE.genes(group1 = "Wound1", group2 = "Skin", groupby = "Condition", subsetIdent = c(celltypename))
+DE.volcano(data = DE.genes.sorted)
+```
+
+```{r}
+####----Filtering and printing all the DE genes----####
+DE.genes.sorted %<>% filter(p_val_adj < 0.05 & abs(avg_log2FC) >= 0.3) %>% mutate(Group = "Wound1_Skin")
+data.table::fwrite(DE.genes.sorted, file = paste0("s7_Wound1_Skin_", celltypename, "_DEgenes.txt"), sep="\t")
+
+#GO_BP(data = DE.genes.sorted) #Default: using all genes together
+GO_BP(data = DE.genes.sorted, regulation = "Up")
+GO_BP(data = DE.genes.sorted, regulation = "Down")
+
+#KEGG(data = DE.genes.sorted) #Default: using all genes together
+KEGG(data = DE.genes.sorted, regulation = "Up")
+KEGG(data = DE.genes.sorted, regulation = "Down")
+```
+
+### 2.1.4 Spinous-I
+```{r fig.width=8, fig.height=8}
+celltypename = "Spinous-I"
+DE.genes.sorted <- DE.genes(group1 = "Wound1", group2 = "Skin", groupby = "Condition", subsetIdent = c(celltypename))
+DE.volcano(data = DE.genes.sorted)
+```
+
+```{r}
+####----Filtering and printing all the DE genes----####
+DE.genes.sorted %<>% filter(p_val_adj < 0.05 & abs(avg_log2FC) >= 0.3) %>% mutate(Group = "Wound1_Skin")
+data.table::fwrite(DE.genes.sorted, file = paste0("s7_Wound1_Skin_", celltypename, "_DEgenes.txt"), sep="\t")
+
+#GO_BP(data = DE.genes.sorted) #Default: using all genes together
+GO_BP(data = DE.genes.sorted, regulation = "Up")
+GO_BP(data = DE.genes.sorted, regulation = "Down")
+
+#KEGG(data = DE.genes.sorted) #Default: using all genes together
+KEGG(data = DE.genes.sorted, regulation = "Up")
+KEGG(data = DE.genes.sorted, regulation = "Down")
+```
+
+### 2.1.5 Spinous-II
+```{r fig.width=8, fig.height=8}
+celltypename = "Spinous-II"
+DE.genes.sorted <- DE.genes(group1 = "Wound1", group2 = "Skin", groupby = "Condition", subsetIdent = c(celltypename))
+DE.volcano(data = DE.genes.sorted)
+```
+
+```{r}
+####----Filtering and printing all the DE genes----####
+DE.genes.sorted %<>% filter(p_val_adj < 0.05 & abs(avg_log2FC) >= 0.3) %>% mutate(Group = "Wound1_Skin")
+data.table::fwrite(DE.genes.sorted, file = paste0("s7_Wound1_Skin_", celltypename, "_DEgenes.txt"), sep="\t")
+
+#GO_BP(data = DE.genes.sorted) #Default: using all genes together
+GO_BP(data = DE.genes.sorted, regulation = "Up")
+GO_BP(data = DE.genes.sorted, regulation = "Down")
+
+#KEGG(data = DE.genes.sorted) #Default: using all genes together
+KEGG(data = DE.genes.sorted, regulation = "Up")
+KEGG(data = DE.genes.sorted, regulation = "Down")
+```
+
+### 2.1.6 Spinous-III
+```{r fig.width=8, fig.height=8}
+celltypename = "Spinous-III"
+DE.genes.sorted <- DE.genes(group1 = "Wound1", group2 = "Skin", groupby = "Condition", subsetIdent = c(celltypename))
+DE.volcano(data = DE.genes.sorted)
+```
+
+```{r}
+####----Filtering and printing all the DE genes----####
+DE.genes.sorted %<>% filter(p_val_adj < 0.05 & abs(avg_log2FC) >= 0.3) %>% mutate(Group = "Wound1_Skin")
+data.table::fwrite(DE.genes.sorted, file = paste0("s7_Wound1_Skin_", celltypename, "_DEgenes.txt"), sep="\t")
+
+#GO_BP(data = DE.genes.sorted) #Default: using all genes together
+GO_BP(data = DE.genes.sorted, regulation = "Up")
+GO_BP(data = DE.genes.sorted, regulation = "Down")
+
+#KEGG(data = DE.genes.sorted) #Default: using all genes together
+KEGG(data = DE.genes.sorted, regulation = "Up")
+KEGG(data = DE.genes.sorted, regulation = "Down")
+```
+
+### 2.1.7 Granular-I
+```{r fig.width=8, fig.height=8}
+celltypename = "Granular-I"
+DE.genes.sorted <- DE.genes(group1 = "Wound1", group2 = "Skin", groupby = "Condition", subsetIdent = c(celltypename))
+DE.volcano(data = DE.genes.sorted)
+```
+
+```{r}
+####----Filtering and printing all the DE genes----####
+DE.genes.sorted %<>% filter(p_val_adj < 0.05 & abs(avg_log2FC) >= 0.3) %>% mutate(Group = "Wound1_Skin")
+data.table::fwrite(DE.genes.sorted, file = paste0("s7_Wound1_Skin_", celltypename, "_DEgenes.txt"), sep="\t")
+
+#GO_BP(data = DE.genes.sorted) #Default: using all genes together
+GO_BP(data = DE.genes.sorted, regulation = "Up")
+GO_BP(data = DE.genes.sorted, regulation = "Down")
+
+#KEGG(data = DE.genes.sorted) #Default: using all genes together
+KEGG(data = DE.genes.sorted, regulation = "Up")
+KEGG(data = DE.genes.sorted, regulation = "Down")
+```
+
+### 2.1.8 Granular-II
+```{r fig.width=8, fig.height=8}
+celltypename = "Granular-II"
+DE.genes.sorted <- DE.genes(group1 = "Wound1", group2 = "Skin", groupby = "Condition", subsetIdent = c(celltypename))
+DE.volcano(data = DE.genes.sorted)
+```
+
+```{r}
+####----Filtering and printing all the DE genes----####
+DE.genes.sorted %<>% filter(p_val_adj < 0.05 & abs(avg_log2FC) >= 0.3) %>% mutate(Group = "Wound1_Skin")
+data.table::fwrite(DE.genes.sorted, file = paste0("s7_Wound1_Skin_", celltypename, "_DEgenes.txt"), sep="\t")
+
+#GO_BP(data = DE.genes.sorted) #Default: using all genes together
+GO_BP(data = DE.genes.sorted, regulation = "Up")
+GO_BP(data = DE.genes.sorted, regulation = "Down")
+
+#KEGG(data = DE.genes.sorted) #Default: using all genes together
+KEGG(data = DE.genes.sorted, regulation = "Up")
+KEGG(data = DE.genes.sorted, regulation = "Down")
+```
+
+## 2.2 Fibroblasts
+### 2.2.1 FB-I
+```{r fig.width=8, fig.height=8}
+celltypename = "FB-I"
+DE.genes.sorted <- DE.genes(group1 = "Wound1", group2 = "Skin", groupby = "Condition", subsetIdent = c(celltypename))
+DE.volcano(data = DE.genes.sorted)
+```
+
+```{r}
+####----Filtering and printing all the DE genes----####
+DE.genes.sorted %<>% filter(p_val_adj < 0.05 & abs(avg_log2FC) >= 0.3) %>% mutate(Group = "Wound1_Skin")
+data.table::fwrite(DE.genes.sorted, file = paste0("s7_Wound1_Skin_", celltypename, "_DEgenes.txt"), sep="\t")
+
+#GO_BP(data = DE.genes.sorted) #Default: using all genes together
+GO_BP(data = DE.genes.sorted, regulation = "Up")
+GO_BP(data = DE.genes.sorted, regulation = "Down")
+
+#KEGG(data = DE.genes.sorted) #Default: using all genes together
+KEGG(data = DE.genes.sorted, regulation = "Up")
+KEGG(data = DE.genes.sorted, regulation = "Down")
+```
+
+### 2.2.2 FB-II
+```{r fig.width=8, fig.height=8}
+celltypename = "FB-II"
+DE.genes.sorted <- DE.genes(group1 = "Wound1", group2 = "Skin", groupby = "Condition", subsetIdent = c(celltypename))
+DE.volcano(data = DE.genes.sorted)
+```
+
+```{r}
+####----Filtering and printing all the DE genes----####
+DE.genes.sorted %<>% filter(p_val_adj < 0.05 & abs(avg_log2FC) >= 0.3) %>% mutate(Group = "Wound1_Skin")
+data.table::fwrite(DE.genes.sorted, file = paste0("s7_Wound1_Skin_", celltypename, "_DEgenes.txt"), sep="\t")
+
+#GO_BP(data = DE.genes.sorted) #Default: using all genes together
+GO_BP(data = DE.genes.sorted, regulation = "Up")
+GO_BP(data = DE.genes.sorted, regulation = "Down")
+
+#KEGG(data = DE.genes.sorted) #Default: using all genes together
+KEGG(data = DE.genes.sorted, regulation = "Up")
+KEGG(data = DE.genes.sorted, regulation = "Down")
+```
+
+### 2.2.3 FB-III
+```{r fig.width=8, fig.height=8}
+celltypename = "FB-III"
+DE.genes.sorted <- DE.genes(group1 = "Wound1", group2 = "Skin", groupby = "Condition", subsetIdent = c(celltypename))
+DE.volcano(data = DE.genes.sorted)
+```
+
+```{r}
+####----Filtering and printing all the DE genes----####
+DE.genes.sorted %<>% filter(p_val_adj < 0.05 & abs(avg_log2FC) >= 0.3) %>% mutate(Group = "Wound1_Skin")
+data.table::fwrite(DE.genes.sorted, file = paste0("s7_Wound1_Skin_", celltypename, "_DEgenes.txt"), sep="\t")
+
+#GO_BP(data = DE.genes.sorted) #Default: using all genes together
+GO_BP(data = DE.genes.sorted, regulation = "Up")
+GO_BP(data = DE.genes.sorted, regulation = "Down")
+
+#KEGG(data = DE.genes.sorted) #Default: using all genes together
+KEGG(data = DE.genes.sorted, regulation = "Up")
+KEGG(data = DE.genes.sorted, regulation = "Down")
+```
+
+### 2.2.4 FB-IV
+```{r fig.width=8, fig.height=8}
+celltypename = "FB-IV"
+DE.genes.sorted <- DE.genes(group1 = "Wound1", group2 = "Skin", groupby = "Condition", subsetIdent = c(celltypename))
+DE.volcano(data = DE.genes.sorted)
+```
+
+```{r}
+####----Filtering and printing all the DE genes----####
+DE.genes.sorted %<>% filter(p_val_adj < 0.05 & abs(avg_log2FC) >= 0.3) %>% mutate(Group = "Wound1_Skin")
+data.table::fwrite(DE.genes.sorted, file = paste0("s7_Wound1_Skin_", celltypename, "_DEgenes.txt"), sep="\t")
+
+#GO_BP(data = DE.genes.sorted) #Default: using all genes together
+GO_BP(data = DE.genes.sorted, regulation = "Up")
+GO_BP(data = DE.genes.sorted, regulation = "Down")
+
+#KEGG(data = DE.genes.sorted) #Default: using all genes together
+KEGG(data = DE.genes.sorted, regulation = "Up")
+KEGG(data = DE.genes.sorted, regulation = "Down")
+```
+
+## 2.3 Melanocytes
+### 2.3 MEL
+```{r fig.width=8, fig.height=8}
+celltypename = "MEL"
+DE.genes.sorted <- DE.genes(group1 = "Wound1", group2 = "Skin", groupby = "Condition", subsetIdent = c(celltypename))
+DE.volcano(data = DE.genes.sorted)
+```
+
+```{r}
+####----Filtering and printing all the DE genes----####
+DE.genes.sorted %<>% filter(p_val_adj < 0.05 & abs(avg_log2FC) >= 0.3) %>% mutate(Group = "Wound1_Skin")
+data.table::fwrite(DE.genes.sorted, file = paste0("s7_Wound1_Skin_", celltypename, "_DEgenes.txt"), sep="\t")
+
+#GO_BP(data = DE.genes.sorted) #Default: using all genes together
+GO_BP(data = DE.genes.sorted, regulation = "Up")
+GO_BP(data = DE.genes.sorted, regulation = "Down")
+
+#KEGG(data = DE.genes.sorted) #Default: using all genes together
+KEGG(data = DE.genes.sorted, regulation = "Up")
+KEGG(data = DE.genes.sorted, regulation = "Down")
+```
+
+## 2.4 Schwann cells
+### 2.4 Schwann
+```{r fig.width=8, fig.height=8}
+celltypename = "Schwann"
+DE.genes.sorted <- DE.genes(group1 = "Wound1", group2 = "Skin", groupby = "Condition", subsetIdent = c(celltypename))
+DE.volcano(data = DE.genes.sorted)
+```
+
+```{r}
+####----Filtering and printing all the DE genes----####
+DE.genes.sorted %<>% filter(p_val_adj < 0.05 & abs(avg_log2FC) >= 0.3) %>% mutate(Group = "Wound1_Skin")
+data.table::fwrite(DE.genes.sorted, file = paste0("s7_Wound1_Skin_", celltypename, "_DEgenes.txt"), sep="\t")
+
+#GO_BP(data = DE.genes.sorted) #Default: using all genes together
+GO_BP(data = DE.genes.sorted, regulation = "Up")
+GO_BP(data = DE.genes.sorted, regulation = "Down")
+
+#KEGG(data = DE.genes.sorted) #Default: using all genes together
+KEGG(data = DE.genes.sorted, regulation = "Up")
+KEGG(data = DE.genes.sorted, regulation = "Down")
+```
+
+## 2.5 Pericytes & Vascular smooth muscle cells
+### 2.5 PC-vSMC
+```{r fig.width=8, fig.height=8}
+celltypename = "PC-vSMC"
+DE.genes.sorted <- DE.genes(group1 = "Wound1", group2 = "Skin", groupby = "Condition", subsetIdent = c(celltypename))
+DE.volcano(data = DE.genes.sorted)
+```
+
+```{r}
+####----Filtering and printing all the DE genes----####
+DE.genes.sorted %<>% filter(p_val_adj < 0.05 & abs(avg_log2FC) >= 0.3) %>% mutate(Group = "Wound1_Skin")
+data.table::fwrite(DE.genes.sorted, file = paste0("s7_Wound1_Skin_", celltypename, "_DEgenes.txt"), sep="\t")
+
+#GO_BP(data = DE.genes.sorted) #Default: using all genes together
+GO_BP(data = DE.genes.sorted, regulation = "Up")
+GO_BP(data = DE.genes.sorted, regulation = "Down")
+
+#KEGG(data = DE.genes.sorted) #Default: using all genes together
+KEGG(data = DE.genes.sorted, regulation = "Up")
+KEGG(data = DE.genes.sorted, regulation = "Down")
+```
+
+## 2.6 Myeloid/Immnue cells
+### 2.6.1 Langerhans cells (LC)
+```{r fig.width=8, fig.height=8}
+celltypename = "LC"
+DE.genes.sorted <- DE.genes(group1 = "Wound1", group2 = "Skin", groupby = "Condition", subsetIdent = c(celltypename))
+DE.volcano(data = DE.genes.sorted)
+```
+
+```{r}
+####----Filtering and printing all the DE genes----####
+DE.genes.sorted %<>% filter(p_val_adj < 0.05 & abs(avg_log2FC) >= 0.3) %>% mutate(Group = "Wound1_Skin")
+data.table::fwrite(DE.genes.sorted, file = paste0("s7_Wound1_Skin_", celltypename, "_DEgenes.txt"), sep="\t")
+
+#GO_BP(data = DE.genes.sorted) #Default: using all genes together
+GO_BP(data = DE.genes.sorted, regulation = "Up")
+GO_BP(data = DE.genes.sorted, regulation = "Down")
+
+#KEGG(data = DE.genes.sorted) #Default: using all genes together
+KEGG(data = DE.genes.sorted, regulation = "Up")
+KEGG(data = DE.genes.sorted, regulation = "Down")
+```
+
+### 2.6.2 Dendritic cells (DC)
+```{r fig.width=8, fig.height=8}
+celltypename = "DC"
+DE.genes.sorted <- DE.genes(group1 = "Wound1", group2 = "Skin", groupby = "Condition", subsetIdent = c(celltypename))
+DE.volcano(data = DE.genes.sorted)
+```
+
+```{r}
+####----Filtering and printing all the DE genes----####
+DE.genes.sorted %<>% filter(p_val_adj < 0.05 & abs(avg_log2FC) >= 0.3) %>% mutate(Group = "Wound1_Skin")
+data.table::fwrite(DE.genes.sorted, file = paste0("s7_Wound1_Skin_", celltypename, "_DEgenes.txt"), sep="\t")
+
+#GO_BP(data = DE.genes.sorted) #Default: using all genes together
+GO_BP(data = DE.genes.sorted, regulation = "Up")
+GO_BP(data = DE.genes.sorted, regulation = "Down")
+
+#KEGG(data = DE.genes.sorted) #Default: using all genes together
+KEGG(data = DE.genes.sorted, regulation = "Up")
+KEGG(data = DE.genes.sorted, regulation = "Down")
+```
+
+### 2.6.3 Monocytes & Macrophages (Mono-Mac)
+```{r fig.width=8, fig.height=8}
+celltypename = "Mono-Mac"
+DE.genes.sorted <- DE.genes(group1 = "Wound1", group2 = "Skin", groupby = "Condition", subsetIdent = c(celltypename))
+DE.volcano(data = DE.genes.sorted)
+```
+
+```{r}
+####----Filtering and printing all the DE genes----####
+DE.genes.sorted %<>% filter(p_val_adj < 0.05 & abs(avg_log2FC) >= 0.3) %>% mutate(Group = "Wound1_Skin")
+data.table::fwrite(DE.genes.sorted, file = paste0("s7_Wound1_Skin_", celltypename, "_DEgenes.txt"), sep="\t")
+
+#GO_BP(data = DE.genes.sorted) #Default: using all genes together
+GO_BP(data = DE.genes.sorted, regulation = "Up")
+GO_BP(data = DE.genes.sorted, regulation = "Down")
+
+#KEGG(data = DE.genes.sorted) #Default: using all genes together
+KEGG(data = DE.genes.sorted, regulation = "Up")
+KEGG(data = DE.genes.sorted, regulation = "Down")
+```
+
+### 2.6.4 Mature Dendritic cells (DC-LAMP)
+```{r fig.width=8, fig.height=8}
+celltypename = "DC-LAMP"
+DE.genes.sorted <- DE.genes(group1 = "Wound1", group2 = "Skin", groupby = "Condition", subsetIdent = c(celltypename))
+DE.volcano(data = DE.genes.sorted)
+```
+
+```{r}
+####----Filtering and printing all the DE genes----####
+DE.genes.sorted %<>% filter(p_val_adj < 0.05 & abs(avg_log2FC) >= 0.3) %>% mutate(Group = "Wound1_Skin")
+data.table::fwrite(DE.genes.sorted, file = paste0("s7_Wound1_Skin_", celltypename, "_DEgenes.txt"), sep="\t")
+
+#GO_BP(data = DE.genes.sorted) #Default: using all genes together
+GO_BP(data = DE.genes.sorted, regulation = "Up")
+GO_BP(data = DE.genes.sorted, regulation = "Down")
+
+#KEGG(data = DE.genes.sorted) #Default: using all genes together
+KEGG(data = DE.genes.sorted, regulation = "Up")
+KEGG(data = DE.genes.sorted, regulation = "Down")
+```
+
+### 2.6.5 Dermal Dendritic cells (Dermal-DC)
+```{r fig.width=8, fig.height=8}
+celltypename = "Dermal-DC"
+DE.genes.sorted <- DE.genes(group1 = "Wound1", group2 = "Skin", groupby = "Condition", subsetIdent = c(celltypename))
+DE.volcano(data = DE.genes.sorted)
+```
+
+```{r}
+####----Filtering and printing all the DE genes----####
+DE.genes.sorted %<>% filter(p_val_adj < 0.05 & abs(avg_log2FC) >= 0.3) %>% mutate(Group = "Wound1_Skin")
+data.table::fwrite(DE.genes.sorted, file = paste0("s7_Wound1_Skin_", celltypename, "_DEgenes.txt"), sep="\t")
+
+#GO_BP(data = DE.genes.sorted) #Default: using all genes together
+GO_BP(data = DE.genes.sorted, regulation = "Up")
+GO_BP(data = DE.genes.sorted, regulation = "Down")
+
+#KEGG(data = DE.genes.sorted) #Default: using all genes together
+KEGG(data = DE.genes.sorted, regulation = "Up")
+KEGG(data = DE.genes.sorted, regulation = "Down")
+```
+
+### 2.6.6 Mast cells (Mast-cell)
+```{r fig.width=8, fig.height=8}
+celltypename = "Mast-cell"
+DE.genes.sorted <- DE.genes(group1 = "Wound1", group2 = "Skin", groupby = "Condition", subsetIdent = c(celltypename))
+DE.volcano(data = DE.genes.sorted)
+```
+
+```{r}
+####----Filtering and printing all the DE genes----####
+DE.genes.sorted %<>% filter(p_val_adj < 0.05 & abs(avg_log2FC) >= 0.3) %>% mutate(Group = "Wound1_Skin")
+data.table::fwrite(DE.genes.sorted, file = paste0("s7_Wound1_Skin_", celltypename, "_DEgenes.txt"), sep="\t")
+
+#GO_BP(data = DE.genes.sorted) #Default: using all genes together
+GO_BP(data = DE.genes.sorted, regulation = "Up")
+GO_BP(data = DE.genes.sorted, regulation = "Down")
+
+#KEGG(data = DE.genes.sorted) #Default: using all genes together
+KEGG(data = DE.genes.sorted, regulation = "Up")
+KEGG(data = DE.genes.sorted, regulation = "Down")
+```
+
+### 2.6.7 T help cells (Th)
+```{r fig.width=8, fig.height=8}
+celltypename = "Th"
+DE.genes.sorted <- DE.genes(group1 = "Wound1", group2 = "Skin", groupby = "Condition", subsetIdent = c(celltypename))
+DE.volcano(data = DE.genes.sorted)
+```
+
+```{r}
+####----Filtering and printing all the DE genes----####
+DE.genes.sorted %<>% filter(p_val_adj < 0.05 & abs(avg_log2FC) >= 0.3) %>% mutate(Group = "Wound1_Skin")
+data.table::fwrite(DE.genes.sorted, file = paste0("s7_Wound1_Skin_", celltypename, "_DEgenes.txt"), sep="\t")
+
+#GO_BP(data = DE.genes.sorted) #Default: using all genes together
+GO_BP(data = DE.genes.sorted, regulation = "Up")
+GO_BP(data = DE.genes.sorted, regulation = "Down")
+
+#KEGG(data = DE.genes.sorted) #Default: using all genes together
+KEGG(data = DE.genes.sorted, regulation = "Up")
+KEGG(data = DE.genes.sorted, regulation = "Down")
+```
+
+### 2.6.8 Natural killer cells (NK-cell)
+```{r fig.width=8, fig.height=8}
+celltypename = "NK-cell"
+DE.genes.sorted <- DE.genes(group1 = "Wound1", group2 = "Skin", groupby = "Condition", subsetIdent = c(celltypename))
+DE.volcano(data = DE.genes.sorted)
+```
+
+```{r}
+####----Filtering and printing all the DE genes----####
+DE.genes.sorted %<>% filter(p_val_adj < 0.05 & abs(avg_log2FC) >= 0.3) %>% mutate(Group = "Wound1_Skin")
+data.table::fwrite(DE.genes.sorted, file = paste0("s7_Wound1_Skin_", celltypename, "_DEgenes.txt"), sep="\t")
+
+#GO_BP(data = DE.genes.sorted) #Default: using all genes together
+GO_BP(data = DE.genes.sorted, regulation = "Up")
+GO_BP(data = DE.genes.sorted, regulation = "Down")
+
+#KEGG(data = DE.genes.sorted) #Default: using all genes together
+KEGG(data = DE.genes.sorted, regulation = "Up")
+KEGG(data = DE.genes.sorted, regulation = "Down")
+```
+
+### 2.6.9 Plasma & B cells (Plasma_B-cell)
+```{r fig.width=8, fig.height=8}
+celltypename = "Plasma_B-cell"
+DE.genes.sorted <- DE.genes(group1 = "Wound1", group2 = "Skin", groupby = "Condition", subsetIdent = c(celltypename))
+DE.volcano(data = DE.genes.sorted)
+```
+
+```{r}
+####----Filtering and printing all the DE genes----####
+DE.genes.sorted %<>% filter(p_val_adj < 0.05 & abs(avg_log2FC) >= 0.3) %>% mutate(Group = "Wound1_Skin")
+data.table::fwrite(DE.genes.sorted, file = paste0("s7_Wound1_Skin_", celltypename, "_DEgenes.txt"), sep="\t")
+
+#GO_BP(data = DE.genes.sorted) #Default: using all genes together
+GO_BP(data = DE.genes.sorted, regulation = "Up")
+GO_BP(data = DE.genes.sorted, regulation = "Down")
+
+#KEGG(data = DE.genes.sorted) #Default: using all genes together
+KEGG(data = DE.genes.sorted, regulation = "Up")
+KEGG(data = DE.genes.sorted, regulation = "Down")
+```
+
+## 2.7 Endothelial cells
+### 2.7.1 Vascular endothelial cells (VE)
+```{r fig.width=8, fig.height=8}
+celltypename = "VE"
+DE.genes.sorted <- DE.genes(group1 = "Wound1", group2 = "Skin", groupby = "Condition", subsetIdent = c(celltypename))
+DE.volcano(data = DE.genes.sorted)
+```
+
+```{r}
+####----Filtering and printing all the DE genes----####
+DE.genes.sorted %<>% filter(p_val_adj < 0.05 & abs(avg_log2FC) >= 0.3) %>% mutate(Group = "Wound1_Skin")
+data.table::fwrite(DE.genes.sorted, file = paste0("s7_Wound1_Skin_", celltypename, "_DEgenes.txt"), sep="\t")
+
+#GO_BP(data = DE.genes.sorted) #Default: using all genes together
+GO_BP(data = DE.genes.sorted, regulation = "Up")
+GO_BP(data = DE.genes.sorted, regulation = "Down")
+
+#KEGG(data = DE.genes.sorted) #Default: using all genes together
+KEGG(data = DE.genes.sorted, regulation = "Up")
+KEGG(data = DE.genes.sorted, regulation = "Down")
+```
+
+### 2.7.2 Lymphatic endothelial cells (LE)
+```{r fig.width=8, fig.height=8}
+celltypename = "LE"
+DE.genes.sorted <- DE.genes(group1 = "Wound1", group2 = "Skin", groupby = "Condition", subsetIdent = c(celltypename))
+DE.volcano(data = DE.genes.sorted)
+```
+
+```{r}
+####----Filtering and printing all the DE genes----####
+DE.genes.sorted %<>% filter(p_val_adj < 0.05 & abs(avg_log2FC) >= 0.3) %>% mutate(Group = "Wound1_Skin")
+data.table::fwrite(DE.genes.sorted, file = paste0("s7_Wound1_Skin_", celltypename, "_DEgenes.txt"), sep="\t")
+
+#GO_BP(data = DE.genes.sorted) #Default: using all genes together
+GO_BP(data = DE.genes.sorted, regulation = "Up")
+GO_BP(data = DE.genes.sorted, regulation = "Down")
+
+#KEGG(data = DE.genes.sorted) #Default: using all genes together
+KEGG(data = DE.genes.sorted, regulation = "Up")
+KEGG(data = DE.genes.sorted, regulation = "Down")
+```
+
+```{r eval=FALSE, fig.width=8, fig.height=8}
+library(enrichR)
+dbs <- listEnrichrDbs()
+dbs <- c("GO_Biological_Process_2021")
+enriched <- enrichr(as.character(km_genes[[1]]), dbs)
+enriched_bp_up <- enriched$GO_Biological_Process_2021
+
+enriched_d <- enrichr(as.character(unique(defiles.com$`Wound1_Skin_Basal-III` %>% dplyr::filter(Type == "Down") %>% pull(gene))), dbs)
+enriched_bp_d <- enriched_d$GO_Biological_Process_2021
+
+ego_BP_up <- enrichGO(gene = defiles.com$`Wound7_Wound1_Basal-I` %>% dylyr::filter(Type == "Up") %>% pull(entrezgene_id),
+                          OrgDb         = org.Hs.eg.db,
+                          ont           = "BP",
+                          keyType = "ENTREZID",
+                          pAdjustMethod = "BH",
+                          pvalueCutoff  = 0.05,
+                          qvalueCutoff  = 0.2,
+                          minGSSize = 10,
+                          maxGSSize = 500)
+dotplot(ego_BP_up, showCategory=10, label_format = 80) + ggtitle("Top 10 GO-BPs") 
+```
+
+# SessionInfo
+```{r}
+sessionInfo()
+```

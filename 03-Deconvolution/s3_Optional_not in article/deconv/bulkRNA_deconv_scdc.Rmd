@@ -1,0 +1,693 @@
+---
+title: "BulkRNA deconvolution"
+author: "Åsa Björklund"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  html_document:
+    self_contained: true
+    highlight: tango
+    df_print: paged
+    toc: yes
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    toc_depth: 3
+    fig_caption: true
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message=FALSE, warning=FALSE, result='hold',fig.width=12,tidy=TRUE)
+knitr::opts_knit$set(progress=TRUE,verbose=TRUE)
+```
+
+Take all samples from both ST and SC analysis and calculate a pseudobulk dataset.
+
+Compare to the FPKM matrix of the bulkRNAseq data. Should be more similar to the UMI data than the raw count matrix from bulkRNAseq. But also run deconvolution with the raw counts.
+
+Run deconvolution with SCDC for all of them.
+
+Possibly add in the neutrophil dataset?
+
+# Load
+
+### Load packages
+
+```{r packages}
+
+suppressPackageStartupMessages(require(Matrix))
+suppressPackageStartupMessages(require(dplyr))
+suppressPackageStartupMessages(require(Seurat))
+suppressPackageStartupMessages(require(ggplot2))
+suppressPackageStartupMessages(require(gridExtra))
+suppressPackageStartupMessages(require(magrittr))
+suppressPackageStartupMessages(require(patchwork))
+suppressPackageStartupMessages(require(pheatmap))
+```
+
+
+# Load
+
+```{r}
+cl.colors = c("#e6194B", "#3cb44b", "#ffe119", "#4363d8", "#f58231", "#911eb4", "#42d4f4",
+    "#f032e6", "#bfef45", "#fabed4", "#469990", "#dcbeff", "#9A6324", "#fffac8",
+    "#800000", "#aaffc3", "#808000", "#ffd8b1", "#000075", "#a9a9a9", "#000000",
+    "#add8e6", "#ffa07a", "#228b22", "#dcdcdc")
+names(cl.colors) = as.character(0:24)
+
+cc = scale_color_gradientn(colors = c("grey", "yellow", "red", "black"))
+small.leg <- theme(legend.text = element_text(size = 6), legend.key.width = unit(0.1,
+    "cm"))
+
+outdir = "../../deconv/results/bulk_scdc"
+dir.create(outdir, showWarnings = F)
+```
+
+
+
+## Load SC data
+
+
+```{r}
+indir = "../../scRNAseq/results/zhuang_analysis/oct12/"
+savefile = file.path(indir, "s1_cleanSeurat_harmony_allSamples_clusters.rds")
+sc.data = readRDS(file = savefile)
+
+# add new celltype annotation
+anno <- readxl::read_xlsx(file.path(indir, "s5_cell_types_for_each_cluster_manually_updated.xlsx"),
+    sheet = 1)
+ct = plyr::mapvalues(x = Idents(sc.data), from = c(anno$Cluster), to = c(anno$CellType))
+sc.data$Celltype = factor(ct, levels = sort(levels(ct)))
+
+subtype = plyr::mapvalues(x = Idents(sc.data), from = c(anno$Cluster), to = c(anno$Detailed_info))
+sc.data$Subtype = factor(subtype, levels = sort(levels(subtype)))
+
+type = plyr::mapvalues(x = Idents(sc.data), from = c(anno$Cluster), to = c(anno$MainCellTypes))
+sc.data$MainCelltype = factor(type, levels = sort(levels(type)))
+
+table(sc.data$orig.ident)
+
+DimPlot(sc.data, group.by = "Celltype",label=T)+NoAxes()
+```
+
+
+
+Add annotations in same format as for the ST data using same donor IDs.
+
+```{r}
+# Donor Sample_name
+# PHW26,27,28 to Donor5,Donor4,Donor3
+id2donor = c("Donor5", "Donor4", "Donor3")
+names(id2donor) = c("PWH26","PWH27","PWH28")
+sc.data$Donor = id2donor[sc.data$Patient]
+table(sc.data$Donor)
+
+sc.data$Sample_name = paste(sc.data$Donor, sc.data$Condition, sep= "_")
+table(sc.data$Sample_name)
+```
+
+
+### Fetch full expression
+
+OBS! The SC data has been filtered to remove cells that are expressed in 10 cells or less, so the gene numbers are different to the ST data, but also the naming for non-unique genes as the data was loaded with min.cells = 3.
+
+```{r}
+indir = "../../scRNAseq/rawdata/"
+
+# obs folder names are not NGI_ID, but User_ID without '_'
+alldata = list()
+for (sample in dir(indir)) {
+    print(sample)
+    hfile = file.path(indir, sample, "filtered_feature_bc_matrix.h5")
+    if (!file.exists(hfile)) {
+        print(sprintf("No file %s", hfile))
+        (next)()
+    }
+    alldata[[sample]] = CreateSeuratObject(counts = Read10X_h5(hfile), project = sample)
+}
+
+tmp  = merge(alldata[[1]], alldata[2:length(alldata)], add.cell.ids = names(alldata))
+
+m = match(colnames(sc.data), colnames(tmp))
+tmp = tmp[,m]
+
+tmp@meta.data = sc.data@meta.data
+tmp@reductions$umap = sc.data@reductions$umap
+sc.data = tmp
+
+rm(alldata, tmp)
+g = gc(verbose = F)
+
+```
+
+###  Calculate pseudocounts 
+
+Calculate pseudobulk per sample as sum of UMI counts.
+
+```{r}
+samples.sc = unique(sc.data$Sample_name)
+
+all.counts = list()
+
+for (sample in samples.sc){
+
+  tmp = sc.data@assays$RNA@counts[,sc.data$Sample_name == sample]
+  all.counts[[sample]] = rowSums(tmp)
+}
+
+
+sc.counts = Reduce(cbind,all.counts)
+colnames(sc.counts) = paste("SC",samples.sc,sep="_")
+
+
+```
+
+### Subsample celltypes for deconv
+
+Remove Basal IV and subsample 100 cells per cluster and condition.
+
+```{r}
+# remove BasalIV
+sc.data = sc.data[,sc.data$Celltype != "Basal-IV"]
+sc.data$Celltype = droplevels(sc.data$Celltype)
+
+sc.ct.prop = table(sc.data$Sample_name,sc.data$Celltype)
+
+sc.data = SetIdent(sc.data, value = "Celltype")
+
+keep.cells = c()
+for (cond in unique(sc.data$Condition)){
+   cells = WhichCells(sc.data[, sc.data$Condition == cond], downsample = 100)
+   keep.cells = cbind(keep.cells, cells)
+}
+
+sc.data = sc.data[,keep.cells]
+table(sc.data$Celltype)
+
+# keep only the RNA assay
+sc.data@active.assay = "RNA"
+sc.data = DietSeurat(sc.data, assays = "RNA", dimreducs = c("pca","umap","harmony"))
+
+
+```
+
+
+
+## ST data
+
+```{r}
+st.data = readRDS(file = "../../spatial/results/all/all_filtered.rds")
+st.data@active.assay = "Spatial"
+
+# remove other assays than RNA
+st.data = DietSeurat(st.data, assays = "Spatial", dimreducs = c("pca","umap","harmony"))
+g = gc(verbose = F)
+
+```
+
+### Calculate pseudocounts 
+
+Calculate pseudobulk per sample as sum of UMI counts.
+
+```{r}
+samples.st = unique(st.data$Sample_name)
+
+all.counts = list()
+
+for (sample in samples.st){
+
+  tmp = st.data@assays$Spatial@counts[,st.data$Sample_name == sample]
+  all.counts[[sample]] = rowSums(tmp)
+}
+
+st.counts = Reduce(cbind,all.counts)
+colnames(st.counts) = paste("ST",samples.st,sep="_")
+
+#rm(st.data)
+#g = gc(verbose = F)
+
+```
+
+## Bulk data
+
+```{r}
+bulk = read.table("../../scRNAseq/rawdata/SS2_bulk/bulk/GSE174661_mRNA_gene_FPKM_matrix.txt", sep = "\t", header = T, row.names = 1)
+
+rownames(bulk) = make.unique(bulk$GeneSymbol)
+bulk = bulk[,-1]
+dim(bulk)
+
+bulk.counts = read.table("../../scRNAseq/rawdata/SS2_bulk/bulk/GSE174661_mRNA_gene_readCount_matrix.txt", sep = "\t", header = T, row.names = 1)
+
+rownames(bulk.counts) = make.unique(bulk.counts$GeneSymbol)
+bulk.counts = bulk.counts[,-1]
+
+dim(bulk.counts)
+```
+
+
+Have 60603 genes in genecode, but only 12069 genes in the FPKM file. Only PC genes?
+
+
+```{r}
+m = match(rownames(st.data), rownames(sc.data))
+
+m = match(rownames(st.data), rownames(bulk))
+
+nrow(st.data)
+nrow(bulk)
+common.genes = intersect(rownames(st.data), rownames(bulk))
+length(common.genes)
+```
+
+Of 12069 genes, 11772 are in the ST/SC annotation.
+Use that set of genes only.
+
+```{r}
+sc.counts = sc.counts[common.genes,]
+st.counts = st.counts[common.genes,]
+bulk = bulk[common.genes,]
+bulk.counts = bulk.counts[common.genes,]
+```
+
+Create similar metadata
+
+```{r}
+cn = colnames(bulk)
+s = strsplit(cn,"_")
+s2 = unlist(lapply(s[1:10], function(x) x[1]))
+s2.cond = gsub("[0-9]+", "", s2)
+s3 = unlist(lapply(s[11:20], function(x) paste(x[c(1,2)], collapse = "_")))
+s3.cond = unlist(lapply(s[11:20], function(x) x[1]))
+
+meta.bulk = data.frame(row.names = cn, Tech = "Bulk_FPKM", Donor= c(s2,s3), Condition = c(s2.cond,s3.cond))
+meta.bulk.C = data.frame(row.names = colnames(bulk.counts), Tech = "Bulk_C", Donor= c(s2,s3), Condition = c(s2.cond,s3.cond))
+
+```
+
+
+
+
+## Merge all
+
+Create seurat objects from each of the datasets and compare them.
+
+```{r}
+
+alldata = list()
+meta.sc = data.frame(Reduce(rbind,strsplit(colnames(sc.counts),"_")), row.names = colnames(sc.counts))
+colnames(meta.sc) = c("Tech","Donor","Condition")
+alldata$SC = CreateSeuratObject(sc.counts,meta.data = meta.sc)
+
+meta.st = data.frame(Reduce(rbind,strsplit(colnames(st.counts),"_")), row.names = colnames(st.counts))
+colnames(meta.st) = c("Tech","Donor","Condition")
+alldata$ST = CreateSeuratObject(st.counts,meta.data = meta.st)
+
+alldata$Bulk = CreateSeuratObject(bulk, meta.data = meta.bulk)
+alldata$BulkC = CreateSeuratObject(bulk.counts, meta.data = meta.bulk.C)
+
+all = merge(alldata[[1]], alldata[2:length(alldata)],merge.data = T)
+
+all = NormalizeData(all)
+```
+
+
+# Correlation heatmap
+
+```{r, fig.height=12, fig.width=12}
+
+C = cor(as.matrix(all@assays$RNA@data))
+
+meta = all@meta.data[,c("Tech","Condition","Donor")]
+
+pheatmap(C, annotation = meta[,c(1,2)], clustering_method = "ward.D2")
+
+```
+
+
+Plot only Bulk vs ST correlation as boxplots for FPKM values.
+
+```{r, fig.height=10}
+tmp = C[grepl("FPKM", rownames(C)),]
+tmp = tmp[,grepl("ST", colnames(tmp))]
+
+tmp = data.frame(tmp)
+tmp$bulk.type = meta[rownames(tmp),"Condition"]
+
+l = reshape2::melt(tmp, id.vars = "bulk.type")
+l$st.type = meta[l$variable,"Condition"]
+
+ggplot(l, aes(x=st.type,y=value)) + geom_boxplot() + facet_wrap(~bulk.type)  + ggtitle("Corr Bulk vs ST")
+
+```
+
+Skin has highest correl to skin, wound1 to wound1, VU to wound30, but bulk wound7 has higher correl to ST wound30.
+
+
+Same for bulk counts.
+
+```{r}
+tmp = C[meta$Tech == "Bulk_C",]
+tmp = tmp[,grepl("ST", colnames(tmp))]
+
+tmp = data.frame(tmp)
+tmp$bulk.type = meta[rownames(tmp),"Condition"]
+
+l = reshape2::melt(tmp, id.vars = "bulk.type")
+l$st.type = meta[l$variable,"Condition"]
+
+ggplot(l, aes(x=st.type,y=value)) + geom_boxplot() + facet_wrap(~bulk.type)  + ggtitle("Corr Bulk-Counts vs ST")
+```
+
+Clearly lower correlation values but here Wound7 has highest correl to Wound7.
+
+# PCA
+
+Run PCA with top 1K genes.
+
+```{r, fig.height=10}
+
+all = FindVariableFeatures(all, verbose = F, nfeatures = 3000)
+all = ScaleData(all, verbose = F)
+# all = RunPCA(all, verbose = F)
+# does not work to run irlba
+# Error in irlba(A = t(x = object), nv = npcs, ...) : max(nu, nv) must be strictly less than min(nrow(A), ncol(A))
+
+pc = prcomp(t(all@assays$RNA@scale.data))
+pc = data.frame(cbind(pc$x,meta))
+
+p1 = ggplot(pc, aes(x=PC1, y=PC2, color=Condition, shape=Tech)) + geom_point(size=6) + theme_classic()
+p2 = ggplot(pc, aes(x=PC3, y=PC4, color=Condition, shape=Tech)) + geom_point(size=6) + theme_classic()
+p3 = ggplot(pc, aes(x=PC5, y=PC6, color=Condition, shape=Tech)) + geom_point(size=6) + theme_classic()
+p4 = ggplot(pc, aes(x=PC7, y=PC8, color=Condition, shape=Tech)) + geom_point(size=6) + theme_classic()
+
+grid.arrange(p1,p2,p3,p4, ncol=2)
+
+```
+
+Clearly PC1,2 separate by tech, but PC3,4 separates Wound1 and partly Skin samples from all techs. PC8 separates Wound7.
+
+# Deconvolution
+
+```{r}
+library(SCDC)
+library(Matrix)
+library(Biobase)
+
+
+```
+
+
+
+
+Load gene list that was used for Stereoscope (fc>0.5, pval<0.01)
+
+```{r}
+gene.file = "../../deconv/inputs/sc_data/degs_fc0.5_pval0.01.txt"
+
+d.genes = read.csv(gene.file, header = F)
+d.genes = d.genes[,1]
+length(d.genes)
+
+# take only ones that are included in the common genes
+d.genes = intersect(d.genes, common.genes)
+length(d.genes)
+```
+
+
+Create SC expression set:
+
+```{r}
+scMeta = sc.data@meta.data[,c("Sample_name","Celltype","Donor")]
+sc.eset = ExpressionSet(assayData=as.matrix(sc.data@assays$RNA@counts[d.genes,]),
+                         phenoData =  AnnotatedDataFrame(scMeta))
+```
+
+Create ST/Bulk expression set:
+
+```{r}
+stMeta = all@meta.data[,c("Tech","Donor","Condition")]
+
+bulk.eset = ExpressionSet(assayData = as.matrix(all@assays$RNA@counts[d.genes,]),
+                          phenoData = AnnotatedDataFrame(stMeta))
+```
+
+```{r}
+deconvolution_crc <- SCDC_prop(bulk.eset = bulk.eset,
+                       sc.eset = sc.eset,
+                       ct.varname = "Celltype",
+                       ct.sub = as.character(unique(scMeta$Celltype)))
+
+write.csv(deconvolution_crc$prop.est.mvw, quote = F, file=file.path(outdir, "scdc_prop.est.mvw.csv"))
+
+saveRDS(deconvolution_crc, file=file.path(outdir, "scdc_prop_obj.rds"))
+
+```
+
+
+
+### Results
+
+```{r}
+anno = anno[anno$CellType != "Basal-IV",]
+
+anno = anno[order(anno$MainCellTypes,anno$CellType),]
+
+anno$Color = NA
+anno[grepl("Basal", anno$CellType),"Color"] = colorRampPalette(c("green", "darkgreen"))(3)
+anno[grepl("Spinous", anno$CellType),"Color"] = colorRampPalette(c("lightblue", "darkblue"))(3)
+anno[grepl("Granular", anno$CellType),"Color"] = c("cyan", "cyan3")
+anno[grepl("FB", anno$CellType),"Color"] = colorRampPalette(c("pink", "purple3"))(4)
+anno[anno$CellType %in% c("LC","LE","PC-vSMC","MEL","Schwann","VE"),"Color"] = colorRampPalette(c("grey82", "gray30"))(6)
+anno[is.na(anno$Color),"Color"] = colorRampPalette(c("yellow", "red"))(8)
+
+ct.cols = anno$Color
+names(ct.cols) = anno$CellType
+```
+
+
+
+```{r, fig.width=12, fig.height=8}
+pred = data.frame(deconvolution_crc$prop.est.mvw, check.names = F)
+pred = pred[,anno$CellType] # reorder
+# reorder samples as well
+pred = pred[order(meta$Tech,meta$Condition),]
+
+pred$Sample = factor(rownames(pred), levels = rownames(pred))
+l = reshape2::melt(pred, id.vars = "Sample")
+
+p5 = ggplot(l, aes(x = Sample, y = value, fill = variable)) + geom_bar(position = "fill",
+    stat = "identity") + RotatedAxis() + scale_fill_manual(values = ct.cols)
+print(p5)
+
+```
+
+* Much more Mono-Mac in the bulk VU/Wound samples
+* Bulk FPKM Skin, pretty much all kera are Granular-II, up to 45% of cells.
+* Bulk Counts mainly FB-IV in Skin.
+
+### Compare to true abundances for SC data
+
+Just to check how well the method works, the SC pseudobulk should have the correct proportions.
+
+```{r}
+
+
+ct = data.frame(sc.ct.prop)
+p1 = ggplot(ct, aes(x = Var1, y = Freq, fill = Var2)) + geom_bar(position = "fill",
+    stat = "identity") + RotatedAxis() + scale_fill_manual(values = ct.cols) + ggtitle("True proportions") + small.leg
+
+pr = pred[grepl("SC", rownames(pred)),]
+l = reshape2::melt(pr, id.vars = "Sample")
+
+p2 = ggplot(l, aes(x = Sample, y = value, fill = variable)) + geom_bar(position = "fill",
+    stat = "identity") + RotatedAxis() + scale_fill_manual(values = ct.cols) + ggtitle("Predicted") + small.leg
+
+p1 + p2
+
+```
+
+
+Clearly the deconv does not work so well, even on the pseudobulk from SC data it gives completely different results to the true proportions.
+
+
+## Select more genes
+
+Before used gene list that was used for Stereoscope, filtered for pval<0.01, fc>0.5 and only PC genes.
+
+Take more genes, include nc-genes and no FC cutoff.
+
+
+```{r}
+zdir = "../../scRNAseq/results/zhuang_analysis/oct12"
+markers = readxl::read_xlsx(file.path(zdir,"s2_MarkerGenes_SingleR_Annotation_manually.xlsx"))
+print(length(unique(markers$gene)))
+print(table(markers$cluster))
+
+
+annot = read.csv( file = "../../spatial/meta/genes_parsed.csv")
+#annot = annot[annot$gene_type == "protein_coding",]
+
+
+markers = markers[markers$p_val_adj < 0.01,]
+print(length(unique(markers$gene)))
+print(table(markers$cluster))
+
+```
+
+
+```{r}
+d.genes2 = intersect(unique(as.character(markers$gene)),common.genes)
+print(length(d.genes2))
+
+sc.eset = ExpressionSet(assayData = as.matrix(sc.data@assays$RNA@counts[d.genes2,]), phenoData = AnnotatedDataFrame(scMeta))
+
+bulk.eset = ExpressionSet(assayData = as.matrix(all@assays$RNA@counts[d.genes2, ]),
+    phenoData = AnnotatedDataFrame(stMeta))
+
+deconvolution_crc2 <- SCDC_prop(bulk.eset = bulk.eset, sc.eset = sc.eset, ct.varname = "Celltype",
+    ct.sub = as.character(unique(scMeta$Celltype)))
+
+
+pred = data.frame(deconvolution_crc$prop.est.mvw, check.names = F)
+pred = pred[, anno$CellType]  # reorder
+# reorder samples as well
+pred = pred[order(meta$Tech, meta$Condition), ]
+
+pred$Sample = factor(rownames(pred), levels = rownames(pred))
+l = reshape2::melt(pred, id.vars = "Sample")
+
+p5 = ggplot(l, aes(x = Sample, y = value, fill = variable)) + geom_bar(position = "fill",
+    stat = "identity") + RotatedAxis() + scale_fill_manual(values = ct.cols)
+print(p5)
+
+```
+
+Looks almost identical.
+
+## Select fewer genes
+
+Instead do more strict filtering of the gene lists, filter out 20 genes per cluster.
+
+```{r}
+markers_full = markers
+
+markers = markers[markers$gene %in% common.genes,]
+
+markers$pct.diff <- markers$pct.1 - markers$pct.2
+markers$log.pct.diff <- log2((markers$pct.1 * 99 + 1)/(markers$pct.2 * 99 +
+    1))
+markers %>%
+    group_by(cluster) %>%
+    top_n(-100, p_val) %>%
+    top_n(50, pct.diff) %>%
+    top_n(20, log.pct.diff) -> top20
+d.genes3 <- unique(as.character(top20$gene))
+print(length(d.genes3))
+
+source("../functions/overlap_phyper_v2.R")
+l = split(top20$gene,top20$cluster)
+o = overlap_phyper2(l,l)
+
+```
+
+```{r}
+
+
+sc.eset = ExpressionSet(assayData = as.matrix(sc.data@assays$RNA@counts[d.genes3,]), phenoData = AnnotatedDataFrame(scMeta))
+
+bulk.eset = ExpressionSet(assayData = as.matrix(all@assays$RNA@counts[d.genes3, ]),
+    phenoData = AnnotatedDataFrame(stMeta))
+
+deconvolution_crc2 <- SCDC_prop(bulk.eset = bulk.eset, sc.eset = sc.eset, ct.varname = "Celltype",
+    ct.sub = as.character(unique(scMeta$Celltype)))
+
+
+pred = data.frame(deconvolution_crc$prop.est.mvw, check.names = F)
+pred = pred[, anno$CellType]  # reorder
+# reorder samples as well
+pred = pred[order(meta$Tech, meta$Condition), ]
+
+pred$Sample = factor(rownames(pred), levels = rownames(pred))
+l = reshape2::melt(pred, id.vars = "Sample")
+
+p5 = ggplot(l, aes(x = Sample, y = value, fill = variable)) + geom_bar(position = "fill",
+    stat = "identity") + RotatedAxis() + scale_fill_manual(values = ct.cols)
+print(p5)
+```
+
+
+## Save
+
+Save as h5ad for stereoscope
+
+```{r}
+outdir = "../../deconv/inputs/bulks/"
+dir.create(outdir, showWarnings = F)
+library(SeuratDisk)
+
+# make sure to have the counts in the count slot and convert FPKMs to integers.
+tmp = all
+C = as.matrix(tmp@assays$RNA@counts)
+C = apply(C,2,as.integer)
+rownames(C) = rownames(all)
+
+tmp@assays$RNA@data = C
+
+SaveH5Seurat(tmp, filename = file.path(outdir,"bulk_data.h5Seurat"), overwrite = T)
+Convert(file.path(outdir,"bulk_data.h5Seurat"), dest = "h5ad", overwrite = T)
+
+
+```
+
+Also create new marker gene list with genes that overlap with bulk data, select top50 per celltype
+
+```{r}
+markers = markers[markers$gene %in% common.genes,]
+
+markers$pct.diff <- markers$pct.1 - markers$pct.2
+markers$log.pct.diff <- log2((markers$pct.1 * 99 + 1)/(markers$pct.2 * 99 +1))
+markers %>%
+    group_by(cluster) %>%
+    top_n(-200, p_val) %>%
+    top_n(100, pct.diff) %>%
+    top_n(50, log.pct.diff) -> top50
+d.genes3 <- unique(as.character(top50$gene))
+print(length(d.genes3))
+
+write.table(d.genes, file = file.path(outdir,"bulk_intersection_genes.txt"), quote = F, row.names = F, col.names = F)
+```
+
+
+# Steroscope output
+
+```{r}
+predS = read.csv("../../deconv/results/bulks/proportions.csv", row.names = 1)
+
+celltypes = anno$CellType
+celltypes = sort(celltypes)
+
+
+colnames(predS) = celltypes
+
+
+
+predS = predS[, anno$CellType]  # reorder
+# reorder samples as well
+predS = predS[order(meta$Tech, meta$Condition), ]
+
+predS$Sample = factor(rownames(predS), levels = rownames(predS))
+l = reshape2::melt(predS, id.vars = "Sample")
+
+p5 = ggplot(l, aes(x = Sample, y = value, fill = variable)) + geom_bar(position = "fill",
+    stat = "identity") + RotatedAxis() + scale_fill_manual(values = ct.cols)
+print(p5)
+```
+
+Clearly Stereoscope does not work for the count based datasets. Probably too much detection of each gene. 
+
+### Session info
+
+```{r}
+sessionInfo()
+```

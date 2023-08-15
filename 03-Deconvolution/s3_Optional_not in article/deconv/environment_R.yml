@@ -1,0 +1,96 @@
+## conda requirements for all packages needed to run the scanpy tutorials
+# install with:  mamba env create -n scRNAseq2021 -f environment.yml
+# or  with:  conda env create -n scRNAseq2021 -f environment.yml
+# then run: source activate scRNAseq2021
+name: xu-landen_R
+
+channels:
+ - conda-forge
+ - anaconda
+ - bioconda
+ - defaults
+ - r
+
+dependencies:
+ - r-base=4.0.2
+ - rstudio
+ - r-seurat=4.0.0 
+ - bioconductor-scater
+ - bioconductor-scran
+ - bioconductor-singlecellexperiment
+ - bioconductor-rhdf5
+ - bioconductor-fgsea
+ - bioconductor-biomart
+ - bioconductor-org.hs.eg.db
+ - bioconductor-batchelor
+ - bioconductor-glmgampoi
+ - bioconductor-mast 
+ - r-pheatmap
+ - r-harmony
+ - r-msigdbr
+ - r-rafalib
+ - r-enrichr
+ - r-devtools
+ - r-biocmanager
+ - r-dplyr
+ - r-igraph
+ - r-umap
+ - r-grr
+ - r-hdf5r
+ - r-venn
+ - r-optparse
+ - r-tidyverse
+ - multicore-tsne
+ - requests
+ - r-spam
+ - r-stringi
+ - wget
+ - compilers
+ - r-reshape2
+ - r-knitr
+ - r-rmarkdown
+ - r-reticulate
+ - r-harmony
+ - r-seuratdisk
+ - scrublet
+ - umap-learn
+ - r-fdrtool
+ - r-hmisc
+ - r-caret
+ - r-randomforest
+ - r-diagrammer
+ - r-mlrmbo
+ - r-parallelmap
+ - r-dicekriging
+ - r-e1071
+ - r-ggpubr
+ - r-circlize
+ - bioconductor-complexheatmap
+ - r-nmf
+ - r-ggalluvial
+ - r-svglite
+ - r-expm
+ - r-sna
+ - r-nnls
+ - r-mcmcpack
+ - r-quadprog
+ - r-reshape
+ - r-varhandle
+# - r-l1pack # fails with this R version.
+ - r-fastmatrix 
+#devtools::install_github("olafmersmann/emoa", dependencies=FALSE)
+
+#devtools::install_github("saeyslab/nichenetr", dependencies=FALSE)
+
+# cellchat requires nmf >- 0.23 , only have up to 0.21 on conda
+# install.packages("NMF", dependencies=FALSE)
+# devtools::install_github("sqjin/CellChat", dependencies=FALSE)
+
+
+# remotes::install_github("renozao/xbioc", dependencies = FALSE)
+# install.packages("L1pack", dependencies=FALSE)
+# devtools::install_github("meichendong/SCDC", dependencies = FALSE)
+# devtools::install_github('xuranw/MuSiC', dependencies = FALSE)
+
+# does not work, requires MAST < 1.13:
+# devtools::install_bitbucket("yuanlab/dwls", dependencies = FALSE) 

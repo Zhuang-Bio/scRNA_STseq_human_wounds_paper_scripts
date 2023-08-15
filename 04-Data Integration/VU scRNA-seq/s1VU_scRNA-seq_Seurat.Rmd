@@ -1,0 +1,413 @@
+---
+title: "Integration of wounds and published skin data"
+author: "Zhuang Liu"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true #add a table of contents (TOC)
+    toc_depth: 3 #headers' level in the toc
+    toc_float: true #toc visible even when scrolled
+    theme: lumen
+    highlight: tango
+    code_folding: show
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.align='center', fig.width=12, fig.height = 6, warning=FALSE, message=FALSE)
+```
+
+```{r warning=FALSE, message=FALSE}
+library(Seurat)
+library(SeuratObject)
+library(SeuratDisk)
+library(tidyverse)
+library(patchwork)
+#library(harmony)
+```
+
+# load the data from CMM server (integrated VU and Wounds of KC)
+```{r}
+inteData <- readRDS("/Volumes/zhuliu/Groups/Ning Xu Landén/Lihua_Luo/P4_Zhuang/Step2_ComparedVUandWound_SubcellTypes/c1_KC/s4_KC_removeVUc123_ThenMerge/D07_MapingKcNewCT.rds")
+
+DimPlot(inteData, reduction = "umap", group.by = "NewCT",split.by="Project",label = T)
+mt_all <- inteData@meta.data %>% rownames_to_column(var = "barcodeinte")
+table(mt_all$orig.ident);table(mt_all$Project);table(mt_all$Condition)
+
+# load the metadata of keratinocytes from only VU
+mt_vu <- data.table::fread("/Volumes/zhuliu/Groups/Ning Xu Landén/Lihua_Luo/P4_Zhuang/Step1_Dongqing_scProject/s03_CellTypesIsolated/c1_KC/step4_vu_KC_allmetadata.txt")
+table(mt_vu$orig.ident)
+
+mt_all <- mt_all %>% left_join(., mt_vu[, c(1,22)])
+inteData$subcelltype <- mt_all$subCellType
+
+DimPlot(inteData, reduction = "umap", group.by = "subcelltype",split.by="Project",label = T)
+```
+
+## UMAP plots of Clusters, Samples, Conditions
+```{r}
+DimPlot(inteData, reduction = "umap", group.by='SCT_snn_res.0.5', label=TRUE)
+DimPlot(inteData, reduction = "umap", group.by='SCT_snn_res.1', label=TRUE)
+DimPlot(inteData, reduction = "umap", group.by='SCT_snn_res.1.2', label=TRUE)
+DimPlot(inteData, reduction = "umap", group.by='SCT_snn_res.0.8', label=TRUE)
+
+DimPlot(object = inteData, reduction = "umap", group.by = "newMainCellTypes",label = T) + NoLegend()
+
+inteData$VUcelltype <- mt_ori$CellTypes
+DimPlot(object = inteData, reduction = "umap", group.by = "newCellTypes",label = T) + NoLegend()
+DimPlot(object = inteData, reduction = "umap", group.by = "VUcelltype",label = T) + NoLegend()
+
+DimPlot(inteData, reduction = "umap", group.by='orig.ident', label=FALSE) +
+  ggtitle('Samples')
+
+DimPlot(inteData, reduction = "umap", group.by = "SCT_snn_res.1.2", pt.size = .001, split.by = 'orig.ident', ncol = 5, label = F) 
+
+DimPlot(inteData, reduction = "umap", group.by='Condition', label=FALSE) +
+  ggtitle('Groups')
+DimPlot(inteData, reduction = "umap", group.by = "SCT_snn_res.1.2", pt.size = .001, split.by = 'Condition', ncol = 4, label = FALSE) + NoLegend()
+```
+
+```{r}
+# Determine metrics to plot present in inteData@meta.data
+metrics <-  c("nCount_RNA", "nFeature_RNA", "S.Score", "G2M.Score", "percent.mt")
+
+FeaturePlot(inteData,
+            reduction = "umap",
+            features = metrics,
+            pt.size = 0.001,
+            label = FALSE)
+```
+
+# plot marker genes
+```{r}
+FeaturePlot(inteData, features = c("KRT5", "KRT15", "KRT1", "KRT10", "COL1A1", "COL1A2"), cols = c("grey90", "red"), ncol = 3)
+table(inteData$orig.ident, inteData$SCT_snn_res.1.2)
+```
+
+
+# load the data of VU project
+```{r}
+vuinte <- readRDS("/Volumes/zhuliu/Groups/Dongqing Li Private/Groups/Ning Landen/Lihua_Luo/P4_Zhuang/Step1_Dongqing_scProject/s04_CleanUpData/D03_AfterHarmony.rds")
+DefaultAssay(vuinte) <- "SCT"
+
+DimPlot(object = vuinte, reduction = "umap", group.by = "SCT_snn_res.0.8",label = T) 
+
+# rerun the UMAP, clustering
+vuinte <- RunUMAP(vuinte, dims = 1:30, assay = "SCT", reduction = "harmony", n.neighbors = 40,
+                  min.dist = 0.3, n.epochs = 300, spread = 1, learning.rate = 1)
+vuinte = FindNeighbors(vuinte, dims = 1:30, reduction = "harmony", k.param = 40)
+vuinte = FindClusters(vuinte, resolution = 0.8)
+vuinte = FindClusters(vuinte, resolution = 1)
+vuinte = FindClusters(vuinte, resolution = 1.2)
+
+DimPlot(object = vuinte, reduction = "umap", group.by = "SCT_snn_res.0.8",label = T)
+DimPlot(object = vuinte, reduction = "umap", group.by = "SCT_snn_res.1",label = T)
+DimPlot(object = vuinte, reduction = "umap", group.by = "SCT_snn_res.1.2",label = T)
+table(vuinte$orig.ident, vuinte$SCT_snn_res.1.2)
+FeaturePlot(vuinte, features = c("FLG", "IVL", "KRT10", "PMEL", "COL1A2", "LYZ","IL1B", "CD68", "CD163", "C1QB", "MKI67", "CD14"), cols = c("grey90", "red"), ncol = 3)
+FeaturePlot(vuinte, features = c("KRT5", "KRT14", "KRT15", "CD207",
+                                 "CD79A", "JCHAIN"), cols = c("grey90", "red"), ncol = 4)
+FeaturePlot(vuinte, features = c("HEY1", "SEMA3G", "MYH11", "COL6A3"), cols = c("grey90", "red"), ncol = 2)
+# keep the metadata
+mt_ori_vu <- vuinte@meta.data %>% rownames_to_column(var = "barcodeindex")
+mt_vu <- mt_ori_vu %>% select(1:5,7,10:20,30,31,37)
+colnames(mt_vu)[17:20] <- paste0("vu_", colnames(mt_vu)[17:20])
+```
+
+# annotate the integrated VU and Wounds data
+## add the original cluster number of VU into the integrated data
+```{r}
+mt_f <- inteData@meta.data %>% rownames_to_column(var = "barcodeindex") %>% left_join(., mt_vu[, c(1, 17, 19:20)], by=c("barcodeindex")) %>% column_to_rownames(var = "barcodeindex")
+inteData@meta.data <- mt_f
+
+DimPlot(object = inteData, reduction = "umap", group.by = "vu_SCT_snn_res.1",label = T, split.by = "Condition", ncol = 4)
+```
+
+```{r}
+# re-annotate the cell clusters according the UMAP embedding axes
+anno.cl <- list()
+anno.cl$Bas1 = c(0)
+anno.cl$Bas2 = c(21) # specific cluster of VU
+anno.cl$BasProlif = c(12) 
+anno.cl$Spi1 = c(5)
+anno.cl$Spi2 = c(3)
+anno.cl$Spi3 = c(22) # specific cluster of VU
+anno.cl$Spimig = c(8)
+anno.cl$Gra = c(4) 
+anno.cl$HF = c(15)
+anno.cl$MEL = c(16)
+anno.cl$FB1 = c(1)
+anno.cl$FB2 = c(9)
+anno.cl$Mac1 = c(14)
+anno.cl$Mac2 = c(10)
+anno.cl$DCs = c(18)
+anno.cl$Blympho = c(20)
+anno.cl$Ths = c(11)
+anno.cl$NKs = c(7)
+anno.cl$LE = c(19)
+anno.cl$VE = c(2)
+anno.cl$artVE = c(17)
+anno.cl$Pericytes = c(6)
+anno.cl$SMCs = c(13)
+
+trans = rep(names(anno.cl), times = unlist(lapply(anno.cl, length)))
+names(trans) = unlist(anno.cl)
+mt_vu$newCellType = trans[as.character(mt_vu$vu_SCT_snn_res.1)]
+mt_vu_anno <- mt_vu %>% column_to_rownames(var = "barcodeindex")
+
+vuinte@meta.data <- mt_vu_anno
+DimPlot(object = vuinte, reduction = "umap", group.by = "newCellType", label = T) 
+
+vuinte@active.ident <- vuinte$vu_SCT_snn_res.1
+vuinte$seurat_clusters <- vuinte$newCellType
+table(vuinte$orig.ident, vuinte$newCellType)
+
+saveRDS(vuinte, "/Volumes/zhuliu/Groups/Dongqing Li Private/Groups/Ning Landen/Lihua_Luo/P4_Zhuang/Step1_Dongqing_scProject/s04_CleanUpData/D04_annotatedData.rds")
+```
+
+# plotting for publishing paper
+```{r}
+vuinte <- readRDS("D04_annotatedData.rds")
+pdf(file = "QC1.pdf", useDingbats = F, width = 10, height = 4)
+DimPlot(object = vuinte, reduction = "umap", group.by = "orig.ident", label = F) +
+  DimPlot(object = vuinte, reduction = "umap", group.by = "Condition", label = F) +
+dev.off()
+
+# rename the cell type
+# re-annotate the cell clusters according the UMAP embedding axes
+anno.cl <- list()
+anno.cl$'Bas-I' = c(0)
+anno.cl$'Bas-VU' = c(21) # specific cluster of VU
+anno.cl$'Bas-prolif' = c(12) 
+anno.cl$'Spi-I' = c(5)
+anno.cl$'Spi-II' = c(3)
+anno.cl$'Spi-III' = c(22) # specific cluster of VU
+anno.cl$'Spi-mig' = c(8)
+anno.cl$'Gra-I' = c(4) 
+anno.cl$HF = c(15)
+anno.cl$MEL = c(16)
+anno.cl$'FB-I' = c(1)
+anno.cl$'FB-II' = c(9)
+anno.cl$Mac1 = c(14)
+anno.cl$Mac2 = c(10)
+anno.cl$DCs = c(18)
+anno.cl$B_lympho = c(20)
+anno.cl$Ths = c(11)
+anno.cl$NKs = c(7)
+anno.cl$LE = c(19)
+anno.cl$VE = c(2)
+anno.cl$artVE = c(17)
+anno.cl$Pericytes = c(6)
+anno.cl$SMCs = c(13)
+
+trans = rep(names(anno.cl), times = unlist(lapply(anno.cl, length)))
+names(trans) = unlist(anno.cl)
+vuinte$CellType = trans[as.character(vuinte$vu_SCT_snn_res.1)]
+pdf(file = "QC2.pdf", useDingbats = F, width = 8, height = 4)
+(DimPlot(object = vuinte, reduction = "umap", group.by = "vu_SCT_snn_res.1", label = T, label.size = 3) + NoLegend() + NoAxes()) +
+  (DimPlot(object = vuinte, reduction = "umap", group.by = "CellType", label = T, label.size = 3) + NoLegend() + NoAxes())
+dev.off()
+#pdf(file = "QC2.pdf", useDingbats = F, width = 8, height = 4)
+#VlnPlot(vuinte, features = c("nCount_RNA", "nFeature_RNA"), group.by = "CellType")
+#DimPlot(object = vuinte, reduction = "umap", group.by = "orig.ident", label = F) 
+#dev.off()
+```
+
+# output the .bcs file for Dongqing
+```{r}
+library(rBCS)
+ExportSeurat(vuinte,
+             "/Volumes/zhuliu/Groups/Dongqing Li Private/Groups/Ning Landen/Lihua_Luo/P4_Zhuang/Step1_Dongqing_scProject/s04_CleanUpData/D04_annotatedData.bcs",
+             unique.limit = 100,
+             clustering.name = "seurat_clusters",
+             compression.level = 5,
+             author = "zhuang.liu@ki.se",
+             raw.rna = "RNA",
+             norm.rna = "RNA",
+             overwrite = TRUE)
+
+```
+
+
+# add the annotation of VU clusters into integrated data
+```{r}
+mt_f_add <- mt_f %>% rownames_to_column(var = "barcodeindex") %>% 
+  left_join(., mt_vu[, c(1, 21)], by=c("barcodeindex")) %>% column_to_rownames(var = "barcodeindex")
+inteData@meta.data <- mt_f_add
+colnames(inteData@meta.data)[c(17, 18, 28)] <- c("wdsMainCellTypes", "wdsCellTypes", "vuCellTypes")
+inteData$VUcelltype <- NULL # remove the previous VU annotation
+inteData$vu_SCT_snn_res.0.8 <- NULL
+inteData$vu_SCT_snn_res.1 <- NULL
+inteData$vu_SCT_snn_res.1.2 <- NULL
+
+inteData$newCellType <- gsub("NA", "", paste0(inteData$wdsCellTypes, inteData$vuCellTypes))
+inteData$seurat_clusters <- inteData$newCellType
+
+DimPlot(object = inteData, reduction = "umap", group.by = "newCellType", label = T, split.by = "Project")
+DimPlot(object = inteData, reduction = "umap", group.by = "SCT_snn_res.1.2", label = T, split.by = "Project")
+
+saveRDS(inteData, "/Volumes/zhuliu/Groups/Dongqing Li Private/Groups/Ning Landen/Lihua_Luo/P4_Zhuang/Step2_ComparedVUandWound_SubcellTypes/c0_InteAllVuWoundhealing/D05_annotatedInteData.rds")
+
+inteData@active.ident <- inteData$SCT_snn_res.1.2
+# output the bcs file
+ExportSeurat(inteData,
+             "/Volumes/zhuliu/Groups/Dongqing Li Private/Groups/Ning Landen/Lihua_Luo/P4_Zhuang/Step2_ComparedVUandWound_SubcellTypes/c0_InteAllVuWoundhealing/D05_annotatedInteData.bcs",
+             unique.limit = 100,
+             clustering.name = "seurat_clusters",
+             compression.level = 5,
+             author = "zhuang.liu@ki.se",
+             raw.rna = "RNA",
+             norm.rna = "RNA",
+             overwrite = TRUE)
+```
+
+
+# Cell Proportion analysis
+```{r}
+# load the data
+vuinte <- readRDS("/Volumes/zhuliu/Groups/Ning Xu Landén/Lihua_Luo/P4_Zhuang/Step1_Dongqing_scProject/s04_CleanUpData/D04_annotatedData.rds")
+vuinte$newCellType <- factor(vuinte$newCellType, levels = trans)
+table(vuinte$orig.ident, vuinte$newCellType)
+table(vuinte$Condition, vuinte$newCellType)
+p0 <- DimPlot(object = vuinte, reduction = "umap", group.by = "orig.ident", label = F)
+p1 <- DimPlot(object = vuinte, reduction = "umap", group.by = "Condition", label = F)
+p2 <- DimPlot(object = vuinte, reduction = "umap", group.by = "newCellType", label = T) + NoLegend()
+p0 + p1 + p2
+
+p3 <- VlnPlot(vuinte,features = c("nCount_RNA", "nFeature_RNA"), group.by = "newCellType", pt.size = 0)
+p3
+
+(p0 + p1 + p2) / p3
+
+DimPlot(object = vuinte, reduction = "umap", group.by = "newCellType", label = T, split.by = "Condition") + NoLegend()
+
+DimPlot(object = vuinte, reduction = "umap", group.by = "newCellType", label = T, split.by = "orig.ident", ncol = 3) + NoLegend()
+DefaultAssay(vuinte) <- "RNA"
+VlnPlot(vuinte, features = c("FOSL1"), group.by = "newCellType", split.by = "Condition")
+FeaturePlot(vuinte, features = c("FOSL1"), cols = c("grey90", "red"), order = T)
+FeaturePlot(vuinte, features = c("FOSL1"),split.by = "Condition", cols = c("grey90", "red"), order = T)
+
+# step 1. 12 individuals divided into cell types and their numbers
+fac_levs <- trans #this is from the annotation step
+septype <- c(rep("Epidermis", 10), rep("Dermis", 13))
+names(septype) <- trans
+step1 <- table(vuinte$orig.ident, vuinte$newCellType) %>% as.data.frame()
+step1$sepa <- septype[as.character(step1$Var2)]
+
+# step 2. read the cell numbers of dermis and epidermis
+step2 <- step1 %>% group_by(Var1, sepa) %>% summarise(asum=sum(Freq))
+
+# step 3. calculate the proportion of each cell type for each individual
+step3 <- step1 %>% left_join(., step2, by=c("sepa"="sepa", "Var1"="Var1")) %>% distinct() %>% 
+  mutate(Prop=Freq/asum)
+
+# step 4. calculate the total normalized proportions of each cell type per condition
+df.group <- step3 %>% mutate(Sample = substring(Var1, 1, 2)) %>% 
+  group_by(Sample, Var2) %>% summarise(Freq=sum(Prop)) %>% ungroup() %>% 
+  group_by(Var2) %>% # here depends on what you want to show: Condition of each cell type or Cell Type of each condition
+  mutate(Freq_new = Freq/sum(Freq), lbl = scales::percent(Freq_new)) %>% ungroup() %>% 
+  dplyr::rename("Cluster" = "Var2")
+
+# step 4. (Optional) calculate the total normalized proportions of each cell type per condition
+## How to deal with the VU1?
+df.group <- step3 %>% filter(!Var1 %in% c("VU1")) %>% mutate(Sample = substring(Var1, 1, 2)) %>% 
+  group_by(Sample, Var2) %>% summarise(Freq=sum(Prop)) %>% ungroup() %>% 
+  group_by(Var2) %>% # here depends on what you want to show: Condition of each cell type or Cell Type of each condition
+  mutate(Freq_new = Freq/sum(Freq), lbl = scales::percent(Freq_new)) %>% ungroup() %>% 
+  dplyr::rename("Cluster" = "Var2")
+
+df.group$Sample <- factor(df.group$Sample, levels = c("NS", "VU"))
+df.group$Cluster <- factor(df.group$Cluster, levels = fac_levs)
+
+p_cp_5 <- ggplot(df.group, aes(x = Cluster, y = Freq_new, fill = Sample)) +
+  geom_bar(position = "fill", stat = "identity") +
+  #scale_fill_manual(values = ct.cols) + 
+  xlab('') +
+  scale_y_continuous(breaks = seq(0, 1, .2), 
+                     expand = c(0, 0.01),
+                     labels = c("0%", "20%", "40%", "60%", "80%", "100%"),
+                     name = 'Percentage') +
+  geom_text(aes(label = lbl), 
+            size = 4, 
+            position = position_stack(vjust = 0.5)) +
+  theme_bw() +
+  theme(
+    panel.grid.major.x = element_blank(),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    strip.background = element_blank(),
+    axis.text.x = element_text(size = 14, color = "black", angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 14, color = "black"),
+    axis.title.y = element_text(size = 16, color = "black"),
+    legend.position = "right",
+    legend.text = element_text(size = 12, color = "black")
+  ) 
+p_cp_5
+```
+
+# Cell Proportion analysis (without considering the epidermis and dermis)
+```{r}
+####----Please pay attentions to the original numbers of cells per sample----####
+clusters <- fac_levs
+levels(clusters) <- fac_levs
+
+clusters <- clusters[order(clusters)]
+df <- data.frame()
+for(i in 1:length(clusters)){
+  SmCell_sum <- table(vuinte$orig.ident)
+  tmp.df1 <- vuinte@meta.data %>% subset(newCellType == clusters[i]) %>% select(orig.ident) %>% table()
+  if(length(tmp.df1) == 6){
+    #First normalize the total cell counts per sample
+    cur_df <- as.data.frame(tmp.df1 / SmCell_sum)
+    colnames(cur_df) <- c("Sample", "Freq")
+    #Calculate the normalized proportion 
+    cur_df$Freq <- cur_df$Freq * 1/(sum(cur_df$Freq))
+    cur_df$Cluster <- clusters[i]
+    df <- rbind(df, cur_df)
+  } else {
+    #only include the matched samples
+    match.sample <- SmCell_sum[names(SmCell_sum) %in% names(tmp.df1)]
+    #First normalize the total cell counts per sample
+    cur_df <- as.data.frame(tmp.df1 / match.sample)
+    colnames(cur_df) <- c("Sample", "Freq")
+    #Calculate the normalized proportion 
+    cur_df$Freq <- cur_df$Freq * 1/(sum(cur_df$Freq))
+    cur_df$Cluster <- clusters[i]
+    df <- rbind(df, cur_df)
+  }
+}
+
+df.group <- df %>% mutate(Sample = substring(Sample, 1, 2)) %>% group_by(Cluster, Sample) %>% 
+  summarise(Freq = sum(Freq))
+df.group$Sample <- factor(df.group$Sample, levels = c("NS", "VU"))
+df.group$Cluster <- factor(df.group$Cluster, levels = fac_levs)
+
+ggplot(df.group, aes(x = Cluster, y = Freq, fill = Sample)) +
+  geom_bar(position = "fill", stat = "identity") +
+  xlab('') +
+  scale_y_continuous(breaks = seq(0, 1, .2), 
+                     expand = c(0, 0.01),
+                     labels = c("0%", "20%", "40%", "60%", "80%", "100%"),
+                     name = 'Percentage') +
+  geom_hline(yintercept=0.5, linetype="dashed") +
+  theme_bw() +
+  theme(
+    panel.grid.major.x = element_blank(),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    strip.background = element_blank(),
+    axis.text.x = element_text(size = 14, color = "black", angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 14, color = "black"),
+    axis.title.y = element_text(size = 16, color = "black"),
+    legend.position = "right",
+    legend.text = element_text(size = 12, color = "black")
+  )
+```
+
+
+# SessionInfo
+```{r}
+sessionInfo()
+```
+

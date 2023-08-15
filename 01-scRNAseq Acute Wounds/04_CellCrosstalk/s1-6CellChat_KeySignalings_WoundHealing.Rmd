@@ -1,0 +1,147 @@
+---
+title: "CellChat analysis across conditions"
+author: "Zhuang Liu"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    toc: true #add a table of contents (TOC)
+    toc_depth: 3 #headers' level in the toc
+    toc_float: true #toc visible even when scrolled
+    theme: lumen
+    highlight: tango
+    code_folding: hide
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.align='center', fig.width=12, warning=FALSE, message=FALSE)
+```
+
+#####################################
+# Part 1: Data loading and comparing
+
+## a. Load the required libraries and data
+```{r warning=FALSE, message=FALSE}
+library(CellChat)
+library(patchwork)
+library(Seurat)
+library(tidyverse)
+options(stringsAsFactors = FALSE)
+
+conditions = c("Skin", "Wound1", "Wound7", "Wound30")
+
+alldata = list()
+for (cond in conditions) {
+    savefile2 = paste0("./cellchat_all_L-R_", cond, ".rds")
+    alldata[[cond]] = readRDS(file = savefile2)
+}
+
+alldata <- lapply(alldata, updateCellChat) # Update the objects since the cellchat was updated after my analysis
+alldata_ori <- alldata # make a copy
+```
+
+## Signalings: IL1, CXCL, CCL, TNF, TGFb, EGF, FGF, ANGPTL, COLLAGEN, FN1, LAMININ, CD99, WNT, PARs, THBS, NOTCH (No SPP1 in the data)
+```{r fig.height=10}
+object.list.all <- list(Skin = alldata_ori[["Skin"]], 
+                        Wound1 = alldata_ori[["Wound1"]],
+                        Wound7 = alldata_ori[["Wound7"]], 
+                        Wound30 = alldata_ori[["Wound30"]])
+
+allcount_group1 <- object.list.all[[1]]@net[["count"]]
+allcount_group2 <- object.list.all[[2]]@net[["count"]]
+allcount_group3 <- object.list.all[[3]]@net[["count"]]
+allcount_group4 <- object.list.all[[4]]@net[["count"]]
+
+# calculate the total number of interactions of ligands and receptors
+group1_nInt <- colSums(allcount_group1) + rowSums(allcount_group1)
+group2_nInt <- colSums(allcount_group2) + rowSums(allcount_group2)
+group3_nInt <- colSums(allcount_group3) + rowSums(allcount_group3)
+group4_nInt <- colSums(allcount_group4) + rowSums(allcount_group4)
+
+nodesize <- list(group1=group1_nInt, group2=group2_nInt,
+                 group3=group3_nInt, group4=group4_nInt)
+
+nodecolor <- c("#d94701", "#fd8d3c", "#fdbe85", #Basal clusters
+             "#33A02C", "#72BF5A", "#B2DF8A", #Spinous clusters
+             "#f768a1", "#d4b9da", #Granular, Hair follicle
+             "#737373", #MEL
+             "#0570b0", "#3690c0", "#92c5de", "#d1e5f0", #Fibroblast clusters
+             "#c0a700", "#1a9850", "#fb9a99", "#8d4720",  # Schwann,PCvSMC,LE,VE
+             "#35978f", "#41b6c4", "#80cdc1","#df65b0", #"NK-cell", "Th", "Plasma_Bcell", "Mast-cell", 
+             "#dd3497", "#807dba","#6a3d9a","#9e9ac8", "#b15928" #"Mono-Mac", "cDC1", "cDC2", "DC3", "LC"
+)
+
+pathways.show.all <- c("IL1", "CXCL", "CCL", "TNF", "TGFb", "EGF", "FGF", "ANGPTL", 
+                       "COLLAGEN", "FN1", "LAMININ", "CD99", "WNT", "PARs", "THBS", 
+                       "NOTCH")
+for (i in seq_along(pathways.show.all)) {
+  pathways.show <- pathways.show.all[i] #PDGF, VEGF
+  weight.max <- getMaxWeight(object.list.all, slot.name = c("netP"), attribute = pathways.show) #   control the edge weights across different datasets
+  io.idex = which(levels(object.list.all[[1]]@idents) %in% c("Bas-mig", "Spi-mig"))
+  
+  #pdf("THBS_FB.pdf", useDingbats = F, width = 12, height = 12)
+  par(mfrow = c(2,2), xpd=TRUE)
+  for (i in 1:length(object.list.all)) {
+    netVisual_aggregate(object.list.all[[i]], signaling = pathways.show, layout = "circle", 
+                        #sources.use = io.idex, # only care for the ligands from interested clusters
+                        #targets.use = io.idex, # only care for the receptors from interested clusters
+                        idents.use = io.idex, # both ligands and receptors from interested clusters
+                        edge.weight.max = weight.max[1], edge.width.max = 15, 
+                        signaling.name = paste(pathways.show, names(object.list.all)[i]), 
+                        thresh = 0.01, show.legend = T, arrow.size = 0.1,
+                        vertex.weight = nodesize[[i]], 
+                        vertex.weight.max = max(unlist(nodesize)), 
+                        color.use = nodecolor)
+  }
+  #dev.off()
+  
+  # draw the violin plot
+  cellchat <- mergeCellChat(object.list.all, add.names = names(object.list.all))
+  cellchat@meta$datasets = factor(cellchat@meta$datasets, levels = c("Skin", "Wound1", "Wound7", "Wound30")) 
+  
+  print(plotGeneExpression(cellchat, signaling = pathways.show, 
+                           split.by = "datasets", colors.ggplot = T))
+}
+```
+
+# Compare outgoing (or incoming) signaling associated with each cell population
+```{r eval=FALSE}
+library(ComplexHeatmap)
+object.list <- list(Skin = alldata[["Skin"]], Wound1 = alldata[["Wound1"]])
+cellchat <- mergeCellChat(object.list, add.names = names(object.list))#, cell.prefix = TRUE)
+
+i=1
+
+# combining all the identified signaling pathways from different datasets 
+#pathway.union <- union(object.list[[i]]@netP$pathways, object.list[[i+1]]@netP$pathways)
+pathway.union <- c("EGF", "PARs", "THBS", "COLLAGEN", "FN1")
+ht1 = netAnalysis_signalingRole_heatmap(object.list[[i]], pattern = "outgoing", signaling = pathway.union, title = names(object.list)[i], width = 5, height = 6)
+ht2 = netAnalysis_signalingRole_heatmap(object.list[[i+1]], pattern = "outgoing", signaling = pathway.union, title = names(object.list)[i+1], width = 5, height = 6)
+draw(ht1 + ht2, ht_gap = unit(0.5, "cm"))
+
+ht1 = netAnalysis_signalingRole_heatmap(object.list[[i]], pattern = "incoming", signaling = pathway.union, title = names(object.list)[i], width = 5, height = 6, color.heatmap = "GnBu")
+ht2 = netAnalysis_signalingRole_heatmap(object.list[[i+1]], pattern = "incoming", signaling = pathway.union, title = names(object.list)[i+1], width = 5, height = 6, color.heatmap = "GnBu")
+draw(ht1 + ht2, ht_gap = unit(0.5, "cm"))
+
+ht1 = netAnalysis_signalingRole_heatmap(object.list[[i]], pattern = "all", signaling = pathway.union, title = names(object.list)[i], width = 5, height = 6, color.heatmap = "OrRd")
+ht2 = netAnalysis_signalingRole_heatmap(object.list[[i+1]], pattern = "all", signaling = pathway.union, title = names(object.list)[i+1], width = 5, height = 6, color.heatmap = "OrRd")
+draw(ht1 + ht2, ht_gap = unit(0.5, "cm"))
+```
+
+# Ligand-receptor pairs
+```{r eval=FALSE}
+pairLR.use <- extractEnrichedLR(cellchat, signaling = c("EGF"))
+gg1 <- netVisual_bubble(cellchat, comparison = c(1, 2), angle.x = 45, remove.isolate = T, signaling = "EGF", thresh = 0.01)
+gg1
+#> Comparing communications on a merged object
+gg2 <- netVisual_bubble(cellchat, comparison = c(1, 2), angle.x = 45, remove.isolate = T)
+#> Comparing communications on a merged object
+gg1 + gg2
+```
+
+
+# SessionInfo
+```{r}
+sessionInfo()
+```

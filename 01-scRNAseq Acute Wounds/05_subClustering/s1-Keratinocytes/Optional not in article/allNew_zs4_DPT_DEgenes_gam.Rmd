@@ -1,0 +1,459 @@
+---
+title: "DPT DE genes"
+author: "Zhuang Liu"
+date: "02/12/2021 Updated: `r Sys.Date()`"
+output:
+  html_document:
+    toc: true #add a table of contents (TOC)
+    toc_depth: 3 #headers' level in the toc
+    toc_float: true #toc visible even when scrolled
+    theme: lumen
+    highlight: tango
+    code_folding: hide
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.align='center', fig.width=12, fig.height = 8, warning=FALSE, message=FALSE)
+```
+
+```{r warning=FALSE, message=FALSE}
+library(Seurat)
+library(SeuratObject)
+library(SeuratDisk)
+library(tidyverse)
+library(magrittr)
+library(SingleCellExperiment)
+library(destiny)
+library(scater)
+library(plyr)
+library(gam)
+
+library(ComplexHeatmap)
+library(ggplot2)
+library(dplyr)
+library(RColorBrewer)
+library(circlize)
+```
+
+```{r}
+rm(list = ls());gc()
+keratins <- readRDS("allNew_subcluster_keratins_220203.rds")
+
+DimPlot(object = keratins, 
+        reduction = "umap", 
+        label = TRUE, 
+        group.by = "CellTypes", label.size = 6) + NoAxes() + ggtitle("Cell Types")
+#
+source("../Functions/pesudotime_driveGene_functions.R")
+```
+
+# 0. preparation
+## 0-1. Lord the packages, the data, etc.
+```{r}
+doParallel::registerDoParallel(cores=8)
+#
+tfs = data.table::fread("allNew_zs3_scVelo_preparation/hs_hgnc_tfs.txt", header = FALSE)
+tfs = unique(tfs$V1)
+```
+
+```{r}
+for (i in unique(keratins$Condition)) {
+  print(i)
+  
+  i="Skin"
+  
+  sub_kera <- subset(keratins, subset = Condition == i)
+  sub_kera@meta.data <- droplevels(sub_kera@meta.data)
+  table(sub_kera$CellTypes)
+  
+# diffmap
+  diffmap = data.table::fread(file = paste0("allNew_zs3_scVelo_preparation/DPT_", tolower(i), "_diffMap.txt"), header = T)
+  diffmap = diffmap[,c("barcode","1","2")] %>% as.data.frame() %>% tibble::column_to_rownames("barcode")
+  colnames(diffmap) = c("DC1","DC2")
+  
+  # dpt_pseudotime
+  dpt = data.table::fread(file = paste0("allNew_zs3_scVelo_preparation/DPT_", tolower(i), "_dpt_pseudotime.txt"), header = T)
+  identical(rownames(diffmap), dpt$barcode)
+  diffmap$dpt_pseudotime = dpt$dpt_pseudotime
+  
+  ## DEG (driver genes) along the trajectory
+  file_exist1 = file.exists(paste0("allNew_zs3_scVelo_preparation/DPT_diffMap_driverGene_", tolower(i), "_path1.rds"))
+
+  if(file_exist1){
+    gam.test = readRDS(paste0("allNew_zs3_scVelo_preparation/DPT_diffMap_driverGene_", tolower(i), "_path1.rds"))
+  }else{
+    ## modified sce
+    sce = as.SingleCellExperiment(sub_kera, assay = "RNA")
+    sce = sce[,rownames(diffmap)]
+    reducedDim(sce, "diffmap") = diffmap[,c("DC1","DC2")]
+    sce$dpt_pseudotime = diffmap$dpt_pseudotime
+    sce$CellTypes = as.character(sce$CellTypes)
+
+    table(sce$CellTypes)
+    #check the path 1: Bas_I - Bas_III - Bas_II - Spi_I - Spi_II - Spi_III - Gra_I
+    sce = sce[, sce$CellTypes %in% c("Bas_I", "Bas_III", "Bas_II", "Spi_I", "Spi_II", "Spi_III", "Gra_I")]
+    table(sce$CellTypes)
+  
+    # covert the pseudotime as the percentage
+    sce = convertDPTperc(sce)
+  
+    gam.test = testProcess(sce, tfs)
+    saveRDS(gam.test, file=paste0("allNew_zs3_scVelo_preparation/DPT_diffMap_driverGene_", tolower(i), "_path1.rds"))  
+  }
+  
+  rm(gam.test)
+  
+  file_exist2 = file.exists(paste0("allNew_zs3_scVelo_preparation/DPT_diffMap_driverGene_", tolower(i), "_path2.rds"))
+
+  if(file_exist2){
+    gam.test = readRDS(paste0("allNew_zs3_scVelo_preparation/DPT_diffMap_driverGene_", tolower(i), "_path2.rds"))
+  }else{
+    ## modified sce
+    sce = as.SingleCellExperiment(sub_kera, assay = "RNA")
+    sce = sce[,rownames(diffmap)]
+    reducedDim(sce, "diffmap") = diffmap[,c("DC1","DC2")]
+    sce$dpt_pseudotime = diffmap$dpt_pseudotime
+    sce$CellTypes = as.character(sce$CellTypes)
+
+    table(sce$CellTypes)
+    #check the path 2: Bas_I - Bas_III - Bas_II - Spi_I - Spi_V - Gra_I
+    sce = sce[, sce$CellTypes %in% c("Bas_I", "Bas_III", "Bas_II", "Spi_I", "Spi_V", "Gra_I")]
+    table(sce$CellTypes)
+  
+    # covert the pseudotime as the percentage
+    sce = convertDPTperc(sce)
+  
+    gam.test = testProcess(sce, tfs)
+    saveRDS(gam.test, file=paste0("allNew_zs3_scVelo_preparation/DPT_diffMap_driverGene_", tolower(i), "_path2.rds"))  
+  }  
+}
+```
+
+### heatmap and scatter plot
+```{r, fig.width=7, fig.height=5}
+scepre <- function(i=NULL, tracePATH1=TRUE){
+  sub_kera <- subset(keratins, subset = Condition == i)
+  sub_kera@meta.data <- droplevels(sub_kera@meta.data)
+  table(sub_kera$CellTypes)
+  
+# diffmap
+  diffmap = data.table::fread(file = paste0("allNew_zs3_scVelo_preparation/DPT_", tolower(i), "_diffMap.txt"), header = T)
+  diffmap = diffmap[,c("barcode","1","2")] %>% as.data.frame() %>% tibble::column_to_rownames("barcode")
+  colnames(diffmap) = c("DC1","DC2")
+  
+  # dpt_pseudotime
+  dpt = data.table::fread(file = paste0("allNew_zs3_scVelo_preparation/DPT_", tolower(i), "_dpt_pseudotime.txt"), header = T)
+  identical(rownames(diffmap), dpt$barcode)
+  diffmap$dpt_pseudotime = dpt$dpt_pseudotime
+
+  ## modified sce
+  sce = as.SingleCellExperiment(sub_kera, assay = "RNA")
+  sce = sce[,rownames(diffmap)]
+  reducedDim(sce, "diffmap") = diffmap[,c("DC1","DC2")]
+  sce$dpt_pseudotime = diffmap$dpt_pseudotime
+  sce$CellTypes = as.character(sce$CellTypes)
+  
+  if(tracePATH1){
+    sce = sce[, sce$CellTypes %in% c("Bas_I", "Bas_III", "Bas_II", "Spi_I", "Spi_II", "Spi_III", "Gra_I")]
+  }else{
+    sce = sce[, sce$CellTypes %in% c("Bas_I", "Bas_III", "Bas_II", "Spi_I", "Spi_V", "Gra_I")]
+  }
+  sce = convertDPTperc(sce)
+  return(sce)
+}
+
+i="Wound30"
+#sce <- scepre(i="Skin", tracePATH1 = TRUE)
+sce <- scepre(i="Wound30", tracePATH1 = FALSE)
+table(sce$CellTypes)
+
+#gam.test <- readRDS(paste0("allNew_zs3_scVelo_preparation/DPT_diffMap_driverGene_", tolower(i), "_path1.rds"))
+gam.test <- readRDS(paste0("allNew_zs3_scVelo_preparation/DPT_diffMap_driverGene_", tolower(i), "_path2.rds"))
+
+p.cutoff = 0.01
+c.cutoff = 0.3
+#
+gam.test$sig = ifelse(gam.test$adj.p < p.cutoff & abs(gam.test$coef) > c.cutoff, T, F)
+table(gam.test$sig)
+
+plot.gene.tf <- gam.test[gam.test$sig, ]
+table(plot.gene.tf$is.TF)
+plot_tfs <- plot.gene.tf %>% filter(is.TF == TRUE) %>% pull(geneSymbol)
+#
+plot.gene = as.character(gam.test[gam.test$sig, "geneSymbol"])
+
+pt.matrix_ori <- exprs(sce)[match(plot.gene, rownames(rowData(sce))), ]
+dim(pt.matrix_ori)
+#Can also use "normalized_counts" instead of "exprs" to use various normalization methods, for example:
+#normalized_counts(cds, norm_method = "log")
+
+pt.matrix <- t(apply(pt.matrix_ori,1,function(x){smooth.spline(x, df=3)$y}))
+pt.matrix <- t(apply(pt.matrix,1,function(x){(x-mean(x))/sd(x)}))
+dim(pt.matrix)
+rownames(pt.matrix) <- rownames(pt.matrix_ori)
+colnames(pt.matrix) <- colnames(pt.matrix_ori)
+
+## add the annotation of matrix
+mtdata <- colData(sce) %>% as.data.frame() %>% rownames_to_column(var = "CellID") %>% dplyr::select(1,2,8,26)
+sm <- data.frame(sm = colnames(pt.matrix)) %>% left_join(., mtdata, by=c("sm" = "CellID")) %>% 
+  column_to_rownames(var = "sm")
+# Path 1
+#sm$CellTypes <- factor(sm$CellTypes, levels = c("Bas_I", "Bas_III", "Bas_II", "Spi_I", "Spi_II", "Spi_III", "Gra_I")) 
+# Path 2
+sm$CellTypes <- factor(sm$CellTypes, levels = c("Bas_I", "Bas_III", "Bas_II", "Spi_I", "Spi_V", "Gra_I")) 
+#check if rownames of annotation equal to colnames of matrix (Very important)
+identical(rownames(sm), colnames(pt.matrix))
+
+ha = HeatmapAnnotation(#Sample = sm[[1]],
+                       Cluster = sm[[3]],
+                       col = list(
+                         #Sample=c("PWH26D0" = "#D95F02", "PWH27D0" = "#7570B3", "PWH28D0" = "#1b9e77"),
+                         Cluster=c("Gra_I" = "#b15928",
+                                   "Spi_V" = "#33a02c",  "Spi_IV" = "#fdbf6f", 
+                                   "Spi_III" = "#ff7f00",  "Spi_II" = "#cab2d6",   "Spi_I" = "#fb9a99",
+                                   "Bas_III" = "#b2df8a", "Bas_II" = "#a6cee3", "Bas_I" = "#1f78b4"))
+                       )
+
+
+#K means with 7 groups
+#km = kmeans(pt.matrix, 7)
+km = kmeans(pt.matrix, 6)
+table(km$cluster)
+
+htkm <- Heatmap(
+  pt.matrix,
+  name = "z-score",
+  col = colorRamp2(seq(from=-2,to=2,length=11),rev(brewer.pal(11, "Spectral"))),
+  
+  show_row_names = FALSE,
+  show_column_names = FALSE,
+  row_names_gp = gpar(fontsize = 8),
+  
+  #row_km = 7, 
+  #column_km = 6,
+  #split = factor(km$cluster), #Run this first
+  
+  split = factor(km$cluster, levels = c(3,2,6,5,1,4)), #Reorder the cluster numbers
+  
+  row_title_rot = 90,
+  cluster_rows = FALSE,
+  cluster_row_slices = FALSE,
+  cluster_columns = FALSE,
+  top_annotation = ha,
+  use_raster = TRUE,
+  border = TRUE
+) # row_gap = unit(0, 'cm'), column_gap = unit(0, 'cm')
+
+htkm = draw(htkm) #Draw this to initialize the heatmap
+
+km_genes <- row_order(htkm)
+km_genes <- lapply(km_genes, FUN = function(x){
+  rownames(pt.matrix)[x]
+})
+
+# extract the TFs
+km_genes_tfs <- km$cluster[names(km$cluster) %in% plot_tfs]
+# filter the gene expression data
+pt.matrix.tf <- pt.matrix[rownames(pt.matrix) %in% names(km_genes_tfs), ]
+
+htkm_tfs <- Heatmap(
+  pt.matrix.tf,
+  name = "z-score",
+  col = colorRamp2(seq(from=-2,to=2,length=11),rev(brewer.pal(11, "Spectral"))),
+  
+  show_row_names = TRUE,
+  show_column_names = FALSE,
+  row_names_gp = gpar(fontsize = 8),
+  
+  #row_km = 7, 
+  #column_km = 6,
+  
+  split = factor(km_genes_tfs, levels = c(3,2,6,5,1,4)), #Reorder the cluster numbers
+  
+  row_title_rot = 90,
+  cluster_rows = FALSE,
+  cluster_row_slices = FALSE,
+  cluster_columns = FALSE,
+  top_annotation = ha,
+  use_raster = TRUE,
+  border = TRUE
+) # row_gap = unit(0, 'cm'), column_gap = unit(0, 'cm')
+
+htkm_tfs = draw(htkm_tfs) #Draw this to initialize the heatmap
+
+# save the data
+svData <- list(ha, htkm, htkm_tfs, km, km_genes, mtdata, plot_tfs, plot.gene.tf,
+               plot.gene, pt.matrix, pt.matrix.tf, sm, km_genes_tfs)
+names(svData) <- c('ha', 'htkm', 'htkm_tfs', 'km', 'km_genes', 'mtdata', 'plot_tfs', 'plot.gene.tf',
+               'plot.gene', 'pt.matrix', 'pt.matrix.tf', 'sm', 'km_genes_tfs')
+#saveRDS(svData, file = paste0("allNew_zs3_scVelo_preparation/DPT_diffMap_driverGene_", tolower(i), "_path1_htplots.rds"))
+saveRDS(svData, file = paste0("allNew_zs3_scVelo_preparation/DPT_diffMap_driverGene_", tolower(i), "_path2_htplots.rds"))
+
+GO_BP(genes = km_genes[[1]], Km_N = 3) #Kmeans Cluster 1
+GO_BP(genes = km_genes[[2]], Km_N = 2) #Kmeans Cluster 2
+GO_BP(genes = km_genes[[3]], Km_N = 6) #Kmeans Cluster 3
+GO_BP(genes = km_genes[[4]], Km_N = 5) #Kmeans Cluster 4
+GO_BP(genes = km_genes[[5]], Km_N = 1) #Kmeans Cluster 5
+GO_BP(genes = km_genes[[6]], Km_N = 4) #Kmeans Cluster 6
+#GO_BP(genes = km_genes[[7]], Km_N = 1) #Kmeans Cluster 6
+```
+
+### plot single gene along the pseudotime
+```{r}
+gene="KRT10"
+dat = data.frame(expression=as.vector(assay(sce[gene,], "logcounts")), 
+                 pseudotime=sce$dpt_order_perc,
+                 CellTypes=factor(sce$CellTypes, levels = c("Bas_I", "Bas_III", "Bas_II", "Spi_I", "Spi_II", "Spi_III", "Spi_IV", "Spi_V", "Gra_I")))
+dat = dat[!is.na(dat$expression),]
+p = ggplot(dat, aes(x=pseudotime, y=expression))
+
+p + geom_point(aes(color=CellTypes), shape=16, size=1) +
+  geom_smooth(aes(color=NULL), color="black", size=1, method="loess", formula=y~x, se=F) +
+  #theme_classic() +
+  #scale_color_manual(values=.colSet$meta.cluster[unique(dat$meta.cluster)]) +
+  xlab("percent of pseudotime")
+
+plotONEgene = function(.gene, .sce, .colSet){
+  dat = data.frame(expression=as.vector(assay(.sce[.gene,],"exprs")), 
+                   pseudotime=.sce$dpt_order_perc,
+                   meta.cluster=.sce$meta.cluster)
+  dat = dat[!is.na(dat$expression),]
+  #
+  model = loess(as.numeric(dat$expression) ~ as.numeric(dat$pseudotime))
+  Y = predict(model)
+  X = dat$pseudotime
+  dY = diff(Y)/diff(X)
+  dY = rollmean(dY, 30, fill="extend")  # smooth using 30 size window
+  dX = rowMeans(embed(X,2))
+  new.df = data.frame(dX=dX, dY=dY)
+  #
+  y.cutoff=1
+  breaks = matrix(NA, nrow=0, ncol=2)
+  last.start = NA
+  last.end  = NA
+  while(1){
+    point.start = new.df[dY>=y.cutoff & (is.na(last.end) | dX>last.end), "dX"] %>% head(1)
+    point.end = new.df[dY<y.cutoff & dX>point.start, "dX"] %>% head(1)
+    # find a break
+    if(length(point.start)>0){
+      if(length(point.end)==0){
+        # to the end
+        point.end = max(dX)
+      }
+      breaks = rbind(breaks, c(point.start,point.end))
+      last.start = point.start
+      last.end = point.end
+    }else{
+        break
+    }
+  }
+  breaks = as.data.frame(breaks)
+  colnames(breaks) = c("X1","X2")
+  #breaks = breaks[which.max(breaks$X2-breaks$X1),]  # only keep the biggest one
+  #
+  #adj.P = .gam[.gene, "adj.p"]
+  #info = sprintf(sprintf("%s\nP = %.3f", .gene, adj.P))
+  info = .gene
+  #
+  p = ggplot(dat, aes(x=pseudotime, y=expression))
+  if (nrow(breaks)!=0){
+    for (i in 1:nrow(breaks)){
+      p = p + ggplot2::geom_rect(xmin=breaks[i,"X1"], xmax=breaks[i,"X2"], ymin=-Inf, ymax=Inf, fill="lightgrey")
+    }
+  }
+  p = p + geom_point_rast(aes(color=meta.cluster),shape=16, size=1,  raster.dpi=300) +
+          geom_smooth(aes(color=NULL), color="black", size=1, method="loess", formula=y~x, se=F) +
+          geom_line(data=new.df,aes(x=dX,y=dY), lty=5, size=1) +
+          geom_hline(yintercept=y.cutoff, color="red", lty="dashed", size=0.6) +
+          ggtitle(info) +
+          theme_classic2() +
+          scale_color_manual(values=.colSet$meta.cluster[unique(dat$meta.cluster)]) +
+          xlab("dpt_order_perc") + 
+          coord_cartesian(ylim=c(-1,2.5))
+  return(p)
+}
+```
+
+
+## GO Function
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+GO_BP <- function(genes=NULL, Km_N=NULL){
+  require(clusterProfiler) #loading the package if it is not loaded
+  require(org.Hs.eg.db)
+  gene.df <- bitr(genes, fromType = "SYMBOL",
+        toType = c("ENTREZID"),
+        OrgDb = org.Hs.eg.db)
+  
+  Enriched_gene_up <- as.character(unique(gene.df$ENTREZID))
+  ego_BP_up <- enrichGO(gene = Enriched_gene_up,
+                        OrgDb         = org.Hs.eg.db,
+                        ont           = "BP",
+                        keyType = "ENTREZID",
+                        pAdjustMethod = "BH",
+                        pvalueCutoff  = 0.05,
+                        qvalueCutoff  = 0.2,
+                        minGSSize = 10,
+                        maxGSSize = 500,
+                        readable = T)
+  ego_BP_up_f <- as.data.frame(ego_BP_up)
+  if (nrow(ego_BP_up_f) > 0) {
+    dotplot(ego_BP_up, showCategory=15, label_format = 100) + 
+      ggtitle(paste0("Cluster ", Km_N, "-GO_BP")) + 
+      theme(
+        #panel.grid.major.x = element_blank(),
+        #panel.grid.major.y = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(size = 0.5, color = "black"),
+        axis.text.x = element_text(size = 14, color = "black"),
+        axis.text.y = element_text(size = 14, color = "black"))
+  } else{
+    print("No enriched terms")
+  }
+}
+
+library(enrichR)
+dbs <- listEnrichrDbs()
+dbs <- c("GO_Biological_Process_2021")
+enriched <- enrichr(as.character(km_genes[[1]]), dbs)
+enriched_bp_up <- enriched$GO_Biological_Process_2021
+```
+
+# Check overlapped genes
+```{r}
+rm(list = ls());gc()
+library(gplots)
+
+skin_path2 <- readRDS("./allNew_zs3_scVelo_preparation/DPT_diffMap_driverGene_skin_path2_htplots.rds")
+wound1_path2 <- readRDS("./allNew_zs3_scVelo_preparation/DPT_diffMap_driverGene_wound1_path2_htplots.rds")
+wound7_path2 <- readRDS("./allNew_zs3_scVelo_preparation/DPT_diffMap_driverGene_wound7_path2_htplots.rds")
+wound30_path2 <- readRDS("./allNew_zs3_scVelo_preparation/DPT_diffMap_driverGene_wound30_path2_htplots.rds")
+
+path2_all <- list(
+  Skin = unlist(skin_path2[["km_genes"]]), 
+  Wound1 = unlist(wound1_path2[["km_genes"]]), 
+  Wound7 = unlist(wound7_path2[["km_genes"]]),
+  Wound30 = unlist(wound30_path2[["km_genes"]])
+)
+
+path2_all <- list(
+  Skin = unlist(skin_path2[["plot_tfs"]]), 
+  Wound1 = unlist(wound1_path2[["plot_tfs"]]), 
+  Wound7 = unlist(wound7_path2[["plot_tfs"]]),
+  Wound30 = unlist(wound30_path2[["plot_tfs"]])
+)
+
+v.table <- venn(path2_all)
+
+GO_BP(genes = attr(v.table,"intersections")$Skin, Km_N = "Skin") 
+GO_BP(genes = attr(v.table,"intersections")$Wound1, Km_N = "Wound1") 
+GO_BP(genes = attr(v.table,"intersections")$Wound7, Km_N = "Wound7") 
+GO_BP(genes = attr(v.table,"intersections")$Wound30, Km_N = "Wound30") 
+
+```
+
+# SessionInfo
+```{r}
+sessionInfo()
+```

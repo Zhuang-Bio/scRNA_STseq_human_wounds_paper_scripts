@@ -1,0 +1,221 @@
+---
+title: "Test deconv in Giotto"
+author: "Åsa Björklund"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  html_document:
+    self_contained: true
+    highlight: tango
+    df_print: paged
+    toc: yes
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    toc_depth: 3
+    fig_caption: true
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message=FALSE, warning=FALSE, result='hold',fig.width=12,tidy=TRUE)
+knitr::opts_knit$set(progress=TRUE,verbose=TRUE)
+```
+
+Test spatialDWLS with Giotto using Secction Donor3_Wound7
+
+## Load
+
+### Load packages
+
+```{r packages}
+
+
+library(Giotto)
+library(data.table)
+```
+
+```{r}
+python_path = "/Users/asbj/miniconda3/envs/R_giotto/bin/python3"
+instrs = createGiottoInstructions(python_path = python_path,
+                                  show_plot = F, return_plot = T, save_plot = T,
+                                  dpi = 300, height = 9, width = 9)
+
+```
+
+
+
+```{r}
+input_dir = "../../deconv/inputs/"
+output_dir = "../../deconv/results/giotto_dwls/"
+dir.create(output_dir, showWarnings = F)
+    
+sample = "Donor3_Wound7"
+
+outdir = file.path(output_dir,sample)
+dir.create(outdir, showWarnings = F)
+
+indir = file.path(input_dir,"st_data",sample)   
+    
+
+raw_path = readLines(file.path(indir,"rawdata_path.csv"))
+print(raw_path)   
+
+barcodes = read.csv(file.path(indir, "barcodes.csv"), header = F)
+```
+
+
+```{r}
+raw_matrix<-get10Xmatrix_h5(file.path(raw_path, "filtered_feature_bc_matrix.h5"), gene_ids = "symbols")
+# gives a list with dgCMatrix in [[1]]
+raw_matrix = raw_matrix[[1]]
+
+spatial_results=data.table::fread(file.path(raw_path, "spatial", "tissue_positions_list.csv"))
+colnames(spatial_results) = c('barcode', 'in_tissue', 'array_row', 'array_col', 'col_pxl', 'row_pxl')
+
+m1 = match(barcodes[,1], spatial_results$barcode)
+spatial_results = spatial_results[m1,]
+
+m2 = match(barcodes[,1], colnames(raw_matrix))
+raw_matrix = raw_matrix[,m2]
+```
+
+```{r}
+visium_brain <- createGiottoObject(raw_exprs = raw_matrix,spatial_locs = spatial_results[,.(row_pxl,-col_pxl)],
+                                   instructions = instrs,
+                                   cell_metadata = spatial_results[,.(in_tissue, array_row, array_col)])
+
+# skip filtering step
+```
+
+Consider to install these (optional) packages to run all possible Giotto commands for spatial analyses:  scran MAST smfishHmrf trendsceek SPARK multinet RTriangle FactoMiner
+
+```{r}
+########export filtered matrix
+visium_brain <- normalizeGiotto(gobject = visium_brain)
+visium_brain <- calculateHVG(gobject = visium_brain)
+gene_metadata = fDataDT(visium_brain)
+featgenes = gene_metadata[hvg == 'yes']$gene_ID
+visium_brain <- runPCA(gobject = visium_brain, genes_to_use = featgenes, scale_unit = F)
+signPCA(visium_brain, genes_to_use = featgenes, scale_unit = F)
+visium_brain <- runUMAP(visium_brain, dimensions_to_use = 1:10)
+visium_brain <- createNearestNetwork(gobject = visium_brain, dimensions_to_use = 1:10, k = 15)
+visium_brain <- doLeidenCluster(gobject = visium_brain, resolution = 0.4, n_iterations = 1000)
+plotUMAP(gobject = visium_brain, cell_color = 'leiden_clus', show_NN_network = T, point_size = 2)
+spatDimPlot(gobject = visium_brain, cell_color = 'leiden_clus',
+            dim_point_size = 1.5, spat_point_size = 1.5)
+
+```
+
+Deconvolution, need the Sign.mat with DEGs and 
+
+Is basically mean expression value of signature genes in each cell type
+
+
+```{r}
+sig_file = file.path(input_dir,"sc_data","degs_fc0.5_pval0.01_sig.rds")
+Sig = readRDS(sig_file)
+visium_brain <- runDWLSDeconv(visium_brain,sign_matrix = Sig, n_cell = 20)
+```
+
+```{r}
+write.csv(visium_brain@spatial_enrichment$DWLS, file = file.path(outdir, "dwls_fc0.5_pval0.01.csv"))
+```
+
+
+
+```{r}
+library(ggplot2)
+library(scatterpie)
+
+plot_data <- as.data.frame(visium_brain@spatial_enrichment$DWLS)[-1]
+plot_col <- colnames(plot_data)
+plot_data$x <- as.numeric(as.character(visium_brain@spatial_locs$sdimx))
+plot_data$y <- as.numeric(as.character(visium_brain@spatial_locs$sdimy))
+min_x <- min(plot_data$x)
+plot_data$radius <- 0.4
+df <- data.frame()
+p <- ggplot(df) + geom_point() + xlim(min(plot_data$x)-1, max(plot_data$x)+1) + ylim(min(plot_data$y)-1, max(plot_data$y)+1)
+p + geom_scatterpie(aes(x=x, y=y, r=radius), data=plot_data, cols=plot_col, color=NA, alpha=.8) +
+  geom_scatterpie_legend(plot_data$radius, x=1, y=1) + theme_classic()
+```
+
+
+
+```{r, eval=F}
+# code from spatialDWLS paper
+# https://github.com/rdong08/spatialDWLS_dataset/blob/main/codes/Visium_Brain_spatialDWLS.Rmd
+
+library(Giotto)
+library(data.table)
+
+raw_matrix<-get10Xmatrix("raw_feature_bc_matrix/",gene_column_index = 2)
+spatial_results<-fread(file="tissue_positions_list.csv")
+python_path<-"python path"
+instrs = createGiottoInstructions(python_path = python_path,
+                                  show_plot = F, return_plot = T, save_plot = T,
+                                  dpi = 300, height = 9, width = 9)
+spatial_results = spatial_results[match(colnames(raw_matrix), V1)]
+colnames(spatial_results) = c('barcode', 'in_tissue', 'array_row', 'array_col', 'col_pxl', 'row_pxl')
+visium_brain <- createGiottoObject(raw_exprs = raw_matrix,spatial_locs = spatial_results[,.(row_pxl,-col_pxl)],
+                                   instructions = instrs,
+                                   cell_metadata = spatial_results[,.(in_tissue, array_row, array_col)])
+metadata = pDataDT(visium_brain)
+in_tissue_barcodes = metadata[in_tissue == 1]$cell_ID
+visium_brain = subsetGiotto(visium_brain, cell_ids = in_tissue_barcodes)
+visium_brain <- filterGiotto(gobject = visium_brain,
+                             expression_threshold = 1,
+                             gene_det_in_min_cells = 50,
+                             min_det_genes_per_cell = 1000,
+                             expression_values = c('raw'),
+                             verbose = T)
+########export filtered matrix
+visium_brain <- normalizeGiotto(gobject = visium_brain)
+visium_brain <- calculateHVG(gobject = visium_brain)
+gene_metadata = fDataDT(visium_brain)
+featgenes = gene_metadata[hvg == 'yes']$gene_ID
+visium_brain <- runPCA(gobject = visium_brain, genes_to_use = featgenes, scale_unit = F)
+signPCA(visium_brain, genes_to_use = featgenes, scale_unit = F)
+visium_brain <- runUMAP(visium_brain, dimensions_to_use = 1:10)
+visium_brain <- createNearestNetwork(gobject = visium_brain, dimensions_to_use = 1:10, k = 15)
+visium_brain <- doLeidenCluster(gobject = visium_brain, resolution = 0.4, n_iterations = 1000)
+plotUMAP(gobject = visium_brain, cell_color = 'leiden_clus', show_NN_network = T, point_size = 2)
+spatDimPlot(gobject = visium_brain, cell_color = 'leiden_clus',
+            dim_point_size = 1.5, spat_point_size = 1.5)
+
+##Perform deconvolution
+
+load("sig_ct_exp.RData")
+visium_brain <- runDWLSDeconv(visium_brain,sign_matrix = Sig, n_cell = 20)
+
+
+
+```
+
+```{r, eval=FALSE}
+#Also creates Sig_exp in another tutorial
+# https://github.com/rdong08/spatialDWLS_dataset/blob/main/codes/Heart_ST_tutorial_spatialDWLS.Rmd
+
+heart_sc@cell_metadata$leiden_clus <- as.character(sc_meta$V3)
+scran_markers_subclusters = findMarkers_one_vs_all(gobject = heart_sc,
+                                                   method = 'scran',
+                                                   expression_values = 'normalized',
+                                                   cluster_column = 'leiden_clus')
+Sig_scran <- unique(scran_markers_subclusters$genes[which(scran_markers_subclusters$ranking <= 100)])
+########Calculate median expression value of signature genes in each cell type
+norm_exp<-2^(heart_sc@norm_expr)-1
+id<-heart_sc@cell_metadata$leiden_clus
+ExprSubset<-norm_exp[Sig_scran,]
+Sig_exp<-NULL
+for (i in unique(id)){
+  Sig_exp<-cbind(Sig_exp,(apply(ExprSubset,1,function(y) mean(y[which(id==i)]))))
+}
+colnames(Sig_exp)<-unique(id)
+
+```
+
+
+### Session info
+
+```{r}
+sessionInfo()
+```

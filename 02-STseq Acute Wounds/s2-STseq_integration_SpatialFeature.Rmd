@@ -1,0 +1,712 @@
+---
+title: "STseq spatial feature plotting"
+author: "Zhuang Liu"
+date: "8/11/2021 Updated: `r Sys.Date()`"
+output: 
+  html_document:
+    toc: true #add a table of contents (TOC)
+    toc_depth: 3 #headers' level in the toc
+    toc_float: true #toc visible even when scrolled
+    theme: lumen
+    highlight: tango
+    code_folding: show
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.align='center', fig.width=12, fig.height = 7, warning=FALSE, message=FALSE)
+```
+
+```{r warning=FALSE, message=FALSE}
+library(Seurat)
+library(tidyverse)
+library(magrittr)
+library(ggplot2)
+library(patchwork)
+library(sctransform)
+library(cowplot)
+library(harmony)
+require(gridExtra)
+library(STutility)
+```
+
+#####################################################
+# Step 1: Spatial Dim Feature Plotting
+#####################################################
+## 1.1 SpatialDimPlot using Seurat
+```{r fig.height=4}
+rm(list = ls());invisible(gc())
+# define color scale for clusters
+cl.colors = c("#e6194B", "#3cb44b", "#ffe119", "#4363d8", "#f58231", "#911eb4", "#42d4f4",
+    "#f032e6", "#bfef45", "#fabed4", "#469990", "#dcbeff", "#9A6324", "#fffac8",
+    "#800000", "#aaffc3", "#808000", "#ffd8b1", "#000075", "#a9a9a9", "#000000")
+names(cl.colors) = as.character(0:20)
+
+hswound.STcom <- readRDS("Seurat_STseq_integrated.rds")
+table(hswound.STcom$seurat_clusters)
+p1 <- DimPlot(hswound.STcom, reduction = "umap", group.by='SCT_snn_res.0.5', label=F, cols = cl.colors) + NoAxes() + ggtitle('Cluster')
+p2 <- DimPlot(hswound.STcom, reduction = "umap", group.by='Sample_name',) + NoAxes()
+p1 + p2
+```
+```{r fig.height=8}
+cc <- scale_color_gradientn(colors = c("grey", "yellow", "red", "black"))
+small.leg <- theme(legend.text = element_text(size = 6), legend.key.width = unit(0.1, "cm"))
+
+plot_list <- FeaturePlot(
+  hswound.STcom,
+  features= c("KRT5", "KRT10",'COL1A1', 'COL1A2'),
+  combine=FALSE
+)
+
+# apply theme to each feature plot
+for(i in 1:length(plot_list)){
+  plot_list[[i]] <- plot_list[[i]] + NoAxes() + cc
+}
+
+cowplot::plot_grid(plotlist = plot_list, ncol = 2)
+```
+
+```{r fig.height=15}
+img.names <- unique(hswound.STcom@meta.data$Sample_name) %>% as.character()
+
+plot_list <- list()
+
+for (i in seq_along(img.names)) {
+  plot_list[i] <- SpatialDimPlot(hswound.STcom, group.by = "SCT_snn_res.0.5",images = img.names[i], stroke = 0.3, combine = F, pt.size.factor = 1.7, alpha = c(1, 1), image.alpha = 0.6, crop = TRUE, cols = cl.colors)  #, cols = cl.colors
+}
+
+# apply theme to each feature plot
+for(i in 1:length(plot_list)) {
+  plot_list[[i]] <- plot_list[[i]] + ggtitle(img.names[i])
+}   
+#cowplot::plot_grid(plotlist = plot_list, ncol = 4)
+patchwork::wrap_plots(plot_list, ncol = 4) + plot_layout(guides = "collect") & theme(legend.position = 'bottom',
+                                                                                     legend.key.size = unit(1.2, 'cm'),
+                                                                                     legend.text = element_text(size=15),
+                                                                                     legend.title = element_text(size=15))
+```
+
+## 1.2 ST.FeaturePlot using STUtility
+```{r eval=FALSE, fig.height=12}
+rm(plot_list);invisible(gc())
+samplenames <- list.files("../00-spacerange_counts/")
+
+samples <- paste0("../00-spacerange_counts/", samplenames, "/outs/filtered_feature_bc_matrix.h5")
+spotfiles <- paste0("../00-spacerange_counts/", samplenames, "/outs/spatial/tissue_positions_list.csv")
+imgs <- paste0("../00-spacerange_counts/", samplenames, "/outs/spatial/tissue_hires_image.png")
+json <- paste0("../00-spacerange_counts/", samplenames, "/outs/spatial/scalefactors_json.json")
+
+infoTable <- data.frame(samples, imgs, spotfiles, json, samplenames, stringsAsFactors = F)
+
+hswound.ST <- InputFromTable(infotable = infoTable,
+                             minUMICountsPerGene = 0,
+                             minSpotsPerGene = 0,
+                             minGenesPerSpot = 0,
+                             minUMICountsPerSpot = 0,
+                             topN = 0, #Filter out the top most expressed genes
+                             platform = "Visium",
+                             verbose = FALSE)
+
+rm(samplenames, samples, spotfiles, imgs, json, infoTable)
+##extract the metadata from combined Seurat object
+mt.seu <- hswound.STcom@meta.data %>% rownames_to_column(var = "barcodeID")
+
+##extract the metadata from combined STUtility object
+df.mt <- data.frame(ID = seq(1,16), Sample_name = unique(hswound.STcom$Sample_name))
+df.mt$ID <- as.character(df.mt$ID)
+
+staf <- GetStaffli(hswound.ST) #extract the data from tools slot
+mt.STU <- staf@meta.data %>% rownames_to_column(var = "barcodeID") %>% 
+  separate(barcodeID, into = c("barcodeID", "ID"), sep = "_") %>% select(-ID) %>% 
+  left_join(., df.mt, by=c("sample" = "ID")) %>% 
+  select(1:7, 11, 9:10) %>% mutate(barcodeID = paste0(Sample_name, "_", barcodeID)) %>% 
+  left_join(., mt.seu[,c(1,20)], by=c("barcodeID" = "barcodeID")) %>% drop_na() %>% 
+  column_to_rownames(var = "barcodeID") %>% select(-10)
+
+colnames(mt.STU)[7] <- "sample"
+
+names(staf@limits) <- as.character(unique(mt.STU$sample))
+#names(staf@dims) <- unique(mt.STU$sample) %>% as.numeric()
+
+#replace the meta data in staf
+staf@meta.data <- mt.STU
+staf@samplenames <- as.character(unique(hswound.STcom$Sample_name))
+
+#add the staf into the Seurat object
+hswound.STcom@tools[["Staffli"]] <- staf
+
+#Change the "Sample_name" to "sample" in the Seurat metadata slot
+mt.seu %<>% dplyr::mutate(sample = Sample_name) %>% column_to_rownames(var = "barcodeID")
+
+hswound.STcom <- AddMetaData(hswound.STcom, metadata = mt.seu)
+
+ST.FeaturePlot(object = hswound.STcom, features = "seurat_clusters", pt.size = 1.5, pt.alpha = 1, ncol = 4, show.sb = TRUE, sb.size = 10, cols = cl.colors) + plot_layout(guides = "collect") & theme(legend.position = 'bottom',
+                                                     legend.key.size = unit(1.2, 'cm'),
+                                                     legend.text = element_text(size=15),
+                                                     legend.title = element_text(size=15))
+```
+
+## 1.3 Load the marker genes from the DE analysis (Top5)
+```{r fig.height=15}
+markers <- data.table::fread("Seurat_STseq_integrated_markerGene.txt")
+
+#Top5
+top5 <- markers %>% group_by(cluster) %>% top_n(n = 5, wt = avg_log2FC)
+p = DotPlot(hswound.STcom, features = unique(top5$gene), assay = "Spatial") + RotatedAxis() + coord_flip() +
+    theme(axis.text.x = element_text(size = 6))
+print(p)
+```
+```{r fig.height=15}
+#Top5-10
+top10 <- markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_log2FC) %>% top_n(n = -5, wt = avg_log2FC)
+p = DotPlot(hswound.STcom, features = unique(top10$gene), assay = "Spatial") + RotatedAxis() + coord_flip() +
+    theme(axis.text.x = element_text(size = 6))
+print(p)
+```
+```{r fig.height=8}
+# overlap of DE genes
+source("./Functions/overlap_phyper2.R")
+m = markers[markers$p_val_adj < 0.05, ]
+s = split(m$gene, m$cluster)
+
+o = overlap_phyper2(s, s, bg = nrow(hswound.STcom))
+```
+
+
+#######################################################
+# Step 2: Known Marker Genes Spatial Feature Plotting
+#######################################################
+## 2.1 Marker genes from curated literatures
+```{r eval=TRUE}
+canonical_markers <- list(
+  'Keratinocytes' = c('KRT5', 'KRT14', 'KRT10'), 
+  'Fibroblasts' = c('COL1A1', 'COL1A2', 'LUM'), 
+  'Melanocytes' =	c('PMEL',	'MLANA', 'TYRP1'), 
+  'Endothelial-cells' = c('PECAM1', 'VWF', 'EGFL7'), 
+  'Myeloid-cells' = c('LYZ', 'HLA-DRA', 'HLA-DRB1'), 
+  'Mono-mac' = c('CD68', 'CD163', 'CD14'), #In dermis  
+  'Macrophages' = c('CD209', 'FCGR2A', 'MRC1'), #CD209, FCGR2A aka CD32 or FCGR1A aka CD64, #MRC1 aka CD206 (markers of macrophages, immature dendritic cells)
+  'T-cells' = c('CD7', 'CD3D', 'CD3E'), 
+  'T-cells2' = c('CD4', 'CD8A', 'NKG7'), 
+  'B-cells' = c('MS4A1', 'CD79A', 'CD19'), 
+  'Plasma-cells' = c('JCHAIN', 'IGHG1', 'MZB1'), 
+  'LC-cells' = c('CD207', 'CD1A'), #Primarily located in epidermis (CD1A aka CD1)  
+  'Dendritic-cells' = c('CD1C', 'CD1B', 'ITGAX'), #immature DC primarily located in superior dermis (ITGAX aka CD11C)
+  'Dendritic-cells2' = c('CD83', 'LAMP3', 'THBD'), #mature DC: LAMP3 aka CD208, THBD aka CD141
+  'Dendritic-cells3' = c('CLEC9A'), #CLEC9A aka DNGR1, a Dendritic Cell-Specific Sensor 
+  'Schwann' = c('SOX10', 'SOX2'), 
+  'PC-vSMC' = c('ACTA2', 'MCAM'), 
+  'Epithelial_Mesenchymal' = c('EPCAM', 'PDGFRB'),
+  'Neutrophils-1' = c("CSF3R", "FPR1", "FCGR3B"),
+  'Neutrophils-2' = c("NAMPT", "MNDA")
+)
+
+genes <- unlist(canonical_markers)
+img.names <- unique(hswound.STcom@meta.data$Sample_name) %>% as.character()
+```
+
+
+## 2.1 Plotting Donor1_Skin
+```{r eval=TRUE}
+plot_list <- list()
+for (i in seq_along(genes)) {
+  plot_list[[i]] <- SpatialFeaturePlot(hswound.STcom, features = genes[i],images = "Donor1_Skin", stroke = 0.4, combine = T, pt.size.factor = 1.7, alpha = c(1, 1), image.alpha = 0.6, crop = TRUE)
+}
+
+patchwork::wrap_plots(plot_list[1:3], ncol = 3) + plot_annotation(title = "Keratinocytes")
+patchwork::wrap_plots(plot_list[4:6], ncol = 3) + plot_annotation(title = "Fibroblasts")
+patchwork::wrap_plots(plot_list[7:9], ncol = 3) + plot_annotation(title = "Melanocytes")
+patchwork::wrap_plots(plot_list[10:12], ncol = 3) + plot_annotation(title = "Endothelial cells")
+patchwork::wrap_plots(plot_list[13:15], ncol = 3) + plot_annotation(title = "Myeloid Cells")
+patchwork::wrap_plots(plot_list[16:18], ncol = 3) + plot_annotation(title = "Monocytes & Macrophages")
+patchwork::wrap_plots(plot_list[19:21], ncol = 3) + plot_annotation(title = "Macrophages")
+patchwork::wrap_plots(plot_list[22:24], ncol = 3) + plot_annotation(title = "T/Th cells")
+patchwork::wrap_plots(plot_list[25:27], ncol = 3) + plot_annotation(title = "T/NK cells")
+patchwork::wrap_plots(plot_list[28:30], ncol = 3) + plot_annotation(title = "B cells")
+patchwork::wrap_plots(plot_list[31:33], ncol = 3) + plot_annotation(title = "Plasma cells")
+patchwork::wrap_plots(plot_list[34:35], ncol = 3) + plot_annotation(title = "Langerhans cells")
+patchwork::wrap_plots(plot_list[36:38], ncol = 3) + plot_annotation(title = "Dermal Dendritic cells")
+patchwork::wrap_plots(plot_list[39:41], ncol = 3) + plot_annotation(title = "Mature Dendritic cells")
+patchwork::wrap_plots(plot_list[42], ncol = 3) + plot_annotation(title = "Specific Dendritic cells")
+patchwork::wrap_plots(plot_list[43:44], ncol = 3) + plot_annotation(title = "Schwann cells")
+patchwork::wrap_plots(plot_list[45:46], ncol = 3) + plot_annotation(title = "PC-vSMC cells")
+patchwork::wrap_plots(plot_list[47:48], ncol = 3) + plot_annotation(title = "Epithelial / Mesenchymal cells")
+patchwork::wrap_plots(plot_list[49:51], ncol = 3) + plot_annotation(title = "Neutrophils-1")
+patchwork::wrap_plots(plot_list[52:53], ncol = 3) + plot_annotation(title = "Neutrophils-2")
+
+# SpatialFeaturePlot(hswound.STcom, features = "PMEL",images = "Donor1_Skin", stroke = 0.4, combine = T, pt.size.factor = 1.1, alpha = c(1, 1), image.alpha = 0.6, crop = TRUE)
+```
+
+## 2.1 Plotting Donor1_Wound1
+```{r eval=TRUE}
+plot_list <- list()
+for (i in seq_along(genes)) {
+  plot_list[[i]] <- SpatialFeaturePlot(hswound.STcom, features = genes[i],images = "Donor1_Wound1", stroke = 0.4, combine = T, pt.size.factor = 1.7, alpha = c(1, 1), image.alpha = 0.6, crop = TRUE)
+}
+
+patchwork::wrap_plots(plot_list[1:3], ncol = 3) + plot_annotation(title = "Keratinocytes")
+patchwork::wrap_plots(plot_list[4:6], ncol = 3) + plot_annotation(title = "Fibroblasts")
+patchwork::wrap_plots(plot_list[7:9], ncol = 3) + plot_annotation(title = "Melanocytes")
+patchwork::wrap_plots(plot_list[10:12], ncol = 3) + plot_annotation(title = "Endothelial cells")
+patchwork::wrap_plots(plot_list[13:15], ncol = 3) + plot_annotation(title = "Myeloid Cells")
+patchwork::wrap_plots(plot_list[16:18], ncol = 3) + plot_annotation(title = "Monocytes & Macrophages")
+patchwork::wrap_plots(plot_list[19:21], ncol = 3) + plot_annotation(title = "Macrophages")
+patchwork::wrap_plots(plot_list[22:24], ncol = 3) + plot_annotation(title = "T/Th cells")
+patchwork::wrap_plots(plot_list[25:27], ncol = 3) + plot_annotation(title = "T/NK cells")
+patchwork::wrap_plots(plot_list[28:30], ncol = 3) + plot_annotation(title = "B cells")
+patchwork::wrap_plots(plot_list[31:33], ncol = 3) + plot_annotation(title = "Plasma cells")
+patchwork::wrap_plots(plot_list[34:35], ncol = 3) + plot_annotation(title = "Langerhans cells")
+patchwork::wrap_plots(plot_list[36:38], ncol = 3) + plot_annotation(title = "Dermal Dendritic cells")
+patchwork::wrap_plots(plot_list[39:41], ncol = 3) + plot_annotation(title = "Mature Dendritic cells")
+patchwork::wrap_plots(plot_list[42], ncol = 3) + plot_annotation(title = "Specific Dendritic cells")
+patchwork::wrap_plots(plot_list[43:44], ncol = 3) + plot_annotation(title = "Schwann cells")
+patchwork::wrap_plots(plot_list[45:46], ncol = 3) + plot_annotation(title = "PC-vSMC cells")
+patchwork::wrap_plots(plot_list[47:48], ncol = 3) + plot_annotation(title = "Epithelial / Mesenchymal cells")
+patchwork::wrap_plots(plot_list[49:51], ncol = 3) + plot_annotation(title = "Neutrophils-1")
+patchwork::wrap_plots(plot_list[52:53], ncol = 3) + plot_annotation(title = "Neutrophils-2")
+
+# SpatialFeaturePlot(hswound.STcom, features = "PMEL",images = "Donor1_Skin", stroke = 0.4, combine = T, pt.size.factor = 1.1, alpha = c(1, 1), image.alpha = 0.6, crop = TRUE)
+```
+
+## 2.1 Plotting Donor1_Wound7
+```{r eval=TRUE}
+plot_list <- list()
+for (i in seq_along(genes)) {
+  plot_list[[i]] <- SpatialFeaturePlot(hswound.STcom, features = genes[i],images = "Donor1_Wound7", stroke = 0.4, combine = T, pt.size.factor = 1.7, alpha = c(1, 1), image.alpha = 0.6, crop = TRUE)
+}
+
+patchwork::wrap_plots(plot_list[1:3], ncol = 3) + plot_annotation(title = "Keratinocytes")
+patchwork::wrap_plots(plot_list[4:6], ncol = 3) + plot_annotation(title = "Fibroblasts")
+patchwork::wrap_plots(plot_list[7:9], ncol = 3) + plot_annotation(title = "Melanocytes")
+patchwork::wrap_plots(plot_list[10:12], ncol = 3) + plot_annotation(title = "Endothelial cells")
+patchwork::wrap_plots(plot_list[13:15], ncol = 3) + plot_annotation(title = "Myeloid Cells")
+patchwork::wrap_plots(plot_list[16:18], ncol = 3) + plot_annotation(title = "Monocytes & Macrophages")
+patchwork::wrap_plots(plot_list[19:21], ncol = 3) + plot_annotation(title = "Macrophages")
+patchwork::wrap_plots(plot_list[22:24], ncol = 3) + plot_annotation(title = "T/Th cells")
+patchwork::wrap_plots(plot_list[25:27], ncol = 3) + plot_annotation(title = "T/NK cells")
+patchwork::wrap_plots(plot_list[28:30], ncol = 3) + plot_annotation(title = "B cells")
+patchwork::wrap_plots(plot_list[31:33], ncol = 3) + plot_annotation(title = "Plasma cells")
+patchwork::wrap_plots(plot_list[34:35], ncol = 3) + plot_annotation(title = "Langerhans cells")
+patchwork::wrap_plots(plot_list[36:38], ncol = 3) + plot_annotation(title = "Dermal Dendritic cells")
+patchwork::wrap_plots(plot_list[39:41], ncol = 3) + plot_annotation(title = "Mature Dendritic cells")
+patchwork::wrap_plots(plot_list[42], ncol = 3) + plot_annotation(title = "Specific Dendritic cells")
+patchwork::wrap_plots(plot_list[43:44], ncol = 3) + plot_annotation(title = "Schwann cells")
+patchwork::wrap_plots(plot_list[45:46], ncol = 3) + plot_annotation(title = "PC-vSMC cells")
+patchwork::wrap_plots(plot_list[47:48], ncol = 3) + plot_annotation(title = "Epithelial / Mesenchymal cells")
+patchwork::wrap_plots(plot_list[49:51], ncol = 3) + plot_annotation(title = "Neutrophils-1")
+patchwork::wrap_plots(plot_list[52:53], ncol = 3) + plot_annotation(title = "Neutrophils-2")
+
+# SpatialFeaturePlot(hswound.STcom, features = "PMEL",images = "Donor1_Skin", stroke = 0.4, combine = T, pt.size.factor = 1.1, alpha = c(1, 1), image.alpha = 0.6, crop = TRUE)
+```
+
+## 2.1 Plotting Donor1_Wound30
+```{r eval=TRUE}
+plot_list <- list()
+for (i in seq_along(genes)) {
+  plot_list[[i]] <- SpatialFeaturePlot(hswound.STcom, features = genes[i],images = "Donor1_Wound30", stroke = 0.4, combine = T, pt.size.factor = 1.7, alpha = c(1, 1), image.alpha = 0.6, crop = TRUE)
+}
+
+patchwork::wrap_plots(plot_list[1:3], ncol = 3) + plot_annotation(title = "Keratinocytes")
+patchwork::wrap_plots(plot_list[4:6], ncol = 3) + plot_annotation(title = "Fibroblasts")
+patchwork::wrap_plots(plot_list[7:9], ncol = 3) + plot_annotation(title = "Melanocytes")
+patchwork::wrap_plots(plot_list[10:12], ncol = 3) + plot_annotation(title = "Endothelial cells")
+patchwork::wrap_plots(plot_list[13:15], ncol = 3) + plot_annotation(title = "Myeloid Cells")
+patchwork::wrap_plots(plot_list[16:18], ncol = 3) + plot_annotation(title = "Monocytes & Macrophages")
+patchwork::wrap_plots(plot_list[19:21], ncol = 3) + plot_annotation(title = "Macrophages")
+patchwork::wrap_plots(plot_list[22:24], ncol = 3) + plot_annotation(title = "T/Th cells")
+patchwork::wrap_plots(plot_list[25:27], ncol = 3) + plot_annotation(title = "T/NK cells")
+patchwork::wrap_plots(plot_list[28:30], ncol = 3) + plot_annotation(title = "B cells")
+patchwork::wrap_plots(plot_list[31:33], ncol = 3) + plot_annotation(title = "Plasma cells")
+patchwork::wrap_plots(plot_list[34:35], ncol = 3) + plot_annotation(title = "Langerhans cells")
+patchwork::wrap_plots(plot_list[36:38], ncol = 3) + plot_annotation(title = "Dermal Dendritic cells")
+patchwork::wrap_plots(plot_list[39:41], ncol = 3) + plot_annotation(title = "Mature Dendritic cells")
+patchwork::wrap_plots(plot_list[42], ncol = 3) + plot_annotation(title = "Specific Dendritic cells")
+patchwork::wrap_plots(plot_list[43:44], ncol = 3) + plot_annotation(title = "Schwann cells")
+patchwork::wrap_plots(plot_list[45:46], ncol = 3) + plot_annotation(title = "PC-vSMC cells")
+patchwork::wrap_plots(plot_list[47:48], ncol = 3) + plot_annotation(title = "Epithelial / Mesenchymal cells")
+patchwork::wrap_plots(plot_list[49:51], ncol = 3) + plot_annotation(title = "Neutrophils-1")
+patchwork::wrap_plots(plot_list[52:53], ncol = 3) + plot_annotation(title = "Neutrophils-2")
+
+# SpatialFeaturePlot(hswound.STcom, features = "PMEL",images = "Donor1_Skin", stroke = 0.4, combine = T, pt.size.factor = 1.1, alpha = c(1, 1), image.alpha = 0.6, crop = TRUE)
+```
+
+
+## 2.2 Plotting Donor2_Skin
+```{r eval=TRUE}
+plot_list <- list()
+for (i in seq_along(genes)) {
+  plot_list[[i]] <- SpatialFeaturePlot(hswound.STcom, features = genes[i],images = "Donor2_Skin", stroke = 0.4, combine = T, pt.size.factor = 1.7, alpha = c(1, 1), image.alpha = 0.6, crop = TRUE)
+}
+
+patchwork::wrap_plots(plot_list[1:3], ncol = 3) + plot_annotation(title = "Keratinocytes")
+patchwork::wrap_plots(plot_list[4:6], ncol = 3) + plot_annotation(title = "Fibroblasts")
+patchwork::wrap_plots(plot_list[7:9], ncol = 3) + plot_annotation(title = "Melanocytes")
+patchwork::wrap_plots(plot_list[10:12], ncol = 3) + plot_annotation(title = "Endothelial cells")
+patchwork::wrap_plots(plot_list[13:15], ncol = 3) + plot_annotation(title = "Myeloid Cells")
+patchwork::wrap_plots(plot_list[16:18], ncol = 3) + plot_annotation(title = "Monocytes & Macrophages")
+patchwork::wrap_plots(plot_list[19:21], ncol = 3) + plot_annotation(title = "Macrophages")
+patchwork::wrap_plots(plot_list[22:24], ncol = 3) + plot_annotation(title = "T/Th cells")
+patchwork::wrap_plots(plot_list[25:27], ncol = 3) + plot_annotation(title = "T/NK cells")
+patchwork::wrap_plots(plot_list[28:30], ncol = 3) + plot_annotation(title = "B cells")
+patchwork::wrap_plots(plot_list[31:33], ncol = 3) + plot_annotation(title = "Plasma cells")
+patchwork::wrap_plots(plot_list[34:35], ncol = 3) + plot_annotation(title = "Langerhans cells")
+patchwork::wrap_plots(plot_list[36:38], ncol = 3) + plot_annotation(title = "Dermal Dendritic cells")
+patchwork::wrap_plots(plot_list[39:41], ncol = 3) + plot_annotation(title = "Mature Dendritic cells")
+patchwork::wrap_plots(plot_list[42], ncol = 3) + plot_annotation(title = "Specific Dendritic cells")
+patchwork::wrap_plots(plot_list[43:44], ncol = 3) + plot_annotation(title = "Schwann cells")
+patchwork::wrap_plots(plot_list[45:46], ncol = 3) + plot_annotation(title = "PC-vSMC cells")
+patchwork::wrap_plots(plot_list[47:48], ncol = 3) + plot_annotation(title = "Epithelial / Mesenchymal cells")
+patchwork::wrap_plots(plot_list[49:51], ncol = 3) + plot_annotation(title = "Neutrophils-1")
+patchwork::wrap_plots(plot_list[52:53], ncol = 3) + plot_annotation(title = "Neutrophils-2")
+
+# SpatialFeaturePlot(hswound.STcom, features = "PMEL",images = "Donor2_Skin", stroke = 0.4, combine = T, pt.size.factor = 1.1, alpha = c(1, 1), image.alpha = 0.6, crop = TRUE)
+```
+
+## 2.2 Plotting Donor2_Wound1
+```{r eval=TRUE}
+plot_list <- list()
+for (i in seq_along(genes)) {
+  plot_list[[i]] <- SpatialFeaturePlot(hswound.STcom, features = genes[i],images = "Donor2_Wound1", stroke = 0.4, combine = T, pt.size.factor = 1.7, alpha = c(1, 1), image.alpha = 0.6, crop = TRUE)
+}
+
+patchwork::wrap_plots(plot_list[1:3], ncol = 3) + plot_annotation(title = "Keratinocytes")
+patchwork::wrap_plots(plot_list[4:6], ncol = 3) + plot_annotation(title = "Fibroblasts")
+patchwork::wrap_plots(plot_list[7:9], ncol = 3) + plot_annotation(title = "Melanocytes")
+patchwork::wrap_plots(plot_list[10:12], ncol = 3) + plot_annotation(title = "Endothelial cells")
+patchwork::wrap_plots(plot_list[13:15], ncol = 3) + plot_annotation(title = "Myeloid Cells")
+patchwork::wrap_plots(plot_list[16:18], ncol = 3) + plot_annotation(title = "Monocytes & Macrophages")
+patchwork::wrap_plots(plot_list[19:21], ncol = 3) + plot_annotation(title = "Macrophages")
+patchwork::wrap_plots(plot_list[22:24], ncol = 3) + plot_annotation(title = "T/Th cells")
+patchwork::wrap_plots(plot_list[25:27], ncol = 3) + plot_annotation(title = "T/NK cells")
+patchwork::wrap_plots(plot_list[28:30], ncol = 3) + plot_annotation(title = "B cells")
+patchwork::wrap_plots(plot_list[31:33], ncol = 3) + plot_annotation(title = "Plasma cells")
+patchwork::wrap_plots(plot_list[34:35], ncol = 3) + plot_annotation(title = "Langerhans cells")
+patchwork::wrap_plots(plot_list[36:38], ncol = 3) + plot_annotation(title = "Dermal Dendritic cells")
+patchwork::wrap_plots(plot_list[39:41], ncol = 3) + plot_annotation(title = "Mature Dendritic cells")
+patchwork::wrap_plots(plot_list[42], ncol = 3) + plot_annotation(title = "Specific Dendritic cells")
+patchwork::wrap_plots(plot_list[43:44], ncol = 3) + plot_annotation(title = "Schwann cells")
+patchwork::wrap_plots(plot_list[45:46], ncol = 3) + plot_annotation(title = "PC-vSMC cells")
+patchwork::wrap_plots(plot_list[47:48], ncol = 3) + plot_annotation(title = "Epithelial / Mesenchymal cells")
+patchwork::wrap_plots(plot_list[49:51], ncol = 3) + plot_annotation(title = "Neutrophils-1")
+patchwork::wrap_plots(plot_list[52:53], ncol = 3) + plot_annotation(title = "Neutrophils-2")
+
+# SpatialFeaturePlot(hswound.STcom, features = "PMEL",images = "Donor2_Skin", stroke = 0.4, combine = T, pt.size.factor = 1.1, alpha = c(1, 1), image.alpha = 0.6, crop = TRUE)
+```
+
+## 2.2 Plotting Donor2_Wound7
+```{r eval=TRUE}
+plot_list <- list()
+for (i in seq_along(genes)) {
+  plot_list[[i]] <- SpatialFeaturePlot(hswound.STcom, features = genes[i],images = "Donor2_Wound7", stroke = 0.4, combine = T, pt.size.factor = 1.7, alpha = c(1, 1), image.alpha = 0.6, crop = TRUE)
+}
+
+patchwork::wrap_plots(plot_list[1:3], ncol = 3) + plot_annotation(title = "Keratinocytes")
+patchwork::wrap_plots(plot_list[4:6], ncol = 3) + plot_annotation(title = "Fibroblasts")
+patchwork::wrap_plots(plot_list[7:9], ncol = 3) + plot_annotation(title = "Melanocytes")
+patchwork::wrap_plots(plot_list[10:12], ncol = 3) + plot_annotation(title = "Endothelial cells")
+patchwork::wrap_plots(plot_list[13:15], ncol = 3) + plot_annotation(title = "Myeloid Cells")
+patchwork::wrap_plots(plot_list[16:18], ncol = 3) + plot_annotation(title = "Monocytes & Macrophages")
+patchwork::wrap_plots(plot_list[19:21], ncol = 3) + plot_annotation(title = "Macrophages")
+patchwork::wrap_plots(plot_list[22:24], ncol = 3) + plot_annotation(title = "T/Th cells")
+patchwork::wrap_plots(plot_list[25:27], ncol = 3) + plot_annotation(title = "T/NK cells")
+patchwork::wrap_plots(plot_list[28:30], ncol = 3) + plot_annotation(title = "B cells")
+patchwork::wrap_plots(plot_list[31:33], ncol = 3) + plot_annotation(title = "Plasma cells")
+patchwork::wrap_plots(plot_list[34:35], ncol = 3) + plot_annotation(title = "Langerhans cells")
+patchwork::wrap_plots(plot_list[36:38], ncol = 3) + plot_annotation(title = "Dermal Dendritic cells")
+patchwork::wrap_plots(plot_list[39:41], ncol = 3) + plot_annotation(title = "Mature Dendritic cells")
+patchwork::wrap_plots(plot_list[42], ncol = 3) + plot_annotation(title = "Specific Dendritic cells")
+patchwork::wrap_plots(plot_list[43:44], ncol = 3) + plot_annotation(title = "Schwann cells")
+patchwork::wrap_plots(plot_list[45:46], ncol = 3) + plot_annotation(title = "PC-vSMC cells")
+patchwork::wrap_plots(plot_list[47:48], ncol = 3) + plot_annotation(title = "Epithelial / Mesenchymal cells")
+patchwork::wrap_plots(plot_list[49:51], ncol = 3) + plot_annotation(title = "Neutrophils-1")
+patchwork::wrap_plots(plot_list[52:53], ncol = 3) + plot_annotation(title = "Neutrophils-2")
+
+# SpatialFeaturePlot(hswound.STcom, features = "PMEL",images = "Donor2_Skin", stroke = 0.4, combine = T, pt.size.factor = 1.1, alpha = c(1, 1), image.alpha = 0.6, crop = TRUE)
+```
+
+## 2.2 Plotting Donor2_Wound30
+```{r eval=TRUE}
+plot_list <- list()
+for (i in seq_along(genes)) {
+  plot_list[[i]] <- SpatialFeaturePlot(hswound.STcom, features = genes[i],images = "Donor2_Wound30", stroke = 0.4, combine = T, pt.size.factor = 1.7, alpha = c(1, 1), image.alpha = 0.6, crop = TRUE)
+}
+
+patchwork::wrap_plots(plot_list[1:3], ncol = 3) + plot_annotation(title = "Keratinocytes")
+patchwork::wrap_plots(plot_list[4:6], ncol = 3) + plot_annotation(title = "Fibroblasts")
+patchwork::wrap_plots(plot_list[7:9], ncol = 3) + plot_annotation(title = "Melanocytes")
+patchwork::wrap_plots(plot_list[10:12], ncol = 3) + plot_annotation(title = "Endothelial cells")
+patchwork::wrap_plots(plot_list[13:15], ncol = 3) + plot_annotation(title = "Myeloid Cells")
+patchwork::wrap_plots(plot_list[16:18], ncol = 3) + plot_annotation(title = "Monocytes & Macrophages")
+patchwork::wrap_plots(plot_list[19:21], ncol = 3) + plot_annotation(title = "Macrophages")
+patchwork::wrap_plots(plot_list[22:24], ncol = 3) + plot_annotation(title = "T/Th cells")
+patchwork::wrap_plots(plot_list[25:27], ncol = 3) + plot_annotation(title = "T/NK cells")
+patchwork::wrap_plots(plot_list[28:30], ncol = 3) + plot_annotation(title = "B cells")
+patchwork::wrap_plots(plot_list[31:33], ncol = 3) + plot_annotation(title = "Plasma cells")
+patchwork::wrap_plots(plot_list[34:35], ncol = 3) + plot_annotation(title = "Langerhans cells")
+patchwork::wrap_plots(plot_list[36:38], ncol = 3) + plot_annotation(title = "Dermal Dendritic cells")
+patchwork::wrap_plots(plot_list[39:41], ncol = 3) + plot_annotation(title = "Mature Dendritic cells")
+patchwork::wrap_plots(plot_list[42], ncol = 3) + plot_annotation(title = "Specific Dendritic cells")
+patchwork::wrap_plots(plot_list[43:44], ncol = 3) + plot_annotation(title = "Schwann cells")
+patchwork::wrap_plots(plot_list[45:46], ncol = 3) + plot_annotation(title = "PC-vSMC cells")
+patchwork::wrap_plots(plot_list[47:48], ncol = 3) + plot_annotation(title = "Epithelial / Mesenchymal cells")
+patchwork::wrap_plots(plot_list[49:51], ncol = 3) + plot_annotation(title = "Neutrophils-1")
+patchwork::wrap_plots(plot_list[52:53], ncol = 3) + plot_annotation(title = "Neutrophils-2")
+
+# SpatialFeaturePlot(hswound.STcom, features = "PMEL",images = "Donor2_Skin", stroke = 0.4, combine = T, pt.size.factor = 1.1, alpha = c(1, 1), image.alpha = 0.6, crop = TRUE)
+```
+
+
+## 2.3 Plotting Donor3_Skin
+```{r eval=TRUE}
+plot_list <- list()
+for (i in seq_along(genes)) {
+  plot_list[[i]] <- SpatialFeaturePlot(hswound.STcom, features = genes[i],images = "Donor3_Skin", stroke = 0.4, combine = T, pt.size.factor = 1.7, alpha = c(1, 1), image.alpha = 0.6, crop = TRUE)
+}
+
+patchwork::wrap_plots(plot_list[1:3], ncol = 3) + plot_annotation(title = "Keratinocytes")
+patchwork::wrap_plots(plot_list[4:6], ncol = 3) + plot_annotation(title = "Fibroblasts")
+patchwork::wrap_plots(plot_list[7:9], ncol = 3) + plot_annotation(title = "Melanocytes")
+patchwork::wrap_plots(plot_list[10:12], ncol = 3) + plot_annotation(title = "Endothelial cells")
+patchwork::wrap_plots(plot_list[13:15], ncol = 3) + plot_annotation(title = "Myeloid Cells")
+patchwork::wrap_plots(plot_list[16:18], ncol = 3) + plot_annotation(title = "Monocytes & Macrophages")
+patchwork::wrap_plots(plot_list[19:21], ncol = 3) + plot_annotation(title = "Macrophages")
+patchwork::wrap_plots(plot_list[22:24], ncol = 3) + plot_annotation(title = "T/Th cells")
+patchwork::wrap_plots(plot_list[25:27], ncol = 3) + plot_annotation(title = "T/NK cells")
+patchwork::wrap_plots(plot_list[28:30], ncol = 3) + plot_annotation(title = "B cells")
+patchwork::wrap_plots(plot_list[31:33], ncol = 3) + plot_annotation(title = "Plasma cells")
+patchwork::wrap_plots(plot_list[34:35], ncol = 3) + plot_annotation(title = "Langerhans cells")
+patchwork::wrap_plots(plot_list[36:38], ncol = 3) + plot_annotation(title = "Dermal Dendritic cells")
+patchwork::wrap_plots(plot_list[39:41], ncol = 3) + plot_annotation(title = "Mature Dendritic cells")
+patchwork::wrap_plots(plot_list[42], ncol = 3) + plot_annotation(title = "Specific Dendritic cells")
+patchwork::wrap_plots(plot_list[43:44], ncol = 3) + plot_annotation(title = "Schwann cells")
+patchwork::wrap_plots(plot_list[45:46], ncol = 3) + plot_annotation(title = "PC-vSMC cells")
+patchwork::wrap_plots(plot_list[47:48], ncol = 3) + plot_annotation(title = "Epithelial / Mesenchymal cells")
+patchwork::wrap_plots(plot_list[49:51], ncol = 3) + plot_annotation(title = "Neutrophils-1")
+patchwork::wrap_plots(plot_list[52:53], ncol = 3) + plot_annotation(title = "Neutrophils-2")
+
+# SpatialFeaturePlot(hswound.STcom, features = "PMEL",images = "Donor3_Skin", stroke = 0.4, combine = T, pt.size.factor = 1.1, alpha = c(1, 1), image.alpha = 0.6, crop = TRUE)
+```
+
+## 2.3 Plotting Donor3_Wound1
+```{r eval=TRUE}
+plot_list <- list()
+for (i in seq_along(genes)) {
+  plot_list[[i]] <- SpatialFeaturePlot(hswound.STcom, features = genes[i],images = "Donor3_Wound1", stroke = 0.4, combine = T, pt.size.factor = 1.7, alpha = c(1, 1), image.alpha = 0.6, crop = TRUE)
+}
+
+patchwork::wrap_plots(plot_list[1:3], ncol = 3) + plot_annotation(title = "Keratinocytes")
+patchwork::wrap_plots(plot_list[4:6], ncol = 3) + plot_annotation(title = "Fibroblasts")
+patchwork::wrap_plots(plot_list[7:9], ncol = 3) + plot_annotation(title = "Melanocytes")
+patchwork::wrap_plots(plot_list[10:12], ncol = 3) + plot_annotation(title = "Endothelial cells")
+patchwork::wrap_plots(plot_list[13:15], ncol = 3) + plot_annotation(title = "Myeloid Cells")
+patchwork::wrap_plots(plot_list[16:18], ncol = 3) + plot_annotation(title = "Monocytes & Macrophages")
+patchwork::wrap_plots(plot_list[19:21], ncol = 3) + plot_annotation(title = "Macrophages")
+patchwork::wrap_plots(plot_list[22:24], ncol = 3) + plot_annotation(title = "T/Th cells")
+patchwork::wrap_plots(plot_list[25:27], ncol = 3) + plot_annotation(title = "T/NK cells")
+patchwork::wrap_plots(plot_list[28:30], ncol = 3) + plot_annotation(title = "B cells")
+patchwork::wrap_plots(plot_list[31:33], ncol = 3) + plot_annotation(title = "Plasma cells")
+patchwork::wrap_plots(plot_list[34:35], ncol = 3) + plot_annotation(title = "Langerhans cells")
+patchwork::wrap_plots(plot_list[36:38], ncol = 3) + plot_annotation(title = "Dermal Dendritic cells")
+patchwork::wrap_plots(plot_list[39:41], ncol = 3) + plot_annotation(title = "Mature Dendritic cells")
+patchwork::wrap_plots(plot_list[42], ncol = 3) + plot_annotation(title = "Specific Dendritic cells")
+patchwork::wrap_plots(plot_list[43:44], ncol = 3) + plot_annotation(title = "Schwann cells")
+patchwork::wrap_plots(plot_list[45:46], ncol = 3) + plot_annotation(title = "PC-vSMC cells")
+patchwork::wrap_plots(plot_list[47:48], ncol = 3) + plot_annotation(title = "Epithelial / Mesenchymal cells")
+patchwork::wrap_plots(plot_list[49:51], ncol = 3) + plot_annotation(title = "Neutrophils-1")
+patchwork::wrap_plots(plot_list[52:53], ncol = 3) + plot_annotation(title = "Neutrophils-2")
+
+# SpatialFeaturePlot(hswound.STcom, features = "PMEL",images = "Donor3_Skin", stroke = 0.4, combine = T, pt.size.factor = 1.1, alpha = c(1, 1), image.alpha = 0.6, crop = TRUE)
+```
+
+## 4.3 Plotting Donor3_Wound7
+```{r eval=TRUE}
+plot_list <- list()
+for (i in seq_along(genes)) {
+  plot_list[[i]] <- SpatialFeaturePlot(hswound.STcom, features = genes[i],images = "Donor3_Wound7", stroke = 0.4, combine = T, pt.size.factor = 1.7, alpha = c(1, 1), image.alpha = 0.6, crop = TRUE)
+}
+
+patchwork::wrap_plots(plot_list[1:3], ncol = 3) + plot_annotation(title = "Keratinocytes")
+patchwork::wrap_plots(plot_list[4:6], ncol = 3) + plot_annotation(title = "Fibroblasts")
+patchwork::wrap_plots(plot_list[7:9], ncol = 3) + plot_annotation(title = "Melanocytes")
+patchwork::wrap_plots(plot_list[10:12], ncol = 3) + plot_annotation(title = "Endothelial cells")
+patchwork::wrap_plots(plot_list[13:15], ncol = 3) + plot_annotation(title = "Myeloid Cells")
+patchwork::wrap_plots(plot_list[16:18], ncol = 3) + plot_annotation(title = "Monocytes & Macrophages")
+patchwork::wrap_plots(plot_list[19:21], ncol = 3) + plot_annotation(title = "Macrophages")
+patchwork::wrap_plots(plot_list[22:24], ncol = 3) + plot_annotation(title = "T/Th cells")
+patchwork::wrap_plots(plot_list[25:27], ncol = 3) + plot_annotation(title = "T/NK cells")
+patchwork::wrap_plots(plot_list[28:30], ncol = 3) + plot_annotation(title = "B cells")
+patchwork::wrap_plots(plot_list[31:33], ncol = 3) + plot_annotation(title = "Plasma cells")
+patchwork::wrap_plots(plot_list[34:35], ncol = 3) + plot_annotation(title = "Langerhans cells")
+patchwork::wrap_plots(plot_list[36:38], ncol = 3) + plot_annotation(title = "Dermal Dendritic cells")
+patchwork::wrap_plots(plot_list[39:41], ncol = 3) + plot_annotation(title = "Mature Dendritic cells")
+patchwork::wrap_plots(plot_list[42], ncol = 3) + plot_annotation(title = "Specific Dendritic cells")
+patchwork::wrap_plots(plot_list[43:44], ncol = 3) + plot_annotation(title = "Schwann cells")
+patchwork::wrap_plots(plot_list[45:46], ncol = 3) + plot_annotation(title = "PC-vSMC cells")
+patchwork::wrap_plots(plot_list[47:48], ncol = 3) + plot_annotation(title = "Epithelial / Mesenchymal cells")
+patchwork::wrap_plots(plot_list[49:51], ncol = 3) + plot_annotation(title = "Neutrophils-1")
+patchwork::wrap_plots(plot_list[52:53], ncol = 3) + plot_annotation(title = "Neutrophils-2")
+
+# SpatialFeaturePlot(hswound.STcom, features = "PMEL",images = "Donor3_Skin", stroke = 0.4, combine = T, pt.size.factor = 1.1, alpha = c(1, 1), image.alpha = 0.6, crop = TRUE)
+```
+
+## 2.3 Plotting Donor3_Wound30
+```{r eval=TRUE}
+plot_list <- list()
+for (i in seq_along(genes)) {
+  plot_list[[i]] <- SpatialFeaturePlot(hswound.STcom, features = genes[i],images = "Donor3_Wound30", stroke = 0.4, combine = T, pt.size.factor = 1.7, alpha = c(1, 1), image.alpha = 0.6, crop = TRUE)
+}
+
+patchwork::wrap_plots(plot_list[1:3], ncol = 3) + plot_annotation(title = "Keratinocytes")
+patchwork::wrap_plots(plot_list[4:6], ncol = 3) + plot_annotation(title = "Fibroblasts")
+patchwork::wrap_plots(plot_list[7:9], ncol = 3) + plot_annotation(title = "Melanocytes")
+patchwork::wrap_plots(plot_list[10:12], ncol = 3) + plot_annotation(title = "Endothelial cells")
+patchwork::wrap_plots(plot_list[13:15], ncol = 3) + plot_annotation(title = "Myeloid Cells")
+patchwork::wrap_plots(plot_list[16:18], ncol = 3) + plot_annotation(title = "Monocytes & Macrophages")
+patchwork::wrap_plots(plot_list[19:21], ncol = 3) + plot_annotation(title = "Macrophages")
+patchwork::wrap_plots(plot_list[22:24], ncol = 3) + plot_annotation(title = "T/Th cells")
+patchwork::wrap_plots(plot_list[25:27], ncol = 3) + plot_annotation(title = "T/NK cells")
+patchwork::wrap_plots(plot_list[28:30], ncol = 3) + plot_annotation(title = "B cells")
+patchwork::wrap_plots(plot_list[31:33], ncol = 3) + plot_annotation(title = "Plasma cells")
+patchwork::wrap_plots(plot_list[34:35], ncol = 3) + plot_annotation(title = "Langerhans cells")
+patchwork::wrap_plots(plot_list[36:38], ncol = 3) + plot_annotation(title = "Dermal Dendritic cells")
+patchwork::wrap_plots(plot_list[39:41], ncol = 3) + plot_annotation(title = "Mature Dendritic cells")
+patchwork::wrap_plots(plot_list[42], ncol = 3) + plot_annotation(title = "Specific Dendritic cells")
+patchwork::wrap_plots(plot_list[43:44], ncol = 3) + plot_annotation(title = "Schwann cells")
+patchwork::wrap_plots(plot_list[45:46], ncol = 3) + plot_annotation(title = "PC-vSMC cells")
+patchwork::wrap_plots(plot_list[47:48], ncol = 3) + plot_annotation(title = "Epithelial / Mesenchymal cells")
+patchwork::wrap_plots(plot_list[49:51], ncol = 3) + plot_annotation(title = "Neutrophils-1")
+patchwork::wrap_plots(plot_list[52:53], ncol = 3) + plot_annotation(title = "Neutrophils-2")
+
+# SpatialFeaturePlot(hswound.STcom, features = "PMEL",images = "Donor3_Skin", stroke = 0.4, combine = T, pt.size.factor = 1.1, alpha = c(1, 1), image.alpha = 0.6, crop = TRUE)
+```
+
+
+## 2.4 Plotting Donor4_Skin
+```{r eval=TRUE}
+plot_list <- list()
+for (i in seq_along(genes)) {
+  plot_list[[i]] <- SpatialFeaturePlot(hswound.STcom, features = genes[i],images = "Donor4_Skin", stroke = 0.4, combine = T, pt.size.factor = 1.7, alpha = c(1, 1), image.alpha = 0.6, crop = TRUE)
+}
+
+patchwork::wrap_plots(plot_list[1:3], ncol = 3) + plot_annotation(title = "Keratinocytes")
+patchwork::wrap_plots(plot_list[4:6], ncol = 3) + plot_annotation(title = "Fibroblasts")
+patchwork::wrap_plots(plot_list[7:9], ncol = 3) + plot_annotation(title = "Melanocytes")
+patchwork::wrap_plots(plot_list[10:12], ncol = 3) + plot_annotation(title = "Endothelial cells")
+patchwork::wrap_plots(plot_list[13:15], ncol = 3) + plot_annotation(title = "Myeloid Cells")
+patchwork::wrap_plots(plot_list[16:18], ncol = 3) + plot_annotation(title = "Monocytes & Macrophages")
+patchwork::wrap_plots(plot_list[19:21], ncol = 3) + plot_annotation(title = "Macrophages")
+patchwork::wrap_plots(plot_list[22:24], ncol = 3) + plot_annotation(title = "T/Th cells")
+patchwork::wrap_plots(plot_list[25:27], ncol = 3) + plot_annotation(title = "T/NK cells")
+patchwork::wrap_plots(plot_list[28:30], ncol = 3) + plot_annotation(title = "B cells")
+patchwork::wrap_plots(plot_list[31:33], ncol = 3) + plot_annotation(title = "Plasma cells")
+patchwork::wrap_plots(plot_list[34:35], ncol = 3) + plot_annotation(title = "Langerhans cells")
+patchwork::wrap_plots(plot_list[36:38], ncol = 3) + plot_annotation(title = "Dermal Dendritic cells")
+patchwork::wrap_plots(plot_list[39:41], ncol = 3) + plot_annotation(title = "Mature Dendritic cells")
+patchwork::wrap_plots(plot_list[42], ncol = 3) + plot_annotation(title = "Specific Dendritic cells")
+patchwork::wrap_plots(plot_list[43:44], ncol = 3) + plot_annotation(title = "Schwann cells")
+patchwork::wrap_plots(plot_list[45:46], ncol = 3) + plot_annotation(title = "PC-vSMC cells")
+patchwork::wrap_plots(plot_list[47:48], ncol = 3) + plot_annotation(title = "Epithelial / Mesenchymal cells")
+patchwork::wrap_plots(plot_list[49:51], ncol = 3) + plot_annotation(title = "Neutrophils-1")
+patchwork::wrap_plots(plot_list[52:53], ncol = 3) + plot_annotation(title = "Neutrophils-2")
+
+# SpatialFeaturePlot(hswound.STcom, features = "PMEL",images = "Donor4_Skin", stroke = 0.4, combine = T, pt.size.factor = 1.1, alpha = c(1, 1), image.alpha = 0.6, crop = TRUE)
+```
+
+## 2.4 Plotting Donor4_Wound1
+```{r eval=TRUE}
+plot_list <- list()
+for (i in seq_along(genes)) {
+  plot_list[[i]] <- SpatialFeaturePlot(hswound.STcom, features = genes[i],images = "Donor4_Wound1", stroke = 0.4, combine = T, pt.size.factor = 1.7, alpha = c(1, 1), image.alpha = 0.6, crop = TRUE)
+}
+
+patchwork::wrap_plots(plot_list[1:3], ncol = 3) + plot_annotation(title = "Keratinocytes")
+patchwork::wrap_plots(plot_list[4:6], ncol = 3) + plot_annotation(title = "Fibroblasts")
+patchwork::wrap_plots(plot_list[7:9], ncol = 3) + plot_annotation(title = "Melanocytes")
+patchwork::wrap_plots(plot_list[10:12], ncol = 3) + plot_annotation(title = "Endothelial cells")
+patchwork::wrap_plots(plot_list[13:15], ncol = 3) + plot_annotation(title = "Myeloid Cells")
+patchwork::wrap_plots(plot_list[16:18], ncol = 3) + plot_annotation(title = "Monocytes & Macrophages")
+patchwork::wrap_plots(plot_list[19:21], ncol = 3) + plot_annotation(title = "Macrophages")
+patchwork::wrap_plots(plot_list[22:24], ncol = 3) + plot_annotation(title = "T/Th cells")
+patchwork::wrap_plots(plot_list[25:27], ncol = 3) + plot_annotation(title = "T/NK cells")
+patchwork::wrap_plots(plot_list[28:30], ncol = 3) + plot_annotation(title = "B cells")
+patchwork::wrap_plots(plot_list[31:33], ncol = 3) + plot_annotation(title = "Plasma cells")
+patchwork::wrap_plots(plot_list[34:35], ncol = 3) + plot_annotation(title = "Langerhans cells")
+patchwork::wrap_plots(plot_list[36:38], ncol = 3) + plot_annotation(title = "Dermal Dendritic cells")
+patchwork::wrap_plots(plot_list[39:41], ncol = 3) + plot_annotation(title = "Mature Dendritic cells")
+patchwork::wrap_plots(plot_list[42], ncol = 3) + plot_annotation(title = "Specific Dendritic cells")
+patchwork::wrap_plots(plot_list[43:44], ncol = 3) + plot_annotation(title = "Schwann cells")
+patchwork::wrap_plots(plot_list[45:46], ncol = 3) + plot_annotation(title = "PC-vSMC cells")
+patchwork::wrap_plots(plot_list[47:48], ncol = 3) + plot_annotation(title = "Epithelial / Mesenchymal cells")
+patchwork::wrap_plots(plot_list[49:51], ncol = 3) + plot_annotation(title = "Neutrophils-1")
+patchwork::wrap_plots(plot_list[52:53], ncol = 3) + plot_annotation(title = "Neutrophils-2")
+
+# SpatialFeaturePlot(hswound.STcom, features = "PMEL",images = "Donor4_Skin", stroke = 0.4, combine = T, pt.size.factor = 1.1, alpha = c(1, 1), image.alpha = 0.6, crop = TRUE)
+```
+
+## 2.4 Plotting Donor4_Wound7
+```{r eval=TRUE}
+plot_list <- list()
+for (i in seq_along(genes)) {
+  plot_list[[i]] <- SpatialFeaturePlot(hswound.STcom, features = genes[i],images = "Donor4_Wound7", stroke = 0.4, combine = T, pt.size.factor = 1.7, alpha = c(1, 1), image.alpha = 0.6, crop = TRUE)
+}
+
+patchwork::wrap_plots(plot_list[1:3], ncol = 3) + plot_annotation(title = "Keratinocytes")
+patchwork::wrap_plots(plot_list[4:6], ncol = 3) + plot_annotation(title = "Fibroblasts")
+patchwork::wrap_plots(plot_list[7:9], ncol = 3) + plot_annotation(title = "Melanocytes")
+patchwork::wrap_plots(plot_list[10:12], ncol = 3) + plot_annotation(title = "Endothelial cells")
+patchwork::wrap_plots(plot_list[13:15], ncol = 3) + plot_annotation(title = "Myeloid Cells")
+patchwork::wrap_plots(plot_list[16:18], ncol = 3) + plot_annotation(title = "Monocytes & Macrophages")
+patchwork::wrap_plots(plot_list[19:21], ncol = 3) + plot_annotation(title = "Macrophages")
+patchwork::wrap_plots(plot_list[22:24], ncol = 3) + plot_annotation(title = "T/Th cells")
+patchwork::wrap_plots(plot_list[25:27], ncol = 3) + plot_annotation(title = "T/NK cells")
+patchwork::wrap_plots(plot_list[28:30], ncol = 3) + plot_annotation(title = "B cells")
+patchwork::wrap_plots(plot_list[31:33], ncol = 3) + plot_annotation(title = "Plasma cells")
+patchwork::wrap_plots(plot_list[34:35], ncol = 3) + plot_annotation(title = "Langerhans cells")
+patchwork::wrap_plots(plot_list[36:38], ncol = 3) + plot_annotation(title = "Dermal Dendritic cells")
+patchwork::wrap_plots(plot_list[39:41], ncol = 3) + plot_annotation(title = "Mature Dendritic cells")
+patchwork::wrap_plots(plot_list[42], ncol = 3) + plot_annotation(title = "Specific Dendritic cells")
+patchwork::wrap_plots(plot_list[43:44], ncol = 3) + plot_annotation(title = "Schwann cells")
+patchwork::wrap_plots(plot_list[45:46], ncol = 3) + plot_annotation(title = "PC-vSMC cells")
+patchwork::wrap_plots(plot_list[47:48], ncol = 3) + plot_annotation(title = "Epithelial / Mesenchymal cells")
+patchwork::wrap_plots(plot_list[49:51], ncol = 3) + plot_annotation(title = "Neutrophils-1")
+patchwork::wrap_plots(plot_list[52:53], ncol = 3) + plot_annotation(title = "Neutrophils-2")
+
+# SpatialFeaturePlot(hswound.STcom, features = "PMEL",images = "Donor4_Skin", stroke = 0.4, combine = T, pt.size.factor = 1.1, alpha = c(1, 1), image.alpha = 0.6, crop = TRUE)
+```
+
+## 2.4 Plotting Donor4_Wound30
+```{r eval=TRUE}
+plot_list <- list()
+for (i in seq_along(genes)) {
+  plot_list[[i]] <- SpatialFeaturePlot(hswound.STcom, features = genes[i],images = "Donor4_Wound30", stroke = 0.4, combine = T, pt.size.factor = 1.7, alpha = c(1, 1), image.alpha = 0.6, crop = TRUE)
+}
+
+patchwork::wrap_plots(plot_list[1:3], ncol = 3) + plot_annotation(title = "Keratinocytes")
+patchwork::wrap_plots(plot_list[4:6], ncol = 3) + plot_annotation(title = "Fibroblasts")
+patchwork::wrap_plots(plot_list[7:9], ncol = 3) + plot_annotation(title = "Melanocytes")
+patchwork::wrap_plots(plot_list[10:12], ncol = 3) + plot_annotation(title = "Endothelial cells")
+patchwork::wrap_plots(plot_list[13:15], ncol = 3) + plot_annotation(title = "Myeloid Cells")
+patchwork::wrap_plots(plot_list[16:18], ncol = 3) + plot_annotation(title = "Monocytes & Macrophages")
+patchwork::wrap_plots(plot_list[19:21], ncol = 3) + plot_annotation(title = "Macrophages")
+patchwork::wrap_plots(plot_list[22:24], ncol = 3) + plot_annotation(title = "T/Th cells")
+patchwork::wrap_plots(plot_list[25:27], ncol = 3) + plot_annotation(title = "T/NK cells")
+patchwork::wrap_plots(plot_list[28:30], ncol = 3) + plot_annotation(title = "B cells")
+patchwork::wrap_plots(plot_list[31:33], ncol = 3) + plot_annotation(title = "Plasma cells")
+patchwork::wrap_plots(plot_list[34:35], ncol = 3) + plot_annotation(title = "Langerhans cells")
+patchwork::wrap_plots(plot_list[36:38], ncol = 3) + plot_annotation(title = "Dermal Dendritic cells")
+patchwork::wrap_plots(plot_list[39:41], ncol = 3) + plot_annotation(title = "Mature Dendritic cells")
+patchwork::wrap_plots(plot_list[42], ncol = 3) + plot_annotation(title = "Specific Dendritic cells")
+patchwork::wrap_plots(plot_list[43:44], ncol = 3) + plot_annotation(title = "Schwann cells")
+patchwork::wrap_plots(plot_list[45:46], ncol = 3) + plot_annotation(title = "PC-vSMC cells")
+patchwork::wrap_plots(plot_list[47:48], ncol = 3) + plot_annotation(title = "Epithelial / Mesenchymal cells")
+patchwork::wrap_plots(plot_list[49:51], ncol = 3) + plot_annotation(title = "Neutrophils-1")
+patchwork::wrap_plots(plot_list[52:53], ncol = 3) + plot_annotation(title = "Neutrophils-2")
+
+# SpatialFeaturePlot(hswound.STcom, features = "PMEL",images = "Donor4_Skin", stroke = 0.4, combine = T, pt.size.factor = 1.1, alpha = c(1, 1), image.alpha = 0.6, crop = TRUE)
+```
+
+# Sessioninfo
+```{r}
+sessionInfo()
+```

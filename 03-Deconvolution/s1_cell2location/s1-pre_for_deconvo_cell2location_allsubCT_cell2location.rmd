@@ -1,0 +1,213 @@
+---
+title: "Stereoscope prediction"
+author: "Zhuang Liu"
+date: "Updated: `r Sys.Date()`"
+output: 
+  html_document:
+    toc: true #add a table of contents (TOC)
+    toc_depth: 3 #headers' level in the toc
+    toc_float: true #toc visible even when scrolled
+    theme: lumen
+    highlight: tango
+    df_print: paged
+    code_folding: hide
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.align='center', fig.width=12, fig.height = 7, warning=FALSE, message=FALSE)
+```
+
+## Load packages
+```{r packages}
+suppressPackageStartupMessages(require(Matrix))
+suppressPackageStartupMessages(require(dplyr))
+suppressPackageStartupMessages(require(Seurat))
+suppressPackageStartupMessages(require(ggplot2))
+suppressPackageStartupMessages(require(SeuratDisk))
+suppressPackageStartupMessages(require(hdf5r))
+```
+
+## Prepare and write the scRNA-seq data
+```{r}
+# load the clean rds object from the step 1 (Figure 1)
+sc.data <- readRDS("/Users/zhuliu/Desktop/sc st/plotting scripts/Figure 1/allcombined_wounds_newAnnotation.rds")
+DimPlot(sc.data, group.by = "newCellTypes", label = T) + NoAxes()
+DimPlot(sc.data, group.by = "newMainCellTypes", label = T) + NoAxes()
+```
+
+```{r}
+# OBS! All factor columns are converted to numbers in scanpy, fix!
+cl = sapply(sc.data@meta.data, is.factor)
+
+for (col in names(cl)[cl]){
+    print(col)
+    sc.data[[col]] = as.character(sc.data[[col]][,1])
+}
+
+sc.data$newMainCellTypes <- gsub(" ", "_",sc.data$newMainCellTypes)
+sc.data$newMainCellTypes <- gsub("\\&", "_",sc.data$newMainCellTypes)
+sc.data$newMainCellTypes <- gsub("__", "_",sc.data$newMainCellTypes)
+sc.data$newMainCellTypes <- gsub("__", "_",sc.data$newMainCellTypes)
+table(sc.data$newMainCellTypes)
+
+mt1 <- data.table::fread("/Users/zhuliu/Desktop/sc st/plotting scripts/newsubCluster_annotation/MEL_Schwann.txt") %>% setNames(c("barcode", "upCellTypes"))
+mt2 <- data.table::fread("/Users/zhuliu/Desktop/sc st/plotting scripts/newsubCluster_annotation/newFibroblast_metadata.txt")
+mt3 <- data.table::fread("/Users/zhuliu/Desktop/sc st/plotting scripts/newsubCluster_annotation/newKeratinocyte_metadata.txt")
+mt4 <- data.table::fread("/Users/zhuliu/Desktop/sc st/plotting scripts/newsubCluster_annotation/newMyeloid_metadata.txt")
+mt5 <- data.table::fread("/Users/zhuliu/Desktop/sc st/plotting scripts/newsubCluster_annotation/newOther_metadata.txt")
+mt6 <- data.table::fread("/Users/zhuliu/Desktop/sc st/plotting scripts/newsubCluster_annotation/newLymphoid_metadata.txt")
+mt_all <- rbind(mt1, mt2, mt3, mt4, mt5, mt6) %>% filter(! upCellTypes %in% c("Apoptotic", "Cycling"))
+table(mt_all$upCellTypes)
+
+mt_sc <- sc.data@meta.data %>% tibble::rownames_to_column(var = "barcode") %>% select(1,25) %>% setNames(c("barcode", "upCellTypes")) %>% 
+  filter(upCellTypes == "Hair_follicle")
+mt_all2 <- rbind(mt_all, mt_sc)
+mt_all2$upCellTypes <- gsub("-", "_", mt_all2$upCellTypes)
+mt_all2$upCellTypes <- gsub("\\(|\\)", "_", mt_all2$upCellTypes)
+mt_all2$upCellTypes <- gsub("\\+", "_", mt_all2$upCellTypes)
+mt_all2$upCellTypes <- gsub("_$", "", mt_all2$upCellTypes)
+mt_all2$upCellTypes <- gsub("_$", "", mt_all2$upCellTypes)
+mt_all2$upCellTypes <- gsub("/", "_", mt_all2$upCellTypes)
+table(mt_all2$upCellTypes)
+
+
+sc.data <- DietSeurat(sc.data, assays = "RNA", dimreducs = c("pca", "umap"))
+sc.data <- sc.data[, mt_all2$barcode]
+
+mt_all2_f <- sc.data@meta.data %>% tibble::rownames_to_column(var = "barcode") %>% left_join(., mt_all2)
+sc.data$upCellTypes <- mt_all2_f$upCellTypes
+DimPlot(sc.data, group.by = "upCellTypes", label = T) + NoAxes()
+
+
+outdir = "/Users/zhuliu/Desktop/scRNA_STseq/proj_spatialTranseq/03_results/deconvolution/cell2location_1118_allsubCT"
+# Save as AnnData
+SaveH5Seurat(sc.data, filename = file.path(outdir, "scRNAseq_allcleanCells.h5seurat"),
+    overwrite = T)
+Convert(file.path(outdir, "scRNAseq_allcleanCells.h5seurat"), dest = "h5ad", overwrite = T)
+
+file.remove(file.path(outdir, "scRNAseq_allcleanCells.h5seurat"))
+```
+
+
+# the intermediate steps are same as combined main cell types
+```{r}
+de.both <- data.table::fread("/Users/zhuliu/Desktop/scRNA_STseq/proj_spatialTranseq/03_results/deconvolution/cell2location_1118_9combCT/scRNAseq_9combCT_allDEs.csv") %>% pull(Gene)
+
+canonical_markers <- c("KRT5", "KRT15", "COL17A1", "MT1G",#Bas-I, Bas-II
+                      "CENPF", "MKI67", "MMP3", "MMP1", #Bas-prolif, Bas-mig
+                      "KRT10", "MT1X", "DMKN", "LGALS7B", #Spi-I and Spi-II
+                      "KRT16", "KRT6A", "FLG", "LORICRIN", #Spi-mig, Gra-I
+                      "SOX9", "KRT17", "ADGRL3", #HF
+                      "TYRP1", "PMEL", #MEL
+                      "COL1A1", "POSTN", "ADAM12", "CCL19", "CXCL12", "PTGDS", "INHBA", #FB-I to IV
+                      "SOX10", "SOX2",
+                      "ACTA2", "MYH11", "TAGLN", #pc-vsmc
+                      "VWF", "PECAM1", "CCL21", "TFF3", "SELE", "ACKR1", #LE, VE
+                      "NKG7", "GNLY","CD3D", "TRAC", #NK-T, Th
+                      "JCHAIN", "MS4A1", "TPSAB1", "TPSB2", #Bcell, mast-cell
+                      "CD163", "CD14", "CLEC9A", "XCR1", "CD1C", "IL1R2", "LAMP3", "FSCN1","CD207", "CD1A")
+
+de.both <- c(de.both, canonical_markers) %>% unique()
+```
+
+# load the marker genes from each sub clusters
+```{r}
+kc <- data.table::fread("/Users/zhuliu/Desktop/scRNA_STseq/proj_10X_woundhealing/03_results/01-Seurat-PreAnalysis/02_Seurat_BatchCorrection/s2_Seurat_subKeratinocytes/00-s2_markergenes_KC_subclusters.txt")
+kc_f <- kc %>% mutate(pct.diff = pct.1 - pct.2) %>% filter(avg_log2FC > 0.5) %>% 
+  group_by(cluster) %>%
+  top_n(90, avg_log2FC) %>% 
+  top_n(-60, p_val_adj) %>%
+  top_n(40, pct.diff) %>% ungroup() %>% pull(gene) %>% unique()
+
+fb <- data.table::fread("/Users/zhuliu/Desktop/scRNA_STseq/proj_10X_woundhealing/03_results/01-Seurat-PreAnalysis/02_Seurat_BatchCorrection/s3_Seurat_subFibroblasts/s1_clean_fibroblast_mg_res05.txt")
+fb_f <- fb %>% mutate(pct.diff = pct.1 - pct.2) %>% filter(avg_log2FC > 0.5) %>% 
+  group_by(cluster) %>%
+  top_n(90, avg_log2FC) %>% 
+  top_n(-60, p_val_adj) %>%
+  top_n(40, pct.diff) %>% ungroup() %>% pull(gene) %>% unique()
+
+mye <- data.table::fread("/Users/zhuliu/Desktop/scRNA_STseq/proj_10X_woundhealing/03_results/01-Seurat-PreAnalysis/02_Seurat_BatchCorrection/s4_Seurat_subImmu_MyeloidCells/s1_clean_immu_myeloid_mg_res0.5.txt")
+mye_f <- mye %>% mutate(pct.diff = pct.1 - pct.2) %>% filter(avg_log2FC > 0.5) %>% 
+  group_by(cluster) %>%
+  top_n(90, avg_log2FC) %>% 
+  top_n(-60, p_val_adj) %>%
+  top_n(40, pct.diff) %>% ungroup() %>% pull(gene) %>% unique()
+
+lym <- data.table::fread("/Users/zhuliu/Desktop/scRNA_STseq/proj_10X_woundhealing/03_results/01-Seurat-PreAnalysis/02_Seurat_BatchCorrection/s5_Seurat_subImmu_LymphoidCells/s1_clean_immu_lymphoid_mg_res0.5.txt")
+lym_f <- lym %>% mutate(pct.diff = pct.1 - pct.2) %>% filter(avg_log2FC > 0.5) %>% 
+  group_by(cluster) %>%
+  top_n(90, avg_log2FC) %>% 
+  top_n(-60, p_val_adj) %>%
+  top_n(40, pct.diff) %>% ungroup() %>% pull(gene) %>% unique()
+
+oth <- data.table::fread("/Users/zhuliu/Desktop/scRNA_STseq/proj_10X_woundhealing/03_results/01-Seurat-PreAnalysis/02_Seurat_BatchCorrection/s6_7_Seurat_allOthers/s1_clean_othercell_mg_res0.5.txt")
+oth_f <- oth %>% mutate(pct.diff = pct.1 - pct.2) %>% filter(avg_log2FC > 0.5) %>% 
+  group_by(cluster) %>%
+  top_n(90, avg_log2FC) %>% 
+  top_n(-60, p_val_adj) %>%
+  top_n(40, pct.diff) %>% ungroup() %>% pull(gene) %>% unique()
+
+de.all <- c(de.both, kc_f, fb_f, lym_f, mye_f, oth_f) %>% unique()
+
+write.table(de.all, file = "scRNAseq_allcleanCells_allDEs.csv", row.names = F,
+    quote = F, col.names = F)
+```
+
+
+## Write ST data
+ST data needs to be loaded into Scanpy from scratch to get positions of images etc correct. So just print out for each sample, the spot ids.
+
+```{r}
+st.data = readRDS(file = "/Users/zhuliu/Desktop/sc st/ST plotting scripts/Seurat_STseq_integrate_update.rds")
+
+# Write a csv with barcodes per sample
+# Also write the path to the correct input file for each sample.
+outdir3="/Users/zhuliu/Desktop/scRNA_STseq/proj_spatialTranseq/03_results/deconvolution/cell2location_1118_9combCT/inputs"
+raw.input = "/Users/zhuliu/Desktop/scRNA_STseq/proj_spatialTranseq/03_results/00-spacerange_counts"
+subdirs = dir(raw.input, full.names = T)
+paths = unlist(sapply(subdirs, dir, full.names = T, pattern = "out"))
+snames = unlist(sapply(raw.input, dir, full.names = F))
+names(paths) = snames
+
+for(sample in unique(st.data$Sample_name)){
+  dir.create(file.path(outdir3,sample), showWarnings = F)
+  barcodes = colnames(st.data)[st.data$Sample_name == sample]
+  barcodes = unlist(lapply(strsplit(barcodes, "_"), function (x) x[3]))
+  write.table(barcodes, file = file.path(outdir3,sample,"barcodes.csv"), row.names = F, quote = F, col.names = F)
+  id = unique(st.data$orig.ident[st.data$Sample_name == sample])
+  write.table(paths[id], file = file.path(outdir3,sample,"rawdata_path.csv"), row.names = F, quote = F, col.names = F)
+}
+```
+
+Also write as .mtx together with metadata containing barcode, xcoord, ycoord, 
+
+```{r}
+for(sample in unique(st.data$Sample_name)){
+  odir = file.path(outdir3,sample)
+  C = st.data@assays$Spatial@counts[,st.data$Sample_name == sample]
+  writeMM(C, file = file.path(odir, "counts.mtx"))
+  write.csv(st.data@images[[sample]]@coordinates, file = file.path(odir,"coordinates.csv"))
+}
+
+# also write feature names to a file
+write.table(rownames(st.data@assays$Spatial@counts), file = file.path(outdir3, "st_features.csv"), row.names = F, col.names = F)
+```
+
+```{r}
+# add the metadata
+barcode_modi <- readr::read_csv("/Users/zhuliu/Desktop/scRNA_STseq/proj_spatialTranseq/03_results/deconvolution/cell2location_1118_9combCT/inputs/sc_readvisium_barcode_ori.csv")
+mt <- st.data@meta.data %>% tibble::rownames_to_column(var ="barcode")
+
+barcode_modi_f <- mt %>% select(1)
+readr::write_csv(barcode_modi_f, "/Users/zhuliu/Desktop/scRNA_STseq/proj_spatialTranseq/03_results/deconvolution/cell2location_1118_9combCT/inputs/st_metadata.csv")
+
+vg <- VariableFeatures(st.data, assay = "SCT")
+```
+
+### Session info
+```{r}
+sessionInfo()
+```
+

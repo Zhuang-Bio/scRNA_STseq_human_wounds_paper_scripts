@@ -1,0 +1,634 @@
+---
+title: "C01_AutoGeneS"
+author: "Ruby_Luo"
+date: '2023-02-13'
+output: 
+  html_document:
+    toc: true
+    toc_depth: 6
+    toc_collapsed: true
+    number_sections: false
+    toc_float:
+      collapsed: false
+      smooth_scroll: false
+    df_print: paged
+---
+
+```{r setup}
+library(knitr)
+opts_chunk$set(engine.path = '/sw/comp/python3/3.10.8/rackham/bin/python3')
+```
+
+```{python}
+# load packages
+import os
+import sys
+import anndata as ad
+import numpy as np
+import pandas as pd
+import h5py
+import numpy as np
+import scanpy as sc
+import scipy as sci
+import pandas as pd
+import matplotlib as mpl
+import matplotlib.pyplot as plt
+import seaborn as sns
+import autogenes as ag
+from sklearn.svm import NuSVR
+import pickle
+import anndata
+```
+
+# Step1 sc data process
+```{python,eval=FALSE}
+adata = sc.read_h5ad("../c01_InputData/d01_HumanWounds_scRNA_MainClusters.h5ad")
+print(adata.to_df())
+### How to get a 0,1 count matrix?
+### check if it's rawdata or after normonized data. we should change it to datafram and then check it.
+my_array=adata.X.transpose().toarray()
+df=pd.DataFrame(my_array)
+df.head()
+### if it's not 0,1 matrix, we need check the raw data by using:
+my_array=adata.raw.X.transpose().toarray()
+df=pd.DataFrame(my_array)
+df.head()
+### then we can get a new 0,1 count matrix data:
+adata = adata.raw.to_adata()
+### check if it's correct?
+my_array=adata.X.transpose().toarray()
+pd.DataFrame(my_array).head()
+```
+
+## 1.1 sc data add subcelltype
+```{python,eval=FALSE}
+subCelltype = pd.read_csv("../c01_InputData/d02_Subclusters.txt",index_col=0,delimiter='\t')
+subCelltype = subCelltype.CellType.replace('_','-',regex=True)
+Over = adata.obs.barcode.to_frame()
+NewSubCT = pd.concat([Over, subCelltype], axis=1, join='inner')
+
+Overlapcell = adata.obs.index.intersection(NewSubCT.barcode)
+adata = adata[Overlapcell,:]  ### getoverlap cells
+subCelltype = pd.DataFrame(subCelltype)
+### add subcelltype to adata
+adata.obs['SubCelltype'] = subCelltype["CellType"]
+adata.obs['SubCelltype'] = adata.obs['SubCelltype'].astype('category')
+adata.obs.head()
+adata.obs.SubCelltype
+```
+
+# Step2 input bulk raw data
+```{python,eval=FALSE}
+data_bulk_raw = pd.read_csv('../c01_InputData/d03_whole_biopsyBulkdata_allgeneFPKM.txt',delimiter='\t', index_col=0)
+data_bulk_raw.head()
+data_bulk_raw = data_bulk_raw.iloc[:,2:22]
+data_bulk_raw
+```
+
+# Step3 overlap gene
+```{python,eval=FALSE}
+b = anndata.AnnData(X=data_bulk_raw).transpose()
+b.var_names_make_unique() #make gene name to uniq
+adata.var_names_make_unique() #make gene name to uniq
+
+OverlapGene = b.var.index.intersection(adata.var_names) # get overlapgenes which come from sc and bulk data
+OverlapGene
+```
+
+# Step4 get sc clean and bulk clean
+```{python,eval=FALSE}
+data_bulk = b[:, OverlapGene]### only keep overlapgenes data in bulk data
+data_bulk
+adata = adata[:, OverlapGene] ### only keep overlapgenes data in sc data
+adata
+```
+
+# Step5 sc normalization
+```{python,eval=FALSE}
+adata_norm = sc.pp.normalize_per_cell(adata, counts_per_cell_after=1e4, copy=True) 
+adata_log = sc.pp.log1p(adata_norm, copy=True) 
+sc.pp.highly_variable_genes(adata_log, flavor='cell_ranger', n_top_genes=4000)
+```
+
+# Step6 manully include genes in DEGs for complex subsets to sc data
+```{python,eval=FALSE}
+# main.canonical_markers <- list(
+#   'Keratinocytes' = c('KRT5', 'KRT14', 'KRT10'), 
+#   'Fibroblasts' = c('COL1A1', 'COL1A2', 'LUM'), 
+#   'Melanocytes' =   c('PMEL',   'MLANA', 'TYRP1'), 
+#   'Endothelial-cells' = c('PECAM1', 'VWF', 'EGFL7'), 
+#   'Myeloid-cells' = c('LYZ', 'HLA-DRA', 'HLA-DRB1'), 
+#   'Mono-mac' = c('CD68', 'CD163', 'CD14'), #In dermis  
+#   'Macrophages' = c('CD209', 'FCGR2A', 'MRC1'), #CD209, FCGR2A aka CD32 or FCGR1A aka CD64, 
+#   #MRC1 aka CD206 (markers of macrophages, immature dendritic cells)
+#   'T-cells' = c('CD7', 'CD3D', 'CD3E'), 
+#   'T-cells2' = c('CD4', 'CD8A', 'NKG7'), 
+#   'B-cells' = c('MS4A1', 'CD79A', 'CD19'), 
+#   'Plasma-cells' = c('JCHAIN', 'IGHG1', 'MZB1'), 
+#   'LC-cells' = c('CD207', 'CD1A'), #Primarily located in epidermis (CD1A aka CD1)  
+#   'Dendritic-cells' = c('CD1C', 'CD1B', 'ITGAX'), #immature DC primarily located in superior dermis (ITGAX aka CD11C)
+#   'Dendritic-cells2' = c('CD83', 'LAMP3', 'THBD'), #mature DC: LAMP3 aka CD208, THBD aka CD141
+#   'Dendritic-cells3' = c('CLEC9A'), #CLEC9A aka DNGR1, a Dendritic Cell-Specific Sensor 
+#   'Schwann' = c('SOX10', 'SOX2'), 
+#   'PC-vSMC' = c('ACTA2', 'MCAM'), 
+#   'Epithelial_Mesenchymal' = c('EPCAM', 'PDGFRB')) %>% unlist()
+# main.markers <- c(as.data.frame(main.canonical_markers)$main.canonical_markers)
+# kera.makers <- c("KRT15", "KRT31", "COL17A1", "ASS1", "POSTN", 
+#                       "NUSAP1", "STMN1", "TOP2A", "MKI67", "CENPF",
+#                       "MMP3", "MMP1", "AREG", "TNFRSF12A", "FGFBP1", "S150A2", "S150A10",
+#                       "ITPRIPL2", "NRARP", "MT1X", "MT1G", "APOE",
+#                       "CHP2", "KCNK7", "DEFB1", 
+#                       "THEM5", "DSC1", "KRTDAP",
+#                       "TNFAIP2", "IRF1", "TNFSF10", "NFKBIA", "CCL27",
+#                       "KRT6A", "KRT6B", "KRT6C", "KRT17", "KRT16", "S150A7", "S150A8", "S150A9",
+#                       "SLURP2", "KLK7", "CNFN", "FLG", "LORICRIN")
+# fib.makers <- c("ASPN", "TAGLN", "POSTN", "COL16A1", "COL11A1", 
+#                      "HSPA6", "MMP11", "ISG15", "IER5", "IFI6",
+#                      "COL4A1", "COL4A2", 
+#                      "IGFBP6", "COMP", "EGFL6", 
+#                      "APOD", "FGF7", "PLA2G2A", "ITM2A", 
+#                      "C3", "APOE", "CCL19", "CD74", "COL6A5", 
+#                      "LEPR", "PLPP3", "CD9", "SLIT3", "DPP4", 
+#                      "PCLAF", "TYMS", "MKI67", "H1-5", 
+#                      "SFRP1", "CRABP1", "TNN", "COCH", "G0S2",
+#                      "ELN", "AKR1C1", "GPRC5A", "SFRP4")
+# mye.markers <- c("IL1B", "THBS1", "PTGS2", "EREG", "AQP9",
+#                       "APOE", "PHLDA1", "CXCL1", "CCL3", "CCL4",
+#                       "MMP9", "MMP19", "SDS", "FGL2", "VEGFA",
+#                       "DAB2", "C1QA", "C1QB", "MAF", "CCL13",
+#                       "ACOT7", "LTB", "IFITM1", "TCF4","IGKC", 
+#                       "CLEC9A", "WDFY4", "CPNE3", "DNASE1L3", "CADM1",
+#                       "CD1C", "IL1R2", "CLEC10A", "CCR7",
+#                       "LAMP3", "CCL19", "FSCN1", "IL7R",
+#                       "FCGBP", "CD207", "CD1A", "CLDN1")
+# lym.markers <- c("TIGIT", "BATF", "FOXP3", "CTLA4", "CORO1B", #cluster 5: Treg cells
+#                       "LDHB", "IL7R", "GIMAP7", "AP3M2", "KLF2", "PASK", #cluster 0: Th cells
+#                       "AHR", "CCR6", "PTGER4", "ANKRD28", "MAF", "LPAR6", #cluster 1: ILC cells
+#                       "FXYD2", "TRGC2", "KLRC3", "KLRC2","PDE4A", #cluster 7: Tc cells
+#                       "GNLY","XCL2", "XCL1", "KLRD1", "FCER1G", "TRDC", #cluster 3: ILC1/NK cells
+#                       "GZMK", "GZMA","CRTAM", "NKG7", "TNFRSF9", "EOMES", #cluster 2: NK cells
+#                       "DNAJB1", "HSPA1B", "JUN", "FOS", "NR4A1", "PPP1R15A", #cluster 4: Ttor cells
+#                       "PTGDS", "JCHAIN", "IL3RA", "CCR7", "CXCL8", #cluster 6: plasma cells
+#                       "IGKC", "MS4A1", "CD79A", "BANK1", "IGHM" #cluster 8: B cells
+# )
+# endo.markers <- c("MYH11", "ADRA2A", "MUSTN1", "PLN", "ACTA2", "TAGLN", # SMC
+#                        "COL6A3", "COL5A2", "THY1", "DCN", "GUCY1A2", "LUM", # Pericytes
+#                        "CCL21", "TFF3", "LYVE1", "PDPN", "EFEMP1", "IGF1", # LE
+#                        "IGFBP3", "ARL15", "CXCL12", "HEY1", "SEMA3G", # VE_arteriole
+#                        "COL15A1", "VWA1", "RGCC", "H19", "APLN", "ESM1", # VE_capillary
+#                        "G0S2", "CSF3", "SELE", "ACKR1", "STC1", "ICAM1", # VE_venule1
+#                        "ID1", "CCL14", "AQP1", "RAMP3", "SOX18", "SNCG" # VE_venule2
+# )
+# All_add_markers <- unique(c(main.markers,kera.makers,fib.makers,mye.markers,lym.markers,endo.markers))
+
+#A <- as.data.frame(paste0("adata_log.var['highly_variable']['",All_add_markers,"']='True'"))
+#write.table(A,"addmarker.list.txt",quote = F,row.names = F)
+
+adata_log.var['highly_variable']['KRT5']="True"
+adata_log.var['highly_variable']['KRT14']="True"
+adata_log.var['highly_variable']['KRT10']="True"
+adata_log.var['highly_variable']['COL1A1']="True"
+adata_log.var['highly_variable']['COL1A2']="True"
+adata_log.var['highly_variable']['LUM']="True"
+adata_log.var['highly_variable']['PMEL']="True"
+adata_log.var['highly_variable']['MLANA']="True"
+adata_log.var['highly_variable']['TYRP1']="True"
+adata_log.var['highly_variable']['PECAM1']="True"
+adata_log.var['highly_variable']['VWF']="True"
+adata_log.var['highly_variable']['EGFL7']="True"
+adata_log.var['highly_variable']['LYZ']="True"
+adata_log.var['highly_variable']['HLA-DRA']="True"
+adata_log.var['highly_variable']['HLA-DRB1']="True"
+adata_log.var['highly_variable']['CD68']="True"
+adata_log.var['highly_variable']['CD163']="True"
+adata_log.var['highly_variable']['CD14']="True"
+adata_log.var['highly_variable']['CD209']="True"
+adata_log.var['highly_variable']['FCGR2A']="True"
+adata_log.var['highly_variable']['MRC1']="True"
+adata_log.var['highly_variable']['CD7']="True"
+adata_log.var['highly_variable']['CD3D']="True"
+adata_log.var['highly_variable']['CD3E']="True"
+adata_log.var['highly_variable']['CD4']="True"
+adata_log.var['highly_variable']['CD8A']="True"
+adata_log.var['highly_variable']['NKG7']="True"
+adata_log.var['highly_variable']['MS4A1']="True"
+adata_log.var['highly_variable']['CD79A']="True"
+adata_log.var['highly_variable']['CD19']="True"
+adata_log.var['highly_variable']['JCHAIN']="True"
+adata_log.var['highly_variable']['IGHG1']="True"
+adata_log.var['highly_variable']['MZB1']="True"
+adata_log.var['highly_variable']['CD207']="True"
+adata_log.var['highly_variable']['CD1A']="True"
+adata_log.var['highly_variable']['CD1C']="True"
+adata_log.var['highly_variable']['CD1B']="True"
+adata_log.var['highly_variable']['ITGAX']="True"
+adata_log.var['highly_variable']['CD83']="True"
+adata_log.var['highly_variable']['LAMP3']="True"
+adata_log.var['highly_variable']['THBD']="True"
+adata_log.var['highly_variable']['CLEC9A']="True"
+adata_log.var['highly_variable']['SOX10']="True"
+adata_log.var['highly_variable']['SOX2']="True"
+adata_log.var['highly_variable']['ACTA2']="True"
+adata_log.var['highly_variable']['MCAM']="True"
+adata_log.var['highly_variable']['EPCAM']="True"
+adata_log.var['highly_variable']['PDGFRB']="True"
+adata_log.var['highly_variable']['KRT15']="True"
+adata_log.var['highly_variable']['KRT31']="True"
+adata_log.var['highly_variable']['COL17A1']="True"
+adata_log.var['highly_variable']['ASS1']="True"
+adata_log.var['highly_variable']['POSTN']="True"
+adata_log.var['highly_variable']['NUSAP1']="True"
+adata_log.var['highly_variable']['STMN1']="True"
+adata_log.var['highly_variable']['TOP2A']="True"
+adata_log.var['highly_variable']['MKI67']="True"
+adata_log.var['highly_variable']['CENPF']="True"
+adata_log.var['highly_variable']['MMP3']="True"
+adata_log.var['highly_variable']['MMP1']="True"
+adata_log.var['highly_variable']['AREG']="True"
+adata_log.var['highly_variable']['TNFRSF12A']="True"
+adata_log.var['highly_variable']['FGFBP1']="True"
+adata_log.var['highly_variable']['S150A2']="True"
+adata_log.var['highly_variable']['S150A10']="True"
+adata_log.var['highly_variable']['ITPRIPL2']="True"
+adata_log.var['highly_variable']['NRARP']="True"
+adata_log.var['highly_variable']['MT1X']="True"
+adata_log.var['highly_variable']['MT1G']="True"
+adata_log.var['highly_variable']['APOE']="True"
+adata_log.var['highly_variable']['CHP2']="True"
+adata_log.var['highly_variable']['KCNK7']="True"
+adata_log.var['highly_variable']['DEFB1']="True"
+adata_log.var['highly_variable']['THEM5']="True"
+adata_log.var['highly_variable']['DSC1']="True"
+adata_log.var['highly_variable']['KRTDAP']="True"
+adata_log.var['highly_variable']['TNFAIP2']="True"
+adata_log.var['highly_variable']['IRF1']="True"
+adata_log.var['highly_variable']['TNFSF10']="True"
+adata_log.var['highly_variable']['NFKBIA']="True"
+adata_log.var['highly_variable']['CCL27']="True"
+adata_log.var['highly_variable']['KRT6A']="True"
+adata_log.var['highly_variable']['KRT6B']="True"
+adata_log.var['highly_variable']['KRT6C']="True"
+adata_log.var['highly_variable']['KRT17']="True"
+adata_log.var['highly_variable']['KRT16']="True"
+adata_log.var['highly_variable']['S150A7']="True"
+adata_log.var['highly_variable']['S150A8']="True"
+adata_log.var['highly_variable']['S150A9']="True"
+adata_log.var['highly_variable']['SLURP2']="True"
+adata_log.var['highly_variable']['KLK7']="True"
+adata_log.var['highly_variable']['CNFN']="True"
+adata_log.var['highly_variable']['FLG']="True"
+adata_log.var['highly_variable']['LORICRIN']="True"
+adata_log.var['highly_variable']['ASPN']="True"
+adata_log.var['highly_variable']['TAGLN']="True"
+adata_log.var['highly_variable']['COL16A1']="True"
+adata_log.var['highly_variable']['COL11A1']="True"
+adata_log.var['highly_variable']['HSPA6']="True"
+adata_log.var['highly_variable']['MMP11']="True"
+adata_log.var['highly_variable']['ISG15']="True"
+adata_log.var['highly_variable']['IER5']="True"
+adata_log.var['highly_variable']['IFI6']="True"
+adata_log.var['highly_variable']['COL4A1']="True"
+adata_log.var['highly_variable']['COL4A2']="True"
+adata_log.var['highly_variable']['IGFBP6']="True"
+adata_log.var['highly_variable']['COMP']="True"
+adata_log.var['highly_variable']['EGFL6']="True"
+adata_log.var['highly_variable']['APOD']="True"
+adata_log.var['highly_variable']['FGF7']="True"
+adata_log.var['highly_variable']['PLA2G2A']="True"
+adata_log.var['highly_variable']['ITM2A']="True"
+adata_log.var['highly_variable']['C3']="True"
+adata_log.var['highly_variable']['CCL19']="True"
+adata_log.var['highly_variable']['CD74']="True"
+adata_log.var['highly_variable']['COL6A5']="True"
+adata_log.var['highly_variable']['LEPR']="True"
+adata_log.var['highly_variable']['PLPP3']="True"
+adata_log.var['highly_variable']['CD9']="True"
+adata_log.var['highly_variable']['SLIT3']="True"
+adata_log.var['highly_variable']['DPP4']="True"
+adata_log.var['highly_variable']['PCLAF']="True"
+adata_log.var['highly_variable']['TYMS']="True"
+adata_log.var['highly_variable']['H1-5']="True"
+adata_log.var['highly_variable']['SFRP1']="True"
+adata_log.var['highly_variable']['CRABP1']="True"
+adata_log.var['highly_variable']['TNN']="True"
+adata_log.var['highly_variable']['COCH']="True"
+adata_log.var['highly_variable']['G0S2']="True"
+adata_log.var['highly_variable']['ELN']="True"
+adata_log.var['highly_variable']['AKR1C1']="True"
+adata_log.var['highly_variable']['GPRC5A']="True"
+adata_log.var['highly_variable']['SFRP4']="True"
+adata_log.var['highly_variable']['IL1B']="True"
+adata_log.var['highly_variable']['THBS1']="True"
+adata_log.var['highly_variable']['PTGS2']="True"
+adata_log.var['highly_variable']['EREG']="True"
+adata_log.var['highly_variable']['AQP9']="True"
+adata_log.var['highly_variable']['PHLDA1']="True"
+adata_log.var['highly_variable']['CXCL1']="True"
+adata_log.var['highly_variable']['CCL3']="True"
+adata_log.var['highly_variable']['CCL4']="True"
+adata_log.var['highly_variable']['MMP9']="True"
+adata_log.var['highly_variable']['MMP19']="True"
+adata_log.var['highly_variable']['SDS']="True"
+adata_log.var['highly_variable']['FGL2']="True"
+adata_log.var['highly_variable']['VEGFA']="True"
+adata_log.var['highly_variable']['DAB2']="True"
+adata_log.var['highly_variable']['C1QA']="True"
+adata_log.var['highly_variable']['C1QB']="True"
+adata_log.var['highly_variable']['MAF']="True"
+adata_log.var['highly_variable']['CCL13']="True"
+adata_log.var['highly_variable']['ACOT7']="True"
+adata_log.var['highly_variable']['LTB']="True"
+adata_log.var['highly_variable']['IFITM1']="True"
+adata_log.var['highly_variable']['TCF4']="True"
+adata_log.var['highly_variable']['IGKC']="True"
+adata_log.var['highly_variable']['WDFY4']="True"
+adata_log.var['highly_variable']['CPNE3']="True"
+adata_log.var['highly_variable']['DNASE1L3']="True"
+adata_log.var['highly_variable']['CADM1']="True"
+adata_log.var['highly_variable']['IL1R2']="True"
+adata_log.var['highly_variable']['CLEC10A']="True"
+adata_log.var['highly_variable']['CCR7']="True"
+adata_log.var['highly_variable']['FSCN1']="True"
+adata_log.var['highly_variable']['IL7R']="True"
+adata_log.var['highly_variable']['FCGBP']="True"
+adata_log.var['highly_variable']['CLDN1']="True"
+adata_log.var['highly_variable']['TIGIT']="True"
+adata_log.var['highly_variable']['BATF']="True"
+adata_log.var['highly_variable']['FOXP3']="True"
+adata_log.var['highly_variable']['CTLA4']="True"
+adata_log.var['highly_variable']['CORO1B']="True"
+adata_log.var['highly_variable']['LDHB']="True"
+adata_log.var['highly_variable']['GIMAP7']="True"
+adata_log.var['highly_variable']['AP3M2']="True"
+adata_log.var['highly_variable']['KLF2']="True"
+adata_log.var['highly_variable']['PASK']="True"
+adata_log.var['highly_variable']['AHR']="True"
+adata_log.var['highly_variable']['CCR6']="True"
+adata_log.var['highly_variable']['PTGER4']="True"
+adata_log.var['highly_variable']['ANKRD28']="True"
+adata_log.var['highly_variable']['LPAR6']="True"
+adata_log.var['highly_variable']['FXYD2']="True"
+adata_log.var['highly_variable']['TRGC2']="True"
+adata_log.var['highly_variable']['KLRC3']="True"
+adata_log.var['highly_variable']['KLRC2']="True"
+adata_log.var['highly_variable']['PDE4A']="True"
+adata_log.var['highly_variable']['GNLY']="True"
+adata_log.var['highly_variable']['XCL2']="True"
+adata_log.var['highly_variable']['XCL1']="True"
+adata_log.var['highly_variable']['KLRD1']="True"
+adata_log.var['highly_variable']['FCER1G']="True"
+adata_log.var['highly_variable']['TRDC']="True"
+adata_log.var['highly_variable']['GZMK']="True"
+adata_log.var['highly_variable']['GZMA']="True"
+adata_log.var['highly_variable']['CRTAM']="True"
+adata_log.var['highly_variable']['TNFRSF9']="True"
+adata_log.var['highly_variable']['EOMES']="True"
+adata_log.var['highly_variable']['DNAJB1']="True"
+adata_log.var['highly_variable']['HSPA1B']="True"
+adata_log.var['highly_variable']['JUN']="True"
+adata_log.var['highly_variable']['FOS']="True"
+adata_log.var['highly_variable']['NR4A1']="True"
+adata_log.var['highly_variable']['PPP1R15A']="True"
+adata_log.var['highly_variable']['PTGDS']="True"
+adata_log.var['highly_variable']['IL3RA']="True"
+adata_log.var['highly_variable']['CXCL8']="True"
+adata_log.var['highly_variable']['BANK1']="True"
+adata_log.var['highly_variable']['IGHM']="True"
+adata_log.var['highly_variable']['MYH11']="True"
+adata_log.var['highly_variable']['ADRA2A']="True"
+adata_log.var['highly_variable']['MUSTN1']="True"
+adata_log.var['highly_variable']['PLN']="True"
+adata_log.var['highly_variable']['COL6A3']="True"
+adata_log.var['highly_variable']['COL5A2']="True"
+adata_log.var['highly_variable']['THY1']="True"
+adata_log.var['highly_variable']['DCN']="True"
+adata_log.var['highly_variable']['GUCY1A2']="True"
+adata_log.var['highly_variable']['CCL21']="True"
+adata_log.var['highly_variable']['TFF3']="True"
+adata_log.var['highly_variable']['LYVE1']="True"
+adata_log.var['highly_variable']['PDPN']="True"
+adata_log.var['highly_variable']['EFEMP1']="True"
+adata_log.var['highly_variable']['IGF1']="True"
+adata_log.var['highly_variable']['IGFBP3']="True"
+adata_log.var['highly_variable']['ARL15']="True"
+adata_log.var['highly_variable']['CXCL12']="True"
+adata_log.var['highly_variable']['HEY1']="True"
+adata_log.var['highly_variable']['SEMA3G']="True"
+adata_log.var['highly_variable']['COL15A1']="True"
+adata_log.var['highly_variable']['VWA1']="True"
+adata_log.var['highly_variable']['RGCC']="True"
+adata_log.var['highly_variable']['H19']="True"
+adata_log.var['highly_variable']['APLN']="True"
+adata_log.var['highly_variable']['ESM1']="True"
+adata_log.var['highly_variable']['CSF3']="True"
+adata_log.var['highly_variable']['SELE']="True"
+adata_log.var['highly_variable']['ACKR1']="True"
+adata_log.var['highly_variable']['STC1']="True"
+adata_log.var['highly_variable']['ICAM1']="True"
+adata_log.var['highly_variable']['ID1']="True"
+adata_log.var['highly_variable']['CCL14']="True"
+adata_log.var['highly_variable']['AQP1']="True"
+adata_log.var['highly_variable']['RAMP3']="True"
+adata_log.var['highly_variable']['SOX18']="True"
+adata_log.var['highly_variable']['SNCG']="True"
+
+adata_proc = adata_norm[:, adata_log.var[adata_log.var['highly_variable']==True].index]
+adata_proc
+adata_proc.var.to_csv("D01_highly_variable_genes_andMarkerGenes_4007.csv")
+adata_proc.write_h5ad("D02_adata_proc.h5ad")
+```
+
+# Step7 bulk normalization
+```{python,eval=FALSE}
+sc.pp.normalize_total(data_bulk, target_sum=10e4)
+data_bulk.write_h5ad("D03_bulk.adata_afterOverlap_norm_step5.h5ad")
+```
+
+# Step8 sc pca plot
+```{python,eval=FALSE}
+sc.pp.pca(adata_log, n_comps=30, use_highly_variable=True, svd_solver='arpack')
+sc.pl.pca_variance_ratio(adata_log, log=True)
+adata_log.obsm['X_pca'] *= -1  # multiply by -1 to match Seurat
+sc.pl.pca_scatter(adata_log, color='SubCelltype',save=True)
+```
+
+# Step9 calculating the centroids of cell types
+```{python,eval=FALSE}
+clusters = np.array(adata_proc.obs.SubCelltype.unique(),dtype='<U10')
+sc_mean = pd.DataFrame(index=adata_proc.var_names,columns=clusters)
+adata_proc.obs_names = adata_proc.obs.SubCelltype.str.cat(adata_proc.obs_names,sep='_')
+
+for cluster in clusters:
+  cells = [x for x in adata_proc.obs_names if x.startswith(cluster)]
+  sc_part = adata_proc[cells,:].X.T
+  sc_mean[cluster] = pd.DataFrame(np.mean(sc_part,axis=1),index=adata_proc.var_names)
+
+centroids_sc_hv = sc_mean
+centroids_sc_hv.shape
+centroids_sc_hv.to_csv("D04_centroids_sc_hv.csv")
+```
+
+# Step10 AutoGeneS
+```{python,eval=FALSE}
+# Optimization
+ag.init(centroids_sc_hv.T)
+ag.optimize(ngen=5000,seed=0,nfeatures=500,mode='fixed')#this step need many time. 14:03
+#ag.optimize(ngen=2,seed=0,nfeatures=400,mode='fixed',offspring_size=100,verbose=False)
+ag.save("D05_centroids_sc_Opts")
+```
+
+# Step11 Statistics
+## 11.1 load data
+```{python}
+data_bulk_raw = sc.read_h5ad("D03_bulk.adata_afterOverlap_norm_step5.h5ad")
+data_bulk_raw=data_bulk_raw.to_df()
+data_bulk_raw = data_bulk_raw.T
+data_bulk_raw
+
+ag.load("D05_centroids_sc_Opts")
+adata_proc = sc.read_h5ad("D02_adata_proc.h5ad")
+
+centroids_sc_hv = pd.read_csv("D04_centroids_sc_hv.csv",index_col=0)
+```
+
+## 11.2 plot
+```{python}
+########################## continue ##########################
+ag.plot(weights=(-1,0))
+plt.savefig("F01_correlation.pdf", format="pdf")
+
+
+index = ag.select(index=0)
+#filter marker genes in the bulk samples
+centroids_sc_pareto = centroids_sc_hv[index]
+#data_bulk_proc = data_bulk_raw.loc[centroids_sc_pareto.index,:]
+#Correlation matrix
+corr = pd.DataFrame(data = np.corrcoef(centroids_sc_pareto.T), columns = centroids_sc_pareto.columns, index = centroids_sc_pareto.columns)
+mask = np.zeros_like(corr)
+mask[np.triu_indices_from(mask)] = True
+with sns.axes_style("white"):
+    sns_plot =sns.clustermap(np.abs(corr),cmap=sns.color_palette("GnBu", 1000), robust=True)
+sns_plot.figure.savefig("F02_mCorrelation_matrix.pdf")
+corr.to_csv("D06_Sub_A500_corr.csv")
+
+#marker genes
+import seaborn as sns
+subTypes = pd.DataFrame
+subTypes = centroids_sc_pareto.columns
+type_pal = sns.husl_palette(centroids_sc_pareto.columns.size, s=0.7)
+lut = dict(zip(centroids_sc_pareto.columns.unique(), type_pal))
+row_colors = subTypes.map(lut)
+sns_plot = sns.clustermap(centroids_sc_pareto.T, cmap="mako", robust=True)
+sns_plot.figure.savefig("F03_marker_genes.pdf")
+
+```
+
+## 11.3 Regression
+```{python}
+df = data_bulk_raw.iloc[:,:20]
+#df = df.drop(["Geneid","Length"],axis=1)
+
+coef_nusvr = ag.deconvolve(df.T, model='nusvr')
+coef_nnls = ag.deconvolve(df.T, model='nnls')
+#sc.pp.filter_cells(adata, CellType="Bas-II")
+
+def normalize_proportions(data,copy):
+    if copy==True:
+        data_copy = data.copy()
+    else:
+        data_copy = data
+    data_copy[data_copy < 0] = 0
+    for raw in data_copy.index:
+        sum = data_copy.loc[raw].sum()
+        data_copy.loc[raw] = np.divide(data_copy.loc[raw],sum)
+    return data_copy
+clusters = np.array(adata_proc.obs.SubCelltype.unique(),dtype='<U20')
+#clusters = clusters[clusters!='Bas-II']
+proportions_NuSVR = normalize_proportions(pd.DataFrame(data=coef_nusvr,columns=clusters,index=df.columns), copy = False)
+proportions_NuSVR.head()
+proportions_nnls = normalize_proportions(pd.DataFrame(data=coef_nnls,columns=clusters,index=df.columns), copy = False)
+proportions_nnls.head()
+
+proportions_NuSVR.to_csv("D07_Sub_A500_proportions_NuSVR.csv")
+proportions_nnls.to_csv("D08_Sub_A500_proportions_nnls.csv")
+```
+
+# Step12 visualization
+```{r}
+library(tidyr)# 使用的gather & spread
+library(reshape2) # 使用的函数 melt & dcast 
+library(ggplot2)
+library(dplyr)
+method <- "NuSVR"
+genes <- "500"
+NuSVR <- read.csv("D07_Sub_A500_proportions_NuSVR.csv")
+colnames(NuSVR) <- gsub("\\.", "-", colnames(NuSVR))
+```
+
+## 12.1 Keratinocytes
+```{r}
+Keratinocytes <- NuSVR[,c("X","Bas-I","Bas-prolif","Bas-mig","Spi-I","Spi-II-a","Spi-II-b","Spi-III","Spi-mig","Gra-I")]#9
+NuSVR$Type = c(rep(c("VU","Skin","Wound1"),each=5),rep("Wound7",each=5))
+fac_levs <- c("Bas_I", "Bas_prolif", "Bas_mig",
+              "Spi_I", "Spi_II_a", "Spi_II_b",
+              "Spi_III", "Spi_mig", "Gra_I")
+ct.cols <- c('#807dba','#9e9ac8','#ccebc5',
+             '#fe9929','#fec44f','#fee391',
+             '#fb8072','#b3de69','#fccde5')
+fac_levs <- gsub("_","-",fac_levs)
+Keratinocytes <- melt(Keratinocytes,id.vars = c('X'))
+Keratinocytes_n <- as.data.frame(Keratinocytes %>% group_by(X) %>% mutate(Percentage=round(value/sum(value)*100,2)))
+Keratinocytes_n$variable <- gsub("_", "-", Keratinocytes_n$variable)
+Keratinocytes_n$variable <- factor(Keratinocytes_n$variable,levels = fac_levs)
+Keratinocytes_n$X <- factor(Keratinocytes_n$X,levels = paste(rep(c("Skin","Wound1_","Wound7_","VU"),each=5),1:5,sep=""))
+P1 <- ggplot(Keratinocytes_n,aes(x=X,y=Percentage,fill=variable))+
+  geom_bar(stat="identity")+theme_bw()+
+  theme(axis.text.x = element_text(angle=45,vjust=0.9,hjust = 1,size=10),plot.title = element_text(size = 10),legend.title =element_text(size=10))+
+  scale_fill_manual(values=ct.cols)+
+  xlab("")+  guides(fill=FALSE)+
+  ggtitle(paste(method,genes,"Keratinocytes"))
+P1
+#
+method <- "NuSVR"
+genes <- "500"
+NuSVR <- read.csv("Sub_A500_proportions_NuSVR.csv")
+colnames(NuSVR) <- gsub("\\.", "-", colnames(NuSVR))
+NuSVR$Type = c(rep(c("VU","Skin","Wound1"),each=5),rep("Wound7",each=5))
+Keratinocytes <- NuSVR[,c("Type","X","Bas-I","Bas-prolif","Bas-mig","Spi-I","Spi-II-a","Spi-II-b","Spi-III","Spi-mig","Gra-I")]#9
+fac_levs <- c("Bas_I", "Bas_prolif", "Bas_mig",
+              "Spi_I", "Spi_II_a", "Spi_II_b",
+              "Spi_III", "Spi_mig", "Gra_I")
+ct.cols <- c('#807dba','#9e9ac8','#ccebc5',
+             '#fe9929','#fec44f','#fee391',
+             '#fb8072','#b3de69','#fccde5')
+fac_levs <- gsub("_","-",fac_levs)
+Keratinocytes <- melt(Keratinocytes,id.vars = c('X',"Type"))
+
+library(dplyr)
+K_Mean <- Keratinocytes%>%
+  group_by(Type,variable)%>%
+  summarise(y=mean(value))
+K_mean <- as.data.frame(K_Mean)
+Keratinocytes_n <- as.data.frame(K_mean %>% group_by(Type) %>% mutate(Percentage=round(y/sum(y)*100,2)))
+Keratinocytes_n$variable <- gsub("_", "-", Keratinocytes_n$variable)
+Keratinocytes_n$variable <- factor(Keratinocytes_n$variable,levels = fac_levs)
+Keratinocytes_n$Type <- factor(Keratinocytes_n$Type,levels = c("Skin","Wound1","Wound7","VU"))
+
+P2 <- ggplot(Keratinocytes_n,aes(x=Type,y=Percentage,fill=variable))+
+  geom_bar(stat="identity")+
+  scale_fill_manual(values=ct.cols)+
+  xlab("")+
+  ylab("Percentage of Keratinocytes(%)")+
+  ggtitle(paste(method,genes,"Keratinocytes")) + theme_bw()+
+  theme(axis.text.x = element_text(angle=45,vjust=0.9,hjust = 1,size=10),plot.title = element_text(size = 10),legend.title =element_text(size=10))+ guides(fill=guide_legend(title="Celltypes"))
+P2
+
+pdf("F04_Bulkdeconvolution_Persentage_of_KC.pdf",width = 10,height = 4)
+require(grid)
+grid.newpage()  ###new plot panel
+pushViewport(viewport(layout = grid.layout(1,5))) ####将版面分成2*2矩阵
+vplayout <- function(x,y){viewport(layout.pos.row = x, layout.pos.col = y)} 
+print(P1, vp = vplayout(1,1:3))   
+print(P2, vp = vplayout(1,4:5))
+dev.off()
+```

@@ -1,0 +1,111 @@
+---
+title: "C01_AutoGeneS"
+author: "Ruby_Luo"
+date: '2023-02-13'
+output: 
+  html_document:
+    toc: true
+    toc_depth: 6
+    toc_collapsed: true
+    number_sections: false
+    toc_float:
+      collapsed: false
+      smooth_scroll: false
+    df_print: paged
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup}
+library(knitr)
+#opts_chunk$set(engine.path = '/sw/comp/python3/3.10.8/rackham/bin/python3')
+```
+
+# Keratinocyte visualization
+```{r}
+library(ggplot2)
+library(patchwork)
+library(tidyverse)
+
+method <- "NuSVR"
+genes <- "500"
+NuSVR <- read.csv("D07_Sub_A500_proportions_NuSVR.csv")
+colnames(NuSVR) <- gsub("\\.", "-", colnames(NuSVR))
+NuSVR$Type = c(rep(c("VU","Skin","Wound1"),each=5),rep("Wound7",each=5))
+
+Keratinocytes <- NuSVR[,c("Type","X","Bas-I","Bas-prolif","Bas-mig","Spi-I","Spi-II-a","Spi-II-b","Spi-III","Spi-mig","Gra-I")]
+colnames(Keratinocytes)[2] <- "Sample"
+
+fac_levs <- c("Bas_I", "Bas_prolif", "Bas_mig",
+              "Spi_I", "Spi_II_a", "Spi_II_b",
+              "Spi_III", "Spi_mig", "Gra_I")
+ct.cols <- c('#807dba','#9e9ac8','#ccebc5',
+             '#fe9929','#fec44f','#fee391',
+             '#fb8072','#b3de69','#fccde5')
+fac_levs <- gsub("_","-",fac_levs)
+Keratinocytes <- melt(Keratinocytes,id.vars = c('Sample',"Type"))
+
+
+K_Mean <- Keratinocytes%>%
+  group_by(Type,variable)%>%
+  summarise(y=mean(value))
+K_mean <- as.data.frame(K_Mean)
+Keratinocytes_n <- as.data.frame(K_mean %>% group_by(Type) %>% mutate(Percentage=round(y/sum(y)*100,2)))
+Keratinocytes_n$variable <- gsub("_", "-", Keratinocytes_n$variable)
+Keratinocytes_n$variable <- factor(Keratinocytes_n$variable,levels = fac_levs)
+Keratinocytes_n$Type <- factor(Keratinocytes_n$Type,levels = c("Skin","Wound1","Wound7","VU"))
+
+P2 <- ggplot(Keratinocytes_n,aes(x=Type,y=Percentage,fill=variable))+
+  geom_bar(stat="identity")+
+  scale_fill_manual(values=ct.cols)+
+  xlab("")+
+  ylab("Percentage of Keratinocytes(%)")+
+  ggtitle(paste(method,genes,"Keratinocytes")) + theme_bw()+
+  theme(axis.text.x = element_text(angle=45,vjust=0.9,hjust = 1,size=10),plot.title = element_text(size = 10),legend.title =element_text(size=10))+ guides(fill=guide_legend(title="Celltypes"))
+P2
+
+#pdf("F04_Bulkdeconvolution_Persentage_of_KC.pdf",width = 10,height = 4)
+#dev.off()
+```
+
+
+# statistics of bas-/spi-mig clusters
+```{r}
+library(ggpubr)
+bas_spi <- Keratinocytes %>% filter(variable %in% c("Bas-mig"))
+str(bas_spi)
+
+bas_spi$Type <- factor(bas_spi$Type, levels = c("Skin", "Wound1", "Wound7", "VU"))
+my_comparisons <- list(c("Skin", "Wound1"), c("Skin", "Wound7"), c("Skin", "VU"),
+                       c("Wound1", "Wound7"), c("Wound7", "VU"), c("Wound1", "VU"))
+#bas_spi$Group <- factor(bas_spi$Group, levels = c("D0", "D1", "D7", "D30"))
+#my_comparisons <- list( c("D1", "D0"), c("D7", "D1"), c("D7", "D30") )
+sigPlot1 <- ggboxplot(bas_spi, x = "Type", y = "value", color = "Type", palette = c("#00AFBB", "#E7B800", "#FC4E07", '#807dba'),
+ add = c("jitter", "mean_sd")) + 
+  stat_compare_means(comparisons = my_comparisons, label = "p.signif") # Add pairwise comparisons p-value
+
+sigPlot2
+
+sigPlot1 + sigPlot2 + plot_layout(guides = "collect") & theme(legend.position = "none")
+pdf("Bulk_bas_spi_mig_cellproportion.pdf", useDingbats = F, width = 8, height = 5)
+dev.off()
+
+
+# prepare the data for quasibinomial test
+df.prop <- step2 %>% mutate(Condition = gsub("H[0-9]$", "H", Sample)) %>% 
+  mutate(Condition = gsub("^PWH[0-9]{2}", "", Condition)) %>% 
+  filter(CellType %in% c("Spi_mig")) %>% 
+  filter(Condition %in% c("DFU_NH", "DFU_H")) #, "H", "DFU_NH", "DFU_H"
+
+df.prop$Condition <- factor(df.prop$Condition, levels = c("H", "DFU_NH", "DFU_H"))
+test.quasi = glm(formula = Prop ~ Condition, data = df.prop, family=quasibinomial)
+print(summary(test.quasi))
+anova(test.quasi, test = "LRT")$`Pr(>Chi)`[2]
+#pav_tot_val <- anova(test.quasi, test = "LRT")$`Pr(>Chi)`[2]
+```
+
+
+# SessionInfo
+```{r}
+sessionInfo()
+```

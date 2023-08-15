@@ -1,0 +1,335 @@
+---
+title: "Integration of wounds and published skin data"
+author: "Zhuang Liu"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true #add a table of contents (TOC)
+    toc_depth: 3 #headers' level in the toc
+    toc_float: true #toc visible even when scrolled
+    theme: lumen
+    highlight: tango
+    code_folding: show
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.align='center', fig.width=12, fig.height = 6, warning=FALSE, message=FALSE)
+```
+
+```{r warning=FALSE, message=FALSE}
+library(Seurat)
+library(SeuratObject)
+#library(SeuratData)
+library(SeuratDisk)
+library(tidyverse)
+library(patchwork)
+library(harmony)
+```
+
+####################################################
+# Integration of wounds and published skin data
+####################################################
+# 1. Prepare data as the seurat object
+```{r eval=FALSE}
+# process the human healthy adult skin data
+Convert("/Users/zhuliu/Desktop/sc st/compareStudies/Science_MuzzLab_data/healthy_raw_lz.h5ad", 
+        dest = "h5seurat", overwrite = TRUE)
+healthy_skin <- LoadH5Seurat("/Users/zhuliu/Desktop/sc st/compareStudies/Science_MuzzLab_data/healthy_raw_lz.h5seurat")
+
+healthy_skin@active.ident <- healthy_skin$sample_id
+healthy_skin@misc$dendrogram_leiden <- NULL
+healthy_skin@misc$rank_genes_groups <- NULL
+healthy_skin@misc$Status_colors <- NULL
+healthy_skin@misc$anno_colors <- NULL
+healthy_skin@misc$leiden <- NULL
+healthy_skin@misc$leiden_colors <- NULL
+
+healthy_skin <- NormalizeData(healthy_skin)
+colnames(healthy_skin@assays$RNA@meta.features) <- c("ensemblid", "featuretype", "ncells")
+table(healthy_skin$full_clustering)
+
+healthy_skin$full_clustering <- factor(healthy_skin$full_clustering, levels = fac_levs)
+saveRDS(healthy_skin, "step4_healthy_adult_skin.rds")
+
+
+# process the human fetal data
+Convert("/Users/zhuliu/Desktop/sc st/compareStudies/Science_MuzzLab_data/fetal_submission_raw_lz.h5ad", 
+        dest = "h5seurat", overwrite = TRUE)
+sc_fetal <- LoadH5Seurat("/Users/zhuliu/Desktop/sc st/compareStudies/Science_MuzzLab_data/fetal_submission_raw_lz.h5seurat")
+sc_fetal@active.ident <- sc_fetal$donor_id
+
+sc_fetal <- NormalizeData(sc_fetal)
+colnames(sc_fetal@assays$RNA@meta.features) <- c("ensemblid", "featuretype")
+table(sc_fetal$anno_final)
+
+sc_fetal$anno_final <- factor(sc_fetal$anno_final, levels = fet_fac_levs)
+saveRDS(sc_fetal, "step4_fetal_skin.rds")
+
+
+# process the human wounds data (reduce the object size)
+# load the human wounds data
+wounds <- readRDS("/Users/zhuliu/Desktop/sc st/plotting scripts/Figure 1/allcombined_wounds_newAnnotation.rds")
+wounds@reductions$umap_def <- NULL
+# only keep 40 PCs of pca
+wounds@reductions$pca@cell.embeddings = Embeddings(wounds@reductions$pca)[,1:40]
+wounds@reductions$pca@feature.loadings = wounds@reductions$pca@feature.loadings[,1:40]
+wounds@reductions$pca@stdev = wounds@reductions$pca@stdev[1:40]
+
+# only keep 40 PCs of harmony
+wounds@reductions$harmony@cell.embeddings = Embeddings(wounds@reductions$harmony)[,1:40]
+wounds@reductions$harmony@feature.loadings = wounds@reductions$harmony@feature.loadings[,1:40]
+# remove the feature.loadings.projected in the harmony slot, since it is duplicated as feature.loadings
+wounds@reductions$harmony@feature.loadings.projected = wounds@reductions$pca@feature.loadings.projected
+wounds@reductions$harmony@stdev = wounds@reductions$harmony@stdev[1:40]
+
+# change the assay used names of reductions
+wounds@reductions$harmony@assay.used = "RNA"
+wounds@reductions$umap@assay.used = "RNA"
+wounds@reductions$pca@assay.used = "RNA"
+
+wounds@active.assay = "RNA"
+wounds = DietSeurat(wounds, assays = "RNA", dimreducs = c("pca", "umap", "harmony"))
+
+wounds$Doublet=NULL;wounds$percent.ribo=NULL;wounds$percent.hb=NULL;wounds$percent.malat1=NULL;wounds$Phase=NULL;wounds$nCount_SCT=NULL;wounds$nFeature_SCT=NULL;wounds$SCT_snn_res.0.5=NULL;wounds$seurat_clusters=NULL;wounds$SCT_snn_res.0.8=NULL;wounds$doublet_scores=NULL;wounds$CellTypes=NULL;wounds$nCount_RNA=NULL;wounds$nFeature_RNA=NULL
+DimPlot(wounds, group.by = "newCellTypes")
+
+wounds <- NormalizeData(wounds)
+saveRDS(wounds, "step4_wounds.rds")
+```
+
+## 1. Colors for cell clusters
+```{r eval=FALSE}
+# human wounds data
+wds_fact_lev <- c("Bas-I", "Bas-II", "Bas-prolif", "Bas-mig", 
+              "Spi-I", "Spi-II", "Spi-mig", 
+              "Gra-I", "HF", 
+              "MEL", 
+              "FB-I", "FB-II", "FB-III", "FB-prolif", 
+              "Schwann", "PC-vSMC", "LE", "VE", 
+              "NK-cell", "Th", "Plasma_Bcell", "Mast-cell", 
+              "Mono-Mac", "cDC1", "cDC2", "DC3", "LC")
+wds_ct.cols <- c("#d94701", "#fdae61", "#fd8d3c", "#fdbe85", #Basal clusters
+             "#33A02C", "#72BF5A", "#B2DF8A", #Spinous clusters
+             "#f768a1", "#d4b9da", #Granular, Hair follicle
+             "#737373", #MEL
+             "#0570b0", "#3690c0", "#92c5de", "#d1e5f0", #Fibroblast clusters
+             "#c0a700", "#1a9850", "#fb9a99", "#8d4720",  # Schwann,PCvSMC,LE,VE
+             "#35978f", "#41b6c4", "#80cdc1","#df65b0", #"NK-cell", "Th", "Plasma_Bcell", "Mast-cell", 
+             "#dd3497", "#807dba","#6a3d9a","#9e9ac8", "#b15928" #"Mono-Mac", "cDC1", "cDC2", "DC3", "LC"
+)
+# add the color names using new cell types
+names(wds_ct.cols) <- wds_fact_lev
+
+
+# human adult skin data
+fac_levs <- c("Undifferentiated_KC", "Differentiated_KC", "Melanocyte",
+              "Schwann_1", "Schwann_2", 
+              "F1", "F2", "F3", 
+              "Pericyte_1", "Pericyte_2",
+              "VE1", "VE2", "VE3", "LE1", "LE2",
+              "ILC1_3", "ILC1_NK", "NK", "ILC2", "Tc", "Th", "Treg",
+              "Mast_cell", "Plasma",
+              "Macro_1", "Macro_2", "Inf_mac",
+              "DC1", "DC2", "LC", "Mono_mac", "MigDC", "migLC", "moDC")
+ct.cols <- c("#B5B6DB", "#166E8A", "#D5DEA0",
+             "#A6559B", "#3E64A2", 
+             "#A4D7E2", "#6BA0D5", "#3A64AD",
+             "#E4DCC0", "#F19570", 
+             "#EAD6E8", "#EF93AA", "#E23725", "#0D783D", "#7FBD70",
+             "#CEDFEF", "#4DA1D1", "#1B4179", "#86AB3E", "#A0CA7A", "#90398F", "#A67FBA", 
+             "#C39371", "#F2DDEB", 
+             "#D43A6B", "#B97781", "#194791",
+             "#DF7A90", "#E49CC4", "#BADFE9", "#852E8A", "#EFC1DA", "#7D85BA", "#4AB6AF")
+names(ct.cols) <- fac_levs
+
+
+# human fetal data
+fet_fac_levs=c("A_fs_KC", "B_fs_Melanocyte", "C_fs_Schwann", 
+               "D_fs_FB", "E_fs_LE", "F_fs_VE", "N_fs_pericyte", 
+               "G_fs_Mast", "H_fs_NK", "I_fs_ILC", "J_fs_LC",
+               "K_fs_DC1", "L_fs_DC2", "M_fs_Macro")
+
+fet_ct.cols=c("#B6B7DC", "#D2DA8E", "#974794", 
+              "#98D2E0", "#1C6835", "#EB718A", "#668A5D",
+              "#C39371", "#31499A", "#C5D779", "#B6B7DC",
+              "#DAADC0", "#8C87A7", "#305092")
+names(fet_ct.cols) <- fet_fac_levs
+```
+
+
+# 2. Integrate the healthy adult skin data with wounds data
+```{r eval=FALSE}
+# healthy adult skin integration using the donor as the batch effect, 
+# while the wounds data using each sample as the batch effect
+healthy_skin <- readRDS("step4_healthy_adult_skin.rds")
+DimPlot(healthy_skin, group.by = "full_clustering", label = F, cols = ct.cols, raster=TRUE) + ggtitle("")
+
+wounds <- readRDS("step4_wounds.rds")
+DimPlot(wounds, group.by = "newCellTypes", label = F, cols = wds_ct.cols, raster=TRUE) + ggtitle("")
+
+# check the overlapped genes and keep the overlapped genes
+overgene <- intersect(rownames(healthy_skin), rownames(wounds))
+
+healthy_skin <- healthy_skin[overgene, ]
+wounds <- wounds[overgene, ]
+
+
+# integrate based on sample names. For wounds data, use sample ID, 
+# while healthy adult data, use each donor as mentioned in the paper
+wounds$Project="Woundhealing"
+wounds$Sample=wounds$orig.ident
+wounds$CellType = wounds$newCellTypes
+
+healthy_skin$Project="HealthyAdult"
+healthy_skin$Sample=healthy_skin$donor_id
+healthy_skin$CellType=healthy_skin$full_clustering
+```
+
+
+# 3. Prepare data for harmony integration
+```{r eval=FALSE}
+healthy_skin = DietSeurat(healthy_skin, assays = "RNA")
+all.health = SplitObject(healthy_skin, split.by = "Sample")
+all.health = lapply(all.health, SCTransform, assay = "RNA", variable.features.n = 3000,
+    verbose = F, method = "glmGamPoi")
+
+wounds = DietSeurat(wounds, assays = "RNA")
+all.wounds = SplitObject(wounds, split.by = "Sample")
+all.wounds = lapply(all.wounds, SCTransform, assay = "RNA", variable.features.n = 3000,
+    verbose = F, method = "glmGamPoi")
+
+alldata = append(all.health, all.wounds)
+
+rm(all.health, all.wounds, healthy_skin, wounds)
+gc(verbose = F)
+```
+
+
+# 4. Run harmony
+```{r eval=FALSE}
+options(future.globals.maxSize = 100000 * 1024^2) 
+vg = SelectIntegrationFeatures(alldata, verbose = F)
+# get all genes in SCT assay of the objects
+genes.all = lapply(alldata, function(x) rownames(x@assays$SCT@data))
+t = table(unlist(genes.all))
+
+expr.all = names(t)[t == length(alldata)]
+vg = intersect(vg, expr.all)
+length(vg)
+
+alldata = PrepSCTIntegration(alldata, anchor.features = vg, verbose = F)
+
+data.merged <- merge(alldata[[1]], y = c(alldata[2:length(alldata)]), merge.data = TRUE)
+data.merged@active.assay = "SCT"
+VariableFeatures(data.merged) <- vg
+
+rm(alldata)
+g = gc(verbose = F)
+
+data.merged <- RunPCA(object = data.merged, assay = "SCT", npcs = 40, verbose = F)
+data.int <- RunHarmony(data.merged, assay.use = "SCT", reduction = "pca", dims.use = 1:40,
+    group.by.vars = "Sample", plot_convergence = TRUE, verbose = F)
+
+# run pca,umap,clustering.
+data.int = RunUMAP(data.int, dims = 1:40, assay = "SCT", reduction = "harmony", spread = 1.5,
+    min.dist = 0.1, verbose = F)
+
+data.int <- RunUMAP(object = data.int, assay = "SCT", reduction = "harmony", dims = 1:40, min.dist = 0.3, n.epochs = 200, spread = 1, learning.rate = 1)
+saveRDS(data.int, file = "integrated_health_wounds.rds") 
+```
+
+
+```{r eval=FALSE}
+inteData <- readRDS("integrated_health_wounds.rds")
+# change the assay used names of reductions
+inteData@reductions$harmony@assay.used = "RNA"
+inteData@reductions$umap@assay.used = "RNA"
+inteData@reductions$pca@assay.used = "RNA"
+
+inteData@active.assay = "RNA"
+inteData = DietSeurat(inteData, assays = "RNA", dimreducs = c("umap", "harmony"))
+DimPlot(inteData, group.by = "Project")
+DimPlot(inteData, group.by = "Sample")
+
+table(inteData$Project, inteData$CellType) %>% as.data.frame()
+DimPlot(inteData, group.by = "CellType")
+
+inteData$condi <- ifelse(inteData$Project == "Woundhealing", "WH", "HA")
+inteData$upCellType <- paste0(inteData$condi, "_", inteData$CellType)
+
+saveRDS(inteData, "integrated_health_wounds_reduced.rds")
+```
+
+
+```{r}
+inteData <- readRDS("step6integrated_adult_wounds_rPCA.rds")
+pdf("supple_integration_healthy_wounds.pdf", useDingbats = F, width = 8, height = 6)
+DimPlot(inteData, group.by = "Project", cols = c("#d8b365", "#5ab4ac")) + ggtitle("Integration")
+dev.off()
+DimPlot(inteData, group.by = "Project", split.by = "Project", cols = c("#d8b365", "#5ab4ac")) + ggtitle("Integration")
+
+# human wounds data
+wds_fact_lev <- c("Bas-I", "Bas-II", "Bas-prolif", "Bas-mig", 
+              "Spi-I", "Spi-II", "Spi-mig", 
+              "Gra-I", "HF", 
+              "MEL", 
+              "FB-I", "FB-II", "FB-III", "FB-prolif", 
+              "Schwann", "PC-vSMC", "LE", "VE", 
+              "NK-cell", "Th", "Plasma_Bcell", "Mast-cell", 
+              "Mono-Mac", "cDC1", "cDC2", "DC3", "LC")
+wds_fact_lev <- paste0("WH_", wds_fact_lev)
+wds_ct.cols <- c("#d94701", "#fdae61", "#fd8d3c", "#fdbe85", #Basal clusters
+             "#33A02C", "#72BF5A", "#B2DF8A", #Spinous clusters
+             "#f768a1", "#d4b9da", #Granular, Hair follicle
+             "#737373", #MEL
+             "#0570b0", "#3690c0", "#92c5de", "#d1e5f0", #Fibroblast clusters
+             "#c0a700", "#1a9850", "#fb9a99", "#8d4720",  # Schwann,PCvSMC,LE,VE
+             "#35978f", "#41b6c4", "#80cdc1","#df65b0", #"NK-cell", "Th", "Plasma_Bcell", "Mast-cell", 
+             "#dd3497", "#807dba","#6a3d9a","#9e9ac8", "#b15928" #"Mono-Mac", "cDC1", "cDC2", "DC3", "LC"
+)
+# add the color names using new cell types
+names(wds_ct.cols) <- wds_fact_lev
+
+# human adult skin data
+ha_fac_levs <- c("Undifferentiated_KC", "Differentiated_KC", "Melanocyte",
+              "Schwann_1", "Schwann_2", 
+              "F1", "F2", "F3", 
+              "Pericyte_1", "Pericyte_2",
+              "VE1", "VE2", "VE3", "LE1", "LE2",
+              "ILC1_3", "ILC1_NK", "NK", "ILC2", "Tc", "Th", "Treg",
+              "Mast_cell", "Plasma",
+              "Macro_1", "Macro_2", "Inf_mac",
+              "DC1", "DC2", "LC", "Mono_mac", "MigDC", "migLC", "moDC")
+ha_fac_levs <- paste0("HA_", ha_fac_levs)
+ha_ct.cols <- c("#B5B6DB", "#166E8A", "#D5DEA0",
+             "#A6559B", "#3E64A2", 
+             "#A4D7E2", "#6BA0D5", "#3A64AD",
+             "#E4DCC0", "#F19570", 
+             "#EAD6E8", "#EF93AA", "#E23725", "#0D783D", "#7FBD70",
+             "#CEDFEF", "#4DA1D1", "#1B4179", "#86AB3E", "#A0CA7A", "#90398F", "#A67FBA", 
+             "#C39371", "#F2DDEB", 
+             "#D43A6B", "#B97781", "#194791",
+             "#DF7A90", "#E49CC4", "#BADFE9", "#852E8A", "#EFC1DA", "#7D85BA", "#4AB6AF")
+names(ha_ct.cols) <- ha_fac_levs
+
+inte.fact <- c(wds_fact_lev, ha_fac_levs)
+inte.cols <- c(wds_ct.cols, ha_ct.cols)
+
+inteData$condi <- ifelse(inteData$Project == "Woundhealing", "WH", "HA")
+inteData$upCellType <- paste0(inteData$condi, "_", inteData$CellType)
+
+inteData$upCellType <- factor(inteData$upCellType, levels = inte.fact)
+DimPlot(inteData, group.by = "upCellType", cols = inte.cols, label = F, label.size = 4, split.by = "Project") + ggtitle("")
+pdf("supple_integration_healthy_wounds_split_legend.pdf", useDingbats = F, width = 12, height = 6)
+DimPlot(inteData, group.by = "upCellType", cols = inte.cols, label = F, label.size = 4, split.by = "Project") + ggtitle("") + NoLegend()
+dev.off()
+```
+
+
+# SessionInfo
+```{r}
+sessionInfo()
+```
+

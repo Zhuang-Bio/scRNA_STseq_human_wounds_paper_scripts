@@ -1,0 +1,270 @@
+---
+title: "Integration of wounds and published skin data"
+author: "Zhuang Liu"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true #add a table of contents (TOC)
+    toc_depth: 3 #headers' level in the toc
+    toc_float: true #toc visible even when scrolled
+    theme: lumen
+    highlight: tango
+    code_folding: show
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.align='center', fig.width=12, fig.height = 6, warning=FALSE, message=FALSE)
+```
+
+```{r warning=FALSE, message=FALSE}
+library(Seurat)
+library(SeuratObject)
+library(SeuratDisk)
+library(tidyverse)
+library(patchwork)
+library(harmony)
+```
+
+## 1. Colors for cell clusters
+```{r eval=TRUE}
+# human wounds data
+wds_fact_lev <- c("Bas-I", "Bas-II", "Bas-prolif", "Bas-mig", 
+              "Spi-I", "Spi-II", "Spi-mig", 
+              "Gra-I", "HF", 
+              "MEL", 
+              "FB-I", "FB-II", "FB-III", "FB-prolif", 
+              "Schwann", "PC-vSMC", "LE", "VE", 
+              "NK-cell", "Th", "Plasma_Bcell", "Mast-cell", 
+              "Mono-Mac", "cDC1", "cDC2", "DC3", "LC")
+wds_ct.cols <- c("#d94701", "#fdae61", "#fd8d3c", "#fdbe85", #Basal clusters
+             "#33A02C", "#72BF5A", "#B2DF8A", #Spinous clusters
+             "#f768a1", "#d4b9da", #Granular, Hair follicle
+             "#737373", #MEL
+             "#0570b0", "#3690c0", "#92c5de", "#d1e5f0", #Fibroblast clusters
+             "#c0a700", "#1a9850", "#fb9a99", "#8d4720",  # Schwann,PCvSMC,LE,VE
+             "#35978f", "#41b6c4", "#80cdc1","#df65b0", #"NK-cell", "Th", "Plasma_Bcell", "Mast-cell", 
+             "#dd3497", "#807dba","#6a3d9a","#9e9ac8", "#b15928" #"Mono-Mac", "cDC1", "cDC2", "DC3", "LC"
+)
+# add the color names using new cell types
+names(wds_ct.cols) <- wds_fact_lev
+
+# human fetal data
+fet_fac_levs=c("A_fs_KC", "B_fs_Melanocyte", "C_fs_Schwann", 
+               "D_fs_FB", "E_fs_LE", "F_fs_VE", "N_fs_pericyte", 
+               "G_fs_Mast", "H_fs_NK", "I_fs_ILC", "J_fs_LC",
+               "K_fs_DC1", "L_fs_DC2", "M_fs_Macro")
+
+fet_ct.cols=c("#B6B7DC", "#D2DA8E", "#974794", 
+              "#98D2E0", "#1C6835", "#EB718A", "#668A5D",
+              "#C39371", "#31499A", "#C5D779", "#B6B7DC",
+              "#DAADC0", "#8C87A7", "#305092")
+names(fet_ct.cols) <- fet_fac_levs
+```
+
+
+# integration plot
+```{r}
+inteData <- readRDS("step6integrated_adult_wounds_rPCA.rds")
+pdf("supple_integration_healthy_wounds.pdf", useDingbats = F, width = 8, height = 6)
+DimPlot(inteData, group.by = "Project", cols = c("#d8b365", "#5ab4ac")) + ggtitle("Integration")
+dev.off()
+DimPlot(inteData, group.by = "Project", split.by = "Project", cols = c("#d8b365", "#5ab4ac")) + ggtitle("Integration")
+
+# human wounds data
+wds_fact_lev <- c("Bas-I", "Bas-II", "Bas-prolif", "Bas-mig", 
+              "Spi-I", "Spi-II", "Spi-mig", 
+              "Gra-I", "HF", 
+              "MEL", 
+              "FB-I", "FB-II", "FB-III", "FB-prolif", 
+              "Schwann", "PC-vSMC", "LE", "VE", 
+              "NK-cell", "Th", "Plasma_Bcell", "Mast-cell", 
+              "Mono-Mac", "cDC1", "cDC2", "DC3", "LC")
+wds_fact_lev <- paste0("WH_", wds_fact_lev)
+wds_ct.cols <- c("#d94701", "#fdae61", "#fd8d3c", "#fdbe85", #Basal clusters
+             "#33A02C", "#72BF5A", "#B2DF8A", #Spinous clusters
+             "#f768a1", "#d4b9da", #Granular, Hair follicle
+             "#737373", #MEL
+             "#0570b0", "#3690c0", "#92c5de", "#d1e5f0", #Fibroblast clusters
+             "#c0a700", "#1a9850", "#fb9a99", "#8d4720",  # Schwann,PCvSMC,LE,VE
+             "#35978f", "#41b6c4", "#80cdc1","#df65b0", #"NK-cell", "Th", "Plasma_Bcell", "Mast-cell", 
+             "#dd3497", "#807dba","#6a3d9a","#9e9ac8", "#b15928" #"Mono-Mac", "cDC1", "cDC2", "DC3", "LC"
+)
+# add the color names using new cell types
+names(wds_ct.cols) <- wds_fact_lev
+
+# human adult skin data
+ha_fac_levs <- c("Undifferentiated_KC", "Differentiated_KC", "Melanocyte",
+              "Schwann_1", "Schwann_2", 
+              "F1", "F2", "F3", 
+              "Pericyte_1", "Pericyte_2",
+              "VE1", "VE2", "VE3", "LE1", "LE2",
+              "ILC1_3", "ILC1_NK", "NK", "ILC2", "Tc", "Th", "Treg",
+              "Mast_cell", "Plasma",
+              "Macro_1", "Macro_2", "Inf_mac",
+              "DC1", "DC2", "LC", "Mono_mac", "MigDC", "migLC", "moDC")
+ha_fac_levs <- paste0("HA_", ha_fac_levs)
+ha_ct.cols <- c("#B5B6DB", "#166E8A", "#D5DEA0",
+             "#A6559B", "#3E64A2", 
+             "#A4D7E2", "#6BA0D5", "#3A64AD",
+             "#E4DCC0", "#F19570", 
+             "#EAD6E8", "#EF93AA", "#E23725", "#0D783D", "#7FBD70",
+             "#CEDFEF", "#4DA1D1", "#1B4179", "#86AB3E", "#A0CA7A", "#90398F", "#A67FBA", 
+             "#C39371", "#F2DDEB", 
+             "#D43A6B", "#B97781", "#194791",
+             "#DF7A90", "#E49CC4", "#BADFE9", "#852E8A", "#EFC1DA", "#7D85BA", "#4AB6AF")
+names(ha_ct.cols) <- ha_fac_levs
+
+inte.fact <- c(wds_fact_lev, ha_fac_levs)
+inte.cols <- c(wds_ct.cols, ha_ct.cols)
+
+inteData$condi <- ifelse(inteData$Project == "Woundhealing", "WH", "HA")
+inteData$upCellType <- paste0(inteData$condi, "_", inteData$CellType)
+
+inteData$upCellType <- factor(inteData$upCellType, levels = inte.fact)
+DimPlot(inteData, group.by = "upCellType", cols = inte.cols, label = F, label.size = 4, split.by = "Project") + ggtitle("")
+pdf("supple_integration_healthy_wounds_split_legend.pdf", useDingbats = F, width = 12, height = 6)
+DimPlot(inteData, group.by = "upCellType", cols = inte.cols, label = F, label.size = 4, split.by = "Project") + ggtitle("") + NoLegend()
+dev.off()
+```
+
+
+```{r}
+library(RColorBrewer)
+library(viridis)
+library(pheatmap)
+
+metadata <- data.table::fread("step6_transfer_wounds_adult.txt")
+table(metadata$predicted.id)
+
+selcolums <- colnames(metadata %>% dplyr::select(16:42))
+selcolums <- gsub("prediction.score.", "", selcolums)
+selcolums <- gsub("\\.", "_", selcolums)
+corre <- metadata %>% dplyr::select(14, 16:42) %>% group_by(CellType) %>%
+  mutate(Bas_I = mean(prediction.score.Bas.I)) %>% 
+  mutate(Bas_II = mean(prediction.score.Bas.II)) %>% 
+  mutate(Bas_prolif = mean(prediction.score.Bas.prolif)) %>% 
+  mutate(Bas_mig = mean(prediction.score.Bas.mig)) %>% 
+  mutate(Spi_I = mean(prediction.score.Spi.I)) %>% 
+  mutate(Spi_II = mean(prediction.score.Spi.II)) %>% 
+  mutate(Spi_mig = mean(prediction.score.Spi.mig)) %>% 
+  mutate(Gra_I = mean(prediction.score.Gra.I)) %>% 
+  mutate(HF = mean(prediction.score.HF)) %>% 
+  mutate(MEL = mean(prediction.score.MEL)) %>% 
+  mutate(FB_I = mean(prediction.score.FB.I)) %>% 
+  mutate(FB_II = mean(prediction.score.FB.II)) %>% 
+  mutate(FB_III = mean(prediction.score.FB.III)) %>% 
+  mutate(FB_prolif = mean(prediction.score.FB.prolif)) %>% 
+  mutate(Schwann = mean(prediction.score.Schwann)) %>% 
+  mutate(PC_vSMC = mean(prediction.score.PC.vSMC)) %>% 
+  mutate(LE = mean(prediction.score.LE)) %>% 
+  mutate(VE = mean(prediction.score.VE)) %>% 
+  mutate(NK_cell = mean(prediction.score.NK.cell)) %>% 
+  mutate(Th = mean(prediction.score.Th)) %>% 
+  mutate(Plasma_Bcell = mean(prediction.score.Plasma_Bcell)) %>% 
+  mutate(Mast_cell = mean(prediction.score.Mast.cell)) %>% 
+  mutate(Mono_Mac = mean(prediction.score.Mono.Mac)) %>% 
+  mutate(cDC1 = mean(prediction.score.cDC1)) %>% 
+  mutate(cDC2 = mean(prediction.score.cDC2)) %>% 
+  mutate(DC3 = mean(prediction.score.DC3)) %>% 
+  mutate(LC = mean(prediction.score.LC)) %>% ungroup() %>% dplyr::select(1, 29:55) %>% distinct()
+
+fac_levs <- c("Undifferentiated_KC", "Differentiated_KC", "Melanocyte",
+              "Schwann_1", "Schwann_2", 
+              "F1", "F2", "F3", 
+              "Pericyte_1", "Pericyte_2",
+              "VE1", "VE2", "VE3", "LE1", "LE2",
+              "ILC1_3", "ILC1_NK", "NK", "ILC2", "Tc", "Th", "Treg",
+              "Mast_cell", "Plasma",
+              "Macro_1", "Macro_2", "Inf_mac",
+              "DC1", "DC2", "LC", "Mono_mac", "MigDC", "migLC", "moDC")
+a_ord <- match(fac_levs, corre$CellType)
+corre <- corre[c(a_ord),]
+htmap <- corre %>% column_to_rownames(var = "CellType") #%>% dplyr::select(-3) 
+htmap1 <- htmap
+#pdf("supple_integration_healthy_wounds_labeltransfer.pdf", useDingbats = F, width = 8, height = 5.5)
+pheatmap::pheatmap(htmap, cluster_rows = F, cluster_cols = F, color = magma(10))
+#dev.off()
+
+metadata <- data.table::fread("step6_transfer_adult_wounds.txt")
+table(metadata$predicted.id)
+
+selcolums <- colnames(metadata %>% dplyr::select(20:53))
+selcolums <- gsub("prediction.score.", "", selcolums)
+selcolums <- gsub("\\.", "_", selcolums)
+corre <- metadata %>% dplyr::select(18, 20:53) %>% group_by(CellType) %>%
+  mutate(Undifferentiated_KC = mean(prediction.score.Undifferentiated_KC)) %>% 
+  mutate(Differentiated_KC = mean(prediction.score.Differentiated_KC)) %>% 
+  mutate(Melanocyte = mean(prediction.score.Melanocyte)) %>% 
+  mutate(Schwann_1 = mean(prediction.score.Schwann_1)) %>% 
+  mutate(Schwann_2 = mean(prediction.score.Schwann_2)) %>% 
+  mutate(F1 = mean(prediction.score.F1)) %>% 
+  mutate(F2 = mean(prediction.score.F2)) %>% 
+  mutate(F3 = mean(prediction.score.F3)) %>% 
+  mutate(Pericyte_1 = mean(prediction.score.Pericyte_1)) %>% 
+  mutate(Pericyte_2 = mean(prediction.score.Pericyte_2)) %>% 
+  mutate(VE1 = mean(prediction.score.VE1)) %>% 
+  mutate(VE2 = mean(prediction.score.VE2)) %>% 
+  mutate(VE3 = mean(prediction.score.VE3)) %>% 
+  mutate(LE1 = mean(prediction.score.LE1)) %>% 
+  mutate(LE2 = mean(prediction.score.LE2)) %>% 
+  mutate(ILC1_3 = mean(prediction.score.ILC1_3)) %>% 
+  mutate(ILC1_NK = mean(prediction.score.ILC1_NK)) %>% 
+  mutate(NK = mean(prediction.score.NK)) %>% 
+  mutate(ILC2 = mean(prediction.score.ILC2)) %>% 
+  mutate(Tc = mean(prediction.score.Tc)) %>% 
+  mutate(Th = mean(prediction.score.Th)) %>% 
+  mutate(Treg = mean(prediction.score.Treg)) %>% 
+  mutate(Mast_cell = mean(prediction.score.Mast_cell)) %>% 
+  mutate(Plasma = mean(prediction.score.Plasma)) %>% 
+  mutate(Macro_1 = mean(prediction.score.Macro_1)) %>% 
+  mutate(Macro_2 = mean(prediction.score.Macro_2)) %>% 
+  mutate(Inf_mac = mean(prediction.score.Inf_mac)) %>% 
+  mutate(DC1 = mean(prediction.score.DC1)) %>% 
+  mutate(DC2 = mean(prediction.score.DC2)) %>% 
+  mutate(LC = mean(prediction.score.LC)) %>% 
+  mutate(Mono_mac = mean(prediction.score.Mono_mac)) %>% 
+  mutate(MigDC = mean(prediction.score.MigDC)) %>% 
+  mutate(migLC = mean(prediction.score.migLC)) %>%
+  mutate(moDC = mean(prediction.score.moDC)) %>% ungroup() %>% dplyr::select(1, 36:69) %>% distinct()
+
+wds_fact_lev <- c("Bas-I", "Bas-II", "Bas-prolif", "Bas-mig", 
+                  "Spi-I", "Spi-II", "Spi-mig", 
+                  "Gra-I", "HF", 
+                  "MEL", 
+                  "FB-I", "FB-II", "FB-III", "FB-prolif", 
+                  "Schwann", "PC-vSMC", "LE", "VE", 
+                  "NK-cell", "Th", "Plasma_Bcell", "Mast-cell", 
+                  "Mono-Mac", "cDC1", "cDC2", "DC3", "LC")
+a_ord <- match(wds_fact_lev, corre$CellType)
+corre <- corre[c(a_ord),]
+htmap <- corre %>% column_to_rownames(var = "CellType") #%>% dplyr::slice(-2) 
+htmap2 <- htmap
+pheatmap::pheatmap(htmap, cluster_rows = F, cluster_cols = F)
+pheatmap::pheatmap(htmap, cluster_rows = F, cluster_cols = F, color = magma(10))
+
+
+# Combine the predicted scores according to mutal reference
+htmap1 <- t(htmap1)
+
+htmap_c <- matrix(data = NA, nrow = nrow(htmap1), ncol = ncol(htmap1))
+for (i in 1:nrow(htmap1)) {
+  for (j in 1:ncol(htmap1)) {
+    htmap_c[i, j] = max(htmap1[i, j], htmap2[i, j])
+  }
+}
+rownames(htmap_c) <- rownames(htmap2)
+colnames(htmap_c) <- colnames(htmap2)
+pheatmap::pheatmap(htmap_c, cluster_rows = F, cluster_cols = F, color = magma(10))
+
+pdf("supple_integration_healthy_wounds_labeltransfer.pdf", useDingbats = F, width = 8, height = 5.5)
+pheatmap::pheatmap(htmap_c, cluster_rows = F, cluster_cols = F, color = magma(10))
+dev.off()
+```
+
+# SessionInfo
+```{r}
+sessionInfo()
+```
+

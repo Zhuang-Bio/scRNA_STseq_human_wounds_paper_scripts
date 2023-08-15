@@ -1,0 +1,144 @@
+---
+title: "Marker genes and DE analysis res1"
+author: "Zhuang Liu"
+date: "02/12/2021 Updated: `r Sys.Date()`"
+output:
+  html_document:
+    toc: true #add a table of contents (TOC)
+    toc_depth: 3 #headers' level in the toc
+    toc_float: true #toc visible even when scrolled
+    theme: lumen
+    highlight: tango
+    code_folding: hide
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.align='center', fig.width=12, fig.height = 8, warning=FALSE, message=FALSE)
+```
+
+```{r warning=FALSE, message=FALSE}
+library(Seurat)
+library(SeuratObject)
+library(SeuratDisk)
+library(tidyverse)
+library(magrittr)
+library(ggplot2)
+library(patchwork)
+library(cowplot)
+library(harmony)
+```
+
+####################################################
+# Step. Marker genes identification
+####################################################
+## S. Known marker genes
+```{r fig.width=9, fig.height=6}
+hswound.immu.com <- readRDS("s1_clean_immu_lymphoid_newUMAP.rds")
+allLymphoidCells_clean_CellID <- colnames(hswound.immu.com)
+saveRDS(allLymphoidCells_clean_CellID, file = "allLymphoidCells_clean_CellID.rds")
+
+hswound.immu.com
+DimPlot(hswound.immu.com, reduction = "umap", group.by='SCT_snn_res.0.5', label=TRUE, label.size = 6) + NoAxes()
+```
+
+```{r fig.height=14}
+plotcom <- FeaturePlot(
+  hswound.immu.com,
+  features=c('COL1A1', 'COL1A2', 'KRT5', 'KRT10', 'MS4A1', 'CD79A', 'CD7', 'CD3D', 'CD19', 
+             "JCHAIN", "IGHG1", "MZB1", 'CD4', 'CD8A', 'NKG7', 'HLA-DRA', 'CD68', 'CD163','PECAM1', "PMEL"), 
+  combine=F, cols = c("grey","red")
+)
+
+# apply theme to each feature plot
+for(i in 1:length(plotcom)){
+  plotcom[[i]] <- plotcom[[i]] + NoLegend() + NoAxes()
+}
+
+cowplot::plot_grid(plotlist = plotcom, ncol = 4)
+```
+
+```{r}
+DimPlot(object = hswound.immu.com, 
+        reduction = "umap", 
+        label = TRUE, 
+        group.by = "orig.ident", label.size = 4.5) + NoAxes() 
+
+table(hswound.immu.com$SCT_snn_res.0.5)
+DimPlot(object = hswound.immu.com, 
+        reduction = "umap", 
+        label = TRUE, 
+        group.by = "SCT_snn_res.0.5", label.size = 4.5) + NoAxes() 
+
+table(hswound.immu.com$SCT_snn_res.0.8)
+DimPlot(object = hswound.immu.com, 
+        reduction = "umap", 
+        label = TRUE, 
+        group.by = "SCT_snn_res.0.8", label.size = 4.5) + NoAxes()
+
+table(hswound.immu.com$SCT_snn_res.1)
+DimPlot(object = hswound.immu.com, 
+        reduction = "umap", 
+        label = TRUE, 
+        group.by = "SCT_snn_res.1", label.size = 4.5) + NoAxes()
+
+table(hswound.immu.com$SCT_snn_res.1.2)
+DimPlot(object = hswound.immu.com, 
+        reduction = "umap", 
+        label = TRUE, 
+        group.by = "SCT_snn_res.1.2", label.size = 4.5) + NoAxes()
+
+DimPlot(object = hswound.immu.com, 
+        reduction = "umap", 
+        label = TRUE, 
+        group.by = "MainCellTypes", label.size = 5) + NoAxes() + ggtitle("")
+```
+
+## S. Visualizing marker genes for each cluster
+```{r fig.width=12, fig.height=30}
+DefaultAssay(hswound.immu.com) <- "RNA"
+markers <- data.table::fread("s1_clean_immu_lymphoid_mg_res0.5.txt")
+
+markers_top10 <- markers %>% group_by(cluster) %>% top_n(20, avg_log2FC)
+fac_levs <- unique(markers$cluster)
+
+plot_list <- list()
+for (i in seq_along(fac_levs)) {
+  #print(paste0("Cluster ", i, " :Top 10 marker genes"))
+  names <- fac_levs[i]
+  plot_list[[i]] <- DotPlot(hswound.immu.com, features = markers_top10[markers_top10$cluster == names, ]$gene, col.max = 5, col.min = 0, 
+                                dot.scale = 4, dot.min = 0.1,
+                                assay = "RNA", group.by = "SCT_snn_res.0.5") + RotatedAxis() + coord_flip() + xlab("Marker genes") + ylab("") +
+    theme(axis.text.x=element_text(size=10), axis.text.y=element_text(size=10)) + ggtitle(label = names)
+}
+
+wrap_plots(plot_list,ncol = 2) #+ plot_layout(guides = 'collect') & theme(legend.position = 'right')
+```
+
+## S. featurePlot Visualizing marker genes for each cluster
+```{r fig.height=20}
+markers_top10 <- markers %>% group_by(cluster) %>% top_n(30, avg_log2FC)
+fac_levs <- unique(markers$cluster)
+
+for (i in seq_along(fac_levs)) {
+  print(paste0("Plot cluster", i-1))
+  names <- fac_levs[i]
+  plotgenes= markers_top10[markers_top10$cluster == names, ]$gene
+  plot_list <- FeaturePlot(
+    hswound.immu.com,
+    features=plotgenes,
+    combine=FALSE, cols = c("gray","red")
+  )
+  # apply theme to each feature plot
+  for(i in 1:length(plot_list)){
+    plot_list[[i]] <- plot_list[[i]] + NoLegend() + NoAxes()
+  }
+  print(wrap_plots(plot_list, ncol = 5))
+}
+```
+
+# SessionInfo
+```{r}
+sessionInfo()
+```

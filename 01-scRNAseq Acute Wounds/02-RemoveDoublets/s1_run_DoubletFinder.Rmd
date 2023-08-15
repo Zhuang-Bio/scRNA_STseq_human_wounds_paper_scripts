@@ -1,0 +1,172 @@
+---
+title: "scRNAseq essential analysis with Seurat with sctransform"
+author: "Zhuang Liu"
+date: "02/09/2021 Updated: `r Sys.Date()`"
+output: 
+  html_document:
+    toc: true #add a table of contents (TOC)
+    toc_depth: 3 #headers' level in the toc
+    toc_float: true #toc visible even when scrolled
+    theme: lumen
+    highlight: tango
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r warning=FALSE, message=FALSE}
+library(Seurat)
+library(tidyverse)
+library(magrittr)
+library(ggplot2)
+library(patchwork)
+
+library(DoubletFinder)
+
+require(future)
+availableCores()
+plan("multisession", workers = 4)
+options(future.globals.maxSize = 8000 * 1024^2)
+```
+
+###################################################
+########----DoubletFinder QC per sample----########
+###################################################
+## 1. load data into Seurat objects per sample 
+```{r eval=FALSE}
+samples <- list.files("/Users/zhuliu/Desktop/scRNA_STseq/proj_10X_woundhealing/03_results/00-cellrange_counts")
+sm_folders <- paste0("/Users/zhuliu/Desktop/scRNA_STseq/proj_10X_woundhealing/03_results/00-cellrange_counts/", samples, "/outs/filtered_feature_bc_matrix")
+
+sceList <- function(x, y){
+    tmp_obj <- CreateSeuratObject(
+      counts = Read10X(x),
+      min.cells = 3, 
+      min.features = 200, 
+      project = y)
+    tmp_obj[["percent.mt"]] <- PercentageFeatureSet(object = tmp_obj, pattern = "^mt-")
+    tmp_obj <- subset(tmp_obj, subset = nFeature_RNA > 200 & percent.mt < 20)
+    require(future)
+    plan("multisession", workers = 4)
+    options(future.globals.maxSize = 10000 * 1024^2)
+    tmp_obj <- NormalizeData(tmp_obj, normalization.method = "LogNormalize", scale.factor = 10000)
+    tmp_obj <- FindVariableFeatures(tmp_obj, selection.method = "vst", nfeatures = 4000)
+    tmp_obj <- ScaleData(tmp_obj, features = rownames(tmp_obj), vars.to.regress = c("percent.mt"))
+    tmp_obj <- RunPCA(tmp_obj, features = VariableFeatures(tmp_obj), npcs = 50)
+    return(tmp_obj)
+}
+PWH26D0 <- sceList(sm_folders[1], samples[1])
+saveRDS(PWH26D0, file = "s0_DoubleFinder_qc_PWH26D0.rds")
+rm(PWH26D0)
+PWH26D1 <- sceList(sm_folders[2], samples[2])
+saveRDS(PWH26D1, file = "s0_DoubleFinder_qc_PWH26D1.rds")
+rm(PWH26D1)
+PWH26D30 <- sceList(sm_folders[3], samples[3])
+saveRDS(PWH26D30, file = "s0_DoubleFinder_qc_PWH26D30.rds")
+rm(PWH26D30)
+PWH26D7 <- sceList(sm_folders[4], samples[4])
+saveRDS(PWH26D7, file = "s0_DoubleFinder_qc_PWH26D7.rds")
+rm(PWH26D7)
+PWH27D0 <- sceList(sm_folders[5], samples[5])
+saveRDS(PWH27D0, file = "s0_DoubleFinder_qc_PWH27D0.rds")
+rm(PWH27D0)
+PWH27D1 <- sceList(sm_folders[6], samples[6])
+saveRDS(PWH27D1, file = "s0_DoubleFinder_qc_PWH27D1.rds")
+rm(PWH27D1)
+PWH27D30 <- sceList(sm_folders[7], samples[7])
+saveRDS(PWH27D30, file = "s0_DoubleFinder_qc_PWH27D30.rds")
+rm(PWH27D30)
+PWH27D7 <- sceList(sm_folders[8], samples[8])
+saveRDS(PWH27D7, file = "s0_DoubleFinder_qc_PWH27D7.rds")
+rm(PWH27D7)
+PWH28D0 <- sceList(sm_folders[9], samples[9])
+saveRDS(PWH28D0, file = "s0_DoubleFinder_qc_PWH28D0.rds")
+rm(PWH28D0)
+PWH28D1 <- sceList(sm_folders[10], samples[10])
+saveRDS(PWH28D1, file = "s0_DoubleFinder_qc_PWH28D1.rds")
+rm(PWH28D1)
+PWH28D30 <- sceList(sm_folders[11], samples[11])
+saveRDS(PWH28D30, file = "s0_DoubleFinder_qc_PWH28D30.rds")
+rm(PWH28D30)
+PWH28D7 <- sceList(sm_folders[12], samples[12])
+saveRDS(PWH28D7, file = "s0_DoubleFinder_qc_PWH28D7.rds")
+rm(PWH28D7)
+```
+
+## 2. Doublet detection per sample 
+```{r fig.width=12, fig.align='center'}
+samples <- list.files("/Users/zhuliu/Desktop/scRNA_STseq/proj_10X_woundhealing/03_results/00-cellrange_counts")
+samples
+expectRate <- c(0.037, 0.04, 0.029, 0.038, 0.028, 0.057, 0.052, 0.058, 0.04, 0.04, 0.051, 0.048)
+names(expectRate) <- samples
+expectRate
+#i=1,2,3,...,12 (One by one for each sample)
+#for (i in seq_along(samples)) {
+  tmpSample <- readRDS(file = paste0("s0_DoubleFinder_qc_", samples[i], ".rds"))
+  ElbowPlot(tmpSample, reduction = "pca", ndims = 50)
+  tmpSample
+  
+  tmpSample <- tmpSample %>% 
+    FindNeighbors(dims = 1:40) %>% 
+    FindClusters(resolution = 0.5) %>% #here you could also change the resolution
+    RunUMAP(dims = 1:40)
+  tmpSample
+  DimPlot(tmpSample, reduction = "umap", group.by="seurat_clusters", label=TRUE) 
+  
+  ## pK Identification (no ground-truth)
+  sweep.res.list <- paramSweep_v3(tmpSample, PCs = 1:40, sct = FALSE)
+  #data.table::fwrite(sweep.res.list, file = paste0(samples[i], "_sweep.res.list.txt"), sep = "\t")
+  sweep.stats <- summarizeSweep(sweep.res.list, GT = FALSE)
+  human <- find.pK(sweep.stats)
+  human$pK <- as.character(human$pK)
+  #Determine the maxi 
+  pK_human <- human$pK[which.max(human$BCmetric)] %>% as.numeric()
+  #Make the density plot
+  #pdf(file = paste0(samples[i], "_sweep.res.list.pdf"), useDingbats = FALSE, width = 8, height = 8)
+  {plot(x = human$pK, y = human$BCmetric, type="b", pch = 19, col = "blue", lty = 1, xlab="pK", ylab="BCmetric")
+  abline(v=pK_human,lwd=2,col='red',lty=2)
+  text(pK_human, max(human$BCmetric), as.character(pK_human), pos=4, col="red")}
+  #dev.off()
+  
+  #Homotypic Doublet Proportion Estimate -----------------------------------------------------------------------
+  annotations <- tmpSample@meta.data$seurat_clusters
+  homotypic.prop <- modelHomotypic(annotations)
+  nExp_poi <- round(expectRate[i]*(nrow(tmpSample@meta.data)))
+  nExp_poi.adj <- round(nExp_poi*(1-homotypic.prop))
+  
+  #Run DoubletFinder with varying classification stringencies---------------------------------------------------
+  tmpSample <- doubletFinder_v3(tmpSample, PCs = 1:40, pN = 0.25, pK = pK_human, nExp = nExp_poi.adj, reuse.pANN = FALSE , sct = FALSE)
+  tmpSample <- doubletFinder_v3(tmpSample, PCs = 1:40, pN = 0.25, pK = 0.08, nExp = nExp_poi.adj, reuse.pANN = FALSE , sct = FALSE)
+  tmpSample <- doubletFinder_v3(tmpSample, PCs = 1:40, pN = 0.25, pK = 0.16, nExp = nExp_poi.adj, reuse.pANN = FALSE , sct = FALSE)
+  tmpSample <- doubletFinder_v3(tmpSample, PCs = 1:40, pN = 0.25, pK = 0.2, nExp = nExp_poi.adj, reuse.pANN = FALSE , sct = FALSE)
+  #extract the Classification column
+  DF.name <- colnames(tmpSample@meta.data)[grepl("DF.classification", colnames(tmpSample@meta.data))]
+  
+  #Draw the plots
+  DF.name
+  for (j in seq_along(DF.name)) {
+    p1 <- DimPlot(tmpSample, reduction = "umap", group.by=DF.name[j], pt.size = 0.1, label=FALSE, label.size = 5)   
+    p2 <- VlnPlot(tmpSample,
+                  features = c("nFeature_RNA", "nCount_RNA"),
+                  pt.size = 0.01,
+                  group.by = DF.name[j]) + NoLegend()    
+    pdf(file = paste0(samples[i], "_umap_Doublets", DF.name[j], ".pdf"), useDingbats = FALSE, width = 12, height   = 8)
+    print(p1 + p2)
+    dev.off()
+  }
+  
+  #save the metadata of predicted doublets
+  tmp.doubletFinder <- as.data.frame(tmpSample@meta.data) %>% tibble::rownames_to_column(var = "barcode")
+  data.table::fwrite(tmp.doubletFinder, file = paste0(samples[i], "_umap_Doublets", DF.name[1], "optall.txt"), sep="\t")
+  
+  #delete unneeded variables
+  rm(tmpSample, sweep.res.list, sweep.stats, human, pK_human, annotations, homotypic.prop, nExp_poi, nExp_poi.adj, DF.name, p1, p2, tmp.doubletFinder)
+#}
+```
+
+```{r}
+sessionInfo()
+```
+
+

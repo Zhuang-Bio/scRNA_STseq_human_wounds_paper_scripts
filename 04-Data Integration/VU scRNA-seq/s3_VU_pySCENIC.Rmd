@@ -1,0 +1,509 @@
+---
+title: "c01_DFU_pySCENIC11"
+author: "Ruby_Luo"
+date: '2023-02-27'
+output: 
+  html_document:
+    toc: true
+    toc_depth: 6
+    toc_collapsed: true
+    number_sections: false
+    toc_float:
+      collapsed: false
+      smooth_scroll: false
+    df_print: paged
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(engine.path = list(
+  python = '~/miniconda3/envs/pyscenic=0.11.2/bin/python',
+  R = '/sw/apps/R/x86_64/4.0.4/rackham/bin/R'
+))
+```
+
+# Step1: Convert Seurat object to h5ad format
+```{r eval=FALSE}
+suppressPackageStartupMessages(require(Matrix))
+suppressPackageStartupMessages(require(dplyr))
+suppressPackageStartupMessages(require(Seurat))
+suppressPackageStartupMessages(require(ggplot2))
+suppressPackageStartupMessages(require(SeuratDisk))
+suppressPackageStartupMessages(require(hdf5r))
+
+DFU <- readRDS("D01_step4_DFU_KC_pySCENIC.rds")
+
+# OBS! All factor columns are converted to numbers in scanpy, fix!
+sc.data <- DFU
+cl = sapply(sc.data@meta.data, is.factor)
+
+for (col in names(cl)[cl]){
+  print(col)
+  sc.data[[col]] = as.character(sc.data[[col]][,1])
+}
+
+sc.data <- DietSeurat(sc.data, assays = "RNA", dimreducs = c("pca", "umap"))
+outdir = "./"
+# Save as AnnData
+SaveH5Seurat(sc.data, filename = file.path(outdir, "D02_DFU.h5seurat"),
+             overwrite = T)
+Convert(file.path(outdir, "D02_DFU.h5seurat"), dest = "h5ad", overwrite = T)
+
+file.remove(file.path(outdir, "D02_DFU.h5seurat"))
+```
+
+# Step2: Conver .h5ad file to .loom file
+```{python eval=FALSE}
+# import dependencies
+import os,sys
+import numpy as np
+import pandas as pd
+import scanpy as sc
+import loompy as lp
+import anndata as ad
+from MulticoreTSNE import MulticoreTSNE as TSNE
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+# Convert the Scanpy object to pySCENIC loom object (Python)
+
+# Step1. conver VUNS h5ad to loom file
+## scRNA reference (raw counts)
+adata =sc.read_h5ad("D02_DFU.h5ad")
+
+# OBS! The raw matrix has numericals instead of gene names as var.index, also make sure column name is correct!
+adata.raw.var.rename(columns = {'_index':'features'}, inplace = True)
+adata.raw.var.index = adata.var.index
+adata = adata.raw.to_adata()
+
+adata.var.index = adata.var['features']
+
+# path to write unfiltered loom file (this will be created in the optional steps below)
+f_loom_path_unfilt = "D03_DFU_pySCENIC11.loom" # 
+
+row_attrs = { 
+    "Gene": np.array(adata.var.index) ,
+}
+col_attrs = { 
+    "CellID": np.array(adata.obs.index) ,
+    "nGene": np.array( np.sum(adata.X.transpose()>0 , axis=0)).flatten() ,
+    "nUMI": np.array( np.sum(adata.X.transpose() , axis=0)).flatten() ,
+    "orig.ident": np.array(adata.obs['Sample']).flatten() ,
+    "Condition": np.array(adata.obs['Condition']).flatten() ,
+    "percent.mt": np.array(adata.obs['percent_mito']).flatten() ,
+    "CellTypes": np.array(adata.obs['newCellType']).flatten() ,
+    
+}
+
+lp.create(f_loom_path_unfilt, adata.X.transpose(), row_attrs, col_attrs)
+```
+
+# Step3: running pyscenic11
+```{bash eval=FALSE}
+cd /proj/snic2021-23-156/private/rubyluo/P4_Zhuang_singleCell_2210/Step3_Analysis/a01_pySCENIC/b03_DFU
+conda activate pyscenic=0.11.2
+# Convert the and rename the database from V1 to V2
+#cd /proj/snic2021-23-156/private/rubyluo/P4_Zhuang_singleCell_2210/Step3_Analysis/a01_pySCENIC/b00_Ref
+#python cisTargetCodes/create_cisTarget_databases/convert_cistarget_databases_v1_to_v2.py \
+#-i hg38__refseq-r80__500bp_up_and_100bp_down_tss.mc9nr.feather \
+#-o hg38__refseq-r80__500bp_up_and_100bp_down_tss.genes_vs_motifs.rankings.feather
+
+#python cisTargetCodes/create_cisTarget_databases/convert_cistarget_databases_v1_to_v2.py \
+#-i hg38__refseq-r80__10kb_up_and_down_tss.mc9nr.feather \
+#-o hg38__refseq-r80__10kb_up_and_down_tss.mc9nr.genes_vs_motifs.rankings.feather
+
+arboreto_with_multiprocessing.py \
+./D03_DFU_pySCENIC11.loom \
+../b00_Ref/hs_hgnc_tfs.txt \
+--method grnboost2 \
+--output ./D04_DFU_adj_all.tsv \
+--num_workers 20 \
+--seed 777
+
+pyscenic ctx \
+./D04_DFU_adj_all.tsv \
+../b00_Ref/hg38__refseq-r80__500bp_up_and_100bp_down_tss.genes_vs_motifs.rankings.feather \
+../b00_Ref/hg38__refseq-r80__10kb_up_and_down_tss.mc9nr.genes_vs_motifs.rankings.feather \
+--annotations_fname ../b00_Ref/motifs-v9-nr.hgnc-m0.001-o0.0.tbl \
+--expression_mtx_fname ./D03_DFU_pySCENIC11.loom \
+--output ./D05_DFU_reg.csv \
+--mode "dask_multiprocessing" \
+--mask_dropouts \
+--num_workers 20
+
+pyscenic aucell \
+./D03_DFU_pySCENIC11.loom \
+./D05_DFU_reg.csv \
+--output ./D06_DFU_SCENIC_AUC.loom \
+--num_workers 20
+```
+
+# Step4: Downstream analysis
+```{python eval=FALSE}
+# Install a pip package in the current Jupyter kernel
+import sys
+#!{sys.executable} -m pip install pandas
+#!{sys.executable} -m pip install scanpy
+#!{sys.executable} -m pip install seaborn
+#!{sys.executable} -m pip install pyscenic
+#!{sys.executable} -m pip install MulticoreTSNE
+
+# import dependencies
+import os,sys
+import numpy as np
+import pandas as pd
+import scanpy as sc
+import loompy as lp
+from MulticoreTSNE import MulticoreTSNE as TSNE
+from pyscenic.export import add_scenic_metadata
+from pyscenic.utils import load_motifs
+import seaborn as sns
+import matplotlib.pyplot as plt
+import pyscenic
+
+print(pyscenic.__path__, pyscenic.__version__)
+print(sc.__version__)
+```
+
+## 4.1 Visualization of SCENIC's AUC matrix 
+```{python eval=FALSE}
+f_pyscenic_output = "D06_DFU_SCENIC_AUC.loom"
+import json
+import zlib
+import base64
+
+# collect SCENIC AUCell output
+lf = lp.connect(f_pyscenic_output, mode='r+', validate=False)
+auc_mtx = pd.DataFrame(lf.ca.RegulonsAUC, index=lf.ca.CellID)
+exprMat = pd.DataFrame( lf[:,:], index=lf.ra.Gene, columns=lf.ca.CellID).T
+lf.close()
+```
+```{python eval=FALSE}
+def derive_regulons(motifs, db_names=('hg38__refseq-r80__10kb_up_and_down_tss', 
+                                 'hg38__refseq-r80__500bp_up_and_100bp_down_tss')):
+    motifs.columns = motifs.columns.droplevel(0)
+    def contains(*elems):
+      def f(context):
+          return any(elem in context for elem in elems)
+      return f
+    
+    motifs = motifs[
+      np.fromiter(map(compose(op.not_, contains('weight>50.0%')), motifs.Context), dtype=np.bool) & \
+      np.fromiter(map(contains(*db_names), motifs.Context), dtype=np.bool) & \
+      np.fromiter(map(contains('activating'), motifs.Context), dtype=np.bool)]
+      
+    regulons = list(filter(lambda r: len(r) >= 10, df2regulons(motifs[(motifs['NES'] >= 3.0) 
+                                                                      & ((motifs['Annotation'] == 'gene is directly annotated')
+                                                                      | (motifs['Annotation'].str.startswith('gene is orthologous to')
+                                                                      & motifs['Annotation'].str.endswith('which is directly annotated for motif')))
+                                                                     ])))
+    return list(map(lambda r: r.rename(r.transcription_factor), regulons))
+```
+```{python eval=FALSE}
+# (Optional step) use the conda newpyscenic env for umap and tsne based on TF regulon activity
+import umap
+# UMAP
+runUmap = umap.UMAP(n_neighbors=10, min_dist=0.2, metric='correlation').fit_transform
+dr_umap = runUmap( auc_mtx )
+pd.DataFrame(dr_umap, columns=['X', 'Y'], index=auc_mtx.index).to_csv( "T01_scenic_umap.txt", sep='\t')
+# tSNE
+tsne = TSNE( n_jobs=10 )
+dr_tsne = tsne.fit_transform( auc_mtx )
+pd.DataFrame(dr_tsne, columns=['X', 'Y'], index=auc_mtx.index).to_csv( "T02_scenic_tsne.txt", sep='\t')
+```
+
+## 4.2 Integrate the output
+```{python eval=FALSE}
+# scenic output
+lf = lp.connect(f_pyscenic_output, mode='r+', validate=False)
+meta = json.loads(zlib.decompress(base64.b64decode( lf.attrs.MetaData )))
+#exprMat = pd.DataFrame( lf[:,:], index=lf.ra.Gene, columns=lf.ca.CellID)
+auc_mtx = pd.DataFrame(lf.ca.RegulonsAUC, index=lf.ca.CellID)
+regulons = lf.ra.Regulons
+dr_umap = pd.read_csv('T01_scenic_umap.txt', sep='\t', header=0, index_col=0 )
+dr_tsne = pd.read_csv('T02_scenic_tsne.txt', sep='\t', header=0, index_col=0 )
+###
+```
+
+## 4.3 Fix regulon objects to display properly in SCope
+```{python eval=FALSE}
+auc_mtx.columns = auc_mtx.columns.str.replace('\(','_(')
+regulons.dtype.names = tuple( [ x.replace("(","_(") for x in regulons.dtype.names ] )
+# regulon thresholds
+rt = meta['regulonThresholds']
+for i,x in enumerate(rt):
+    tmp = x.get('regulon').replace("(","_(")
+    x.update( {'regulon': tmp} )
+```
+
+## 4.4 Assemble loom file row and column attributes
+```{python eval=FALSE}
+adata=sc.read("./D02_DFU.h5ad")
+#Change the data type of the column if it is wrong
+#adata.obs[["CellTypes"]] = adata.obs[["CellTypes"]].astype("category")
+adata
+
+def dfToNamedMatrix(df):
+    arr_ip = [tuple(i) for i in df.values]
+    dtyp = np.dtype(list(zip(df.dtypes.index, df.dtypes)))
+    arr = np.array(arr_ip, dtype=dtyp)
+    return arr
+
+col_attrs = {
+    "CellID": np.array(adata.obs.index),
+    "nUMI": np.array(adata.obs['nCount_RNA'].values),
+    "nGene": np.array(adata.obs['nFeature_RNA'].values),
+    "Percent_mito": np.array(adata.obs['percent_mito'].values),
+    "S_score": np.array(adata.obs['S.Score'].values),
+    "Sample": np.array(adata.obs['orig.ident'].values),
+    "Condition": np.array(adata.obs['Condition'].values),
+    "newCellType": np.array(adata.obs['newCellType'].values),
+    "RegulonsAUC": dfToNamedMatrix(auc_mtx)
+}
+
+row_attrs = {
+    "Gene": lf.ra.Gene,
+    "Regulons": regulons,
+}
+
+attrs = {
+    "title": "DFU",
+    "Genome": 'hg38',
+    "SCopeTreeL1": "",
+    "SCopeTreeL2": "",
+    "SCopeTreeL3": ""
+}
+
+lp.create(
+    filename = "D07_VUNS_SCENIC_AUC_final_binaryUMAP.loom",
+    layers=lf[:,:],
+    row_attrs=row_attrs, 
+    col_attrs=col_attrs, 
+    file_attrs=attrs
+)
+lf.close()
+```
+## 4.5 Visualization of SCENIC results
+```{python eval=FALSE}
+# import dependencies
+import numpy as np
+import pandas as pd
+import scanpy as sc
+import loompy as lp
+from MulticoreTSNE import MulticoreTSNE as TSNE
+import json
+import base64
+import zlib
+from pyscenic.plotting import plot_binarization, plot_rss
+from pyscenic.cli.utils import load_signatures
+import matplotlib as mpl
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+import os, glob, re, pickle
+from functools import partial
+from collections import OrderedDict
+import operator as op
+from cytoolz import compose
+
+
+from pyscenic.export import export2loom, add_scenic_metadata
+from pyscenic.utils import load_motifs
+from pyscenic.transform import df2regulons
+from pyscenic.aucell import aucell
+from pyscenic.binarization import binarize
+from pyscenic.rss import regulon_specificity_scores
+
+# path to loom output, generated from a combination of Scanpy and pySCENIC results:
+f_final_loom = 'D07_VUNS_SCENIC_AUC_final_binaryUMAP.loom'
+
+sc.settings.verbosity = 3 # verbosity: errors (0), warnings (1), info (2), hints (3)
+#sc.logging.print_versions()
+sc.settings.set_figure_params(dpi=150)
+```
+
+### 4.5.1 Extract relevant data from the integrated loom file
+```{python eval=FALSE}
+# scenic output
+lf = lp.connect(f_final_loom, mode='r', validate=False)
+#meta = json.loads(zlib.decompress(base64.b64decode(lf.attrs.MetaData)))
+exprMat = pd.DataFrame(lf[:,:], index=lf.ra.Gene, columns=lf.ca.CellID).T
+auc_mtx = pd.DataFrame(lf.ca.RegulonsAUC, index=lf.ca.CellID)
+auc_mtx_cp = auc_mtx.copy() #make a copy for cellAnnot
+auc_mtx_cp = auc_mtx_cp.add_prefix('Regulon_') #add same pattern name to column names
+
+#extract annotations
+CellTypes = pd.DataFrame(lf.ca.newCellType, index=lf.ca.CellID, columns=['newCellType'])
+Sample = pd.DataFrame(lf.ca.Sample, index=lf.ca.CellID, columns=['Sample'])
+Condition = pd.DataFrame(lf.ca.Condition, index=lf.ca.CellID, columns=['Condition'])
+Percent_mito = pd.DataFrame(lf.ca.Percent_mito, index=lf.ca.CellID, columns=['Percent_mito'])
+S_score = pd.DataFrame(lf.ca.S_score, index=lf.ca.CellID, columns=['S_score'])
+nGene = pd.DataFrame(lf.ca.nGene, index=lf.ca.CellID, columns=['nGene'])
+nUMI = pd.DataFrame(lf.ca.nUMI, index=lf.ca.CellID, columns=['nUMI'])
+
+# create a dictionary of regulons:
+regulons = {}
+for i,r in pd.DataFrame(lf.ra.Regulons,index=lf.ra.Gene).iteritems():
+    regulons[i] =  list(r[r==1].index.values)
+    
+cellAnnot = pd.concat(
+    [
+        CellTypes,
+        Sample,
+        Condition,
+        Percent_mito,
+        S_score,
+        nGene,
+        nUMI,
+        auc_mtx_cp
+    ],
+    axis=1
+)
+
+cellAnnot.to_csv('T03_cellType_metadata_addRegulons.csv') 
+cellAnnot
+auc_mtx.to_csv('T04_Regulons_auc_mtx.csv') 
+```
+
+### 4.5.2 Regulon specificity scores (RSS) across predicted cell types
+```{python eval=FALSE}
+from pyscenic.rss import regulon_specificity_scores
+from pyscenic.plotting import plot_rss
+import matplotlib.pyplot as plt
+from adjustText import adjust_text
+import seaborn as sns
+from pyscenic.binarization import binarize
+
+# Calculate RSS
+rss_cellType = regulon_specificity_scores( auc_mtx, cellAnnot['newCellType'] )
+rss_cellType 
+
+# export the results to files for next time use
+# This file 'rss_cellType' is important for plotting when using R
+rss_cellType.to_csv('T05_cellType_RSSs.csv')
+```
+
+### 4.5.3 CELL TYPE SPECIFIC REGULATORS - Z-SCORE
+```{python eval=FALSE}
+#This is different from above Z-score (Here focus on each cell type)
+signature_column_names = list(cellAnnot.select_dtypes('number').columns)
+signature_column_names = list(filter(lambda s: s.startswith('Regulon_'), signature_column_names))
+df_scores = cellAnnot[signature_column_names + ['newCellType']]
+
+df_results = ((df_scores.groupby(by='newCellType').mean() - cellAnnot[signature_column_names].mean())/ cellAnnot[signature_column_names].std()).stack().reset_index().rename(columns={'level_1': 'regulon', 0:'Z'})
+df_results['regulon'] = list(map(lambda s: s[8:], df_results.regulon))
+df_results[(df_results.Z >= 3.0)].sort_values('Z', ascending=False).head(10)
+
+# Output the results for plotting
+df_results.to_csv('T06_cellType_RSSs_Z_scores.csv') 
+```
+
+# Step5: plot
+```{r,warning=FALSE,message=FALSE}
+#setwd("/Volumes/lihluo/Groups/Ning*Xu*Landén/Lihua_Luo/P4_Zhuang/Step3_Analysis/a01_pySCENIC/b03_DFU")
+# pySCENIC Z-score plot
+library(tidyr)
+library(tidyverse)
+library(RNHANES)
+library(ggplot2)
+library(ggrepel)
+library(reshape2)
+#devtools::install_github("thomasp85/patchwork")
+# NS
+regulons <- read.table("T06_cellType_RSSs_Z_scores.csv",header=T,sep = ",")
+regulons <- regulons[,-1]
+regulons <- regulons %>% group_by(regulon) %>% arrange(newCellType, desc(Z)) %>% ungroup() %>% mutate(Rank = rep(1:509, 10))
+
+## Regulon Z-score point plot
+
+zscore_plot <- function(Cluster = NULL){
+  inputDF <- regulons %>% filter(newCellType == Cluster)
+  ggplot(inputDF, aes(x=Rank, y= Z)) +
+    geom_point(colour = "#3b5cc4", size = 0.8) +
+    geom_point(data = inputDF %>% dplyr::slice(1:20), mapping = aes(x = Rank, y=Z), colour = "red", size = 1.2) +
+    ylab('Regulon specificity Z-scores') + ggtitle(paste0(Cluster)) +
+    #scale_y_continuous(limits = c(-3,3), breaks = c(-3,-2,-1,0,1,2,3)) +
+    scale_x_continuous(limits = c(0, 400), breaks = c(0, 100, 200, 300)) +
+    theme_bw() +
+    theme(
+      panel.grid.major = element_blank(),
+      panel.grid.minor = element_blank(),
+      axis.text.x = element_text(size= 12),
+      axis.title.x = element_text(size= 12),
+      axis.text.y = element_text(size= 12),
+      axis.title.y = element_text(size= 12),
+      axis.title=element_text(size=14,face="bold"),
+      plot.title = element_text(size = 14, face = "bold")
+    ) +
+    geom_text_repel(data = inputDF %>% dplyr::slice(1:20),
+                    mapping = aes(x = Rank, y=Z, label = regulon),
+                    color = "red",
+                    nudge_x = 100,
+                    direction = "y",
+                    hjust= 0,segment.size = 0.2,segment.color = "red")
+}
+
+z.plots <- lapply(unique(regulons$newCellType), function(x) zscore_plot(x))
+z.plots
+pdf("F01_top20_DFU_celltypes_Zscore.pdf",width = 25,height = 10)
+patchwork::wrap_plots(z.plots, ncol = 10)
+dev.off()
+write.csv(regulons,"T07_cellType_RSSs_Z_scoresRank.csv",quote = F,row.names = F)
+```
+
+# Step 6. FOSL1 related visualization
+```{r}
+## Plot the TF regulon activity ##
+library(Seurat)
+library(ggplot2)
+library(tidyverse)
+inteData <- readRDS("D01_step4_DFU_KC_pySCENIC.rds")
+
+regulon_mt <- data.table::fread("T03_cellType_metadata_addRegulons.csv")
+identical(colnames(inteData), regulon_mt$V1)
+grep("FOSL1", colnames(regulon_mt))
+reac <- regulon_mt[, 106]
+inteData$Regulon_FOSL1 <- reac$`Regulon_FOSL1_(+)`
+
+FeaturePlot(
+  inteData,
+  features=c("Regulon_FOSL1"), 
+  split.by = "Condition",
+  order = T,
+  combine=T, cols = c("#850aff","#400080","yellow"), pt.size = 0.6#, max.cutoff = "q95"
+)
+
+FeaturePlot(
+  inteData,
+  features=c("FOSL1", "Regulon_FOSL1"), 
+  split.by = "Sample",
+  order = T,ncol = 1,
+  combine=F, cols = c("grey90","red"), pt.size = 0.6
+)
+
+DimPlot(inteData, group.by = "newCellType", label = T, split.by = "Sample")
+table(inteData$Sample, inteData$newCellType)
+
+VlnPlot(inteData, group.by = "newCellType", features = c("FOSL1", "Regulon_FOSL1"), split.by = "Condition", 
+        cols = c('#fdc086', '#beaed4', '#7fc97f'), pt.size = 0.0001, ncol = 1)
+VlnPlot(inteData, group.by = "Condition", features = c("FOSL1", "Regulon_FOSL1"), split.by = "Condition", 
+        cols = c('#fdc086', '#beaed4', '#7fc97f'), pt.size = 0.0001, ncol = 1)
+
+
+# extract the bas/spi-mig
+bas_spi <- subset(inteData, subset = newCellType == "Bas_mig" | newCellType == "Spi_mig")
+
+pdf("Fig3_FOSL1_DFUdata.pdf", useDingbats = F, width = 5, height = 5)
+VlnPlot(bas_spi, group.by = "newCellType", features = c("FOSL1", "Regulon_FOSL1"), split.by = "Condition", 
+        cols = c('#fdc086', '#beaed4', '#7fc97f'), pt.size = 0.0001, ncol = 1)
+dev.off()
+
+# draw the relative expression and activity
+exp_avgCondi <- AverageExpression(bas_spi, assays = "RNA", features = c("FOSL1"), group.by = c("Condition", "newCellType"))$RNA %>% t()
+exp_avgSm <- AverageExpression(bas_spi, assays = "RNA", features = c("FOSL1"), group.by = c("Sample", "newCellType"))$RNA %>% t()
+
+AverageExpression(inteData, assays = "RNA", features = c("FOSL1"), group.by = c("Condition"))$RNA %>% t()
+bas_spi@meta.data %>% group_by(newCellType, Condition) %>% summarise(avg=mean(Regulon_FOSL1))
+```
+

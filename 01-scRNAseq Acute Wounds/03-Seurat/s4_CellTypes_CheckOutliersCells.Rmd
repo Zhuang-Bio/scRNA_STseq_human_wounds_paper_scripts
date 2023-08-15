@@ -1,0 +1,822 @@
+---
+title: "Cell type annotations and outlier-cells inspection"
+author: "Zhuang Liu"
+date: "20/10/3021 Updated: `r Sys.Date()`"
+output:
+  html_document:
+    toc: true #add a table of contents (TOC)
+    toc_depth: 3 #headers' level in the toc
+    toc_float: true #toc visible even when scrolled
+    theme: lumen
+    highlight: tango
+    code_folding: show
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.align='center', fig.width=12, fig.height = 8)
+```
+
+```{r warning=FALSE, message=FALSE}
+library(Seurat)
+library(tidyverse)
+library(magrittr)
+library(ggplot2)
+library(patchwork)
+library(cowplot)
+library(knitr)
+library(kableExtra)
+```
+
+#####################
+# Reload the data
+#####################
+## 0. Original number labels for each cluster 
+```{r fig.width=8, fig.height=6}
+hswound.combined.sct <- readRDS("s1_cleanSeurat_harmony_allSamples_clusters.rds") # or read *normGene.rds file
+table(hswound.combined.sct$SCT_snn_res.0.8) #cell number for each cluster
+table(hswound.combined.sct$orig.ident) #cell number for each sample
+table(hswound.combined.sct$Condition)
+DefaultAssay(hswound.combined.sct) <- "RNA"
+
+allgene <- rownames(hswound.combined.sct) %>% as.data.frame() %>% setNames("ID")
+human.an <- readRDS("../Functions/humanAnnotation.rds")
+allgene.f <- allgene %>% left_join(., human.an[,c(1,3)], by=c("ID" = "external_gene_name"))
+
+####----run umap again using other parameters----####
+##First save the default umap dimensional reductions as umap_def
+#hswound.combined.sct <- RunUMAP(object = hswound.combined.sct, assay = "SCT", reduction = "harmony", dims = 1:40, reduction.name = "umap_def", reduction.key = "UMAPDEF_")
+
+##Second run with optimized parameters
+#hswound.combined.sct <- RunUMAP(object = hswound.combined.sct, assay = "SCT", reduction = "harmony", dims = 1:40, n.neighbors = 40, min.dist = 0.3, n.epochs = 200, spread = 1, learning.rate = 1)
+#saveRDS(hswound.combined.sct, file = "s1_cleanSeurat_harmony_allSamples_clusters.rds") # or write *normGene.rds file
+#library(paletteer) 
+#cols <- c(paletteer_d("trekcolors::lcars_series"), "#565656FF", "#E2E2E2FF", "#F8A19FFF")
+# define the color
+cols <- c(colorRampPalette(c("#1f78b4", "#a6cee3"))(3), #Basal clusters
+             colorRampPalette(c( "#33a02c", "#b2df8a"))(4), #Spinous clusters
+             "#df65b0", "#d4b9da", #Granular clusters
+             colorRampPalette(c("#fdbf6f", "#ff7f00"))(4), #Fibroblast clusters
+             "#d9d9d9", "#bc80bd", "#b3de69", "#fb8072", "#fb9a99", #PCvSMC -- VE
+             "#fccde5", #Mast cell
+             colorRampPalette(c("#cab2d6","#6a3d9a","#ffff99", "#b15928"))(9) #Tcell,myeloid cells
+             )
+names(ct.cols) <- fact_lev
+
+DimPlot(object = hswound.combined.sct, 
+        reduction = "umap", 
+        label = TRUE, 
+        group.by = "SCT_snn_res.0.8", cols = cols) + NoAxes() + NoLegend() + ggtitle("Cell Clusters")
+```
+
+## Updated (2022-06-16)
+```{r}
+kera <- readRDS("../s2_Seurat_subKeratinocytes/allKerat_clean_DelBas4Doublets_InclSpi3_CellID.rds")
+fib <- readRDS("../s3_Seurat_subFibroblasts/allFBCells_clean_CellID.rds")
+mye <- readRDS("../s4_Seurat_subImmu_MyeloidCells/allMyeloidCells_clean_CellID.rds")
+lym <- readRDS("../s5_Seurat_subImmu_LymphoidCells/allLymphoidCells_clean_CellID.rds")
+endo <- readRDS("../s6_Seurat_subEndothelial/allEndoCells_clean_CellID.rds")
+oth <- readRDS("../s7_Seurat_subOthers/allOtherCells_clean_CellID.rds")
+
+allcleans <- c(kera, fib, mye, lym, endo, oth)
+
+hswound.combined.sct <- hswound.combined.sct[, colnames(hswound.combined.sct) %in% allcleans]
+hswound.combined.sct@meta.data <- droplevels(hswound.combined.sct@meta.data)
+hswound.combined.sct <- RunUMAP(object = hswound.combined.sct, assay = "SCT", reduction = "harmony", dims = 1:40, reduction.name = "umap_def", reduction.key = "UMAPDEF_")
+
+DimPlot(object = hswound.combined.sct, 
+        reduction = "umap_def", 
+        label = TRUE, 
+        group.by = "SCT_snn_res.0.8") + NoAxes() + NoLegend() + ggtitle("Cell Clusters")
+
+devtools::install_github("EmilHvitfeldt/paletteer")
+library(paletteer) 
+paletteer_d("Polychrome::light")
+library(paletteer) 
+paletteer_d("pals::alphabet2")
+```
+
+
+## 1. Annotated cell types for each cluster
+```{r}
+anno <- readxl::read_xlsx("s5_cell_types_for_each_cluster_manually_updated.xlsx", sheet = 1)
+anno %>%
+  kbl() %>% 
+  kable_material_dark() %>% 
+  row_spec(0, bold = T, color = "black") %>%
+  scroll_box(width = "100%", height = "400px")
+```
+```{r eval=TRUE, fig.align='center', fig.width=8, fig.height=6}
+####----Annotate the cell types----####
+current_cluster_ids <- anno$Cluster %>% c() # List of current cluster IDs
+new_cluster_ids <- anno$CellType %>% c() # List of new cluster IDs
+# Changing IDs to cell type and add the cell type into metadata
+tmp <- plyr::mapvalues(x=Idents(hswound.combined.sct), from=current_cluster_ids, to=new_cluster_ids)
+identical(names(tmp), names(Idents(hswound.combined.sct)))
+Idents(hswound.combined.sct) <- plyr::mapvalues(x=Idents(hswound.combined.sct), from=current_cluster_ids, to=new_cluster_ids)
+##relevel the cell types
+hswound.combined.sct$CellTypes <- hswound.combined.sct@active.ident
+p1 <- DimPlot(object = hswound.combined.sct, 
+        reduction = "umap", 
+        label = F, 
+        group.by = "CellTypes", label.size = 4) + NoAxes() + ggtitle("")
+p1
+
+fact_lev <- c("Basal-I", "Basal-II", "Basal-III", "Basal-IV",
+              "Spinous-I", "Spinous-II", "Spinous-III",
+              "Granular-I", "Granular-II",
+              "FB-I", "FB-II", "FB-III", "FB-IV",
+              "PC-vSMC", 
+              "MEL", 
+              "Schwann", 
+              "LE", "VE", 
+              "Mast-cell", 
+              "NK-cell", "Th", 
+              "Plasma_B-cell", 
+              "Mono-Mac",
+              "LC", 
+              "DC", "Dermal-DC", "DC-LAMP")
+
+ct.cols <- c(colorRampPalette(c("#1f78b4", "#a6cee3"))(4), #Basal clusters
+             colorRampPalette(c( "#33a02c", "#b2df8a"))(3), #Spinous clusters
+             "#df65b0", "#d4b9da", #Granular clusters
+             colorRampPalette(c("#fdbf6f", "#ff7f00"))(4), #Fibroblast clusters
+             "#d9d9d9", "#bc80bd", "#b3de69", "#fb8072", "#fb9a99", #PCvSMC -- VE
+             "#fccde5", #Mast cell
+             colorRampPalette(c("#cab2d6","#6a3d9a","#ffff99", "#b15928"))(9) #Tcell,myeloid cells
+             )
+names(ct.cols) <- fact_lev
+
+DimPlot(object = hswound.combined.sct, 
+        reduction = "umap", 
+        label = F, 
+        group.by = "CellTypes", label.size = 4, cols = ct.cols) + NoAxes() + ggtitle("")
+
+DefaultAssay(hswound.combined.sct) <- "RNA"
+FeaturePlot(hswound.combined.sct, features = c("IFR8", "CLEC9A","CD1C", "LAMP3", "AQP5", "ACTA2"))
+
+wound1 <- subset(hswound.combined.sct, subset = Condition == "Wound1")
+wound1$CellTypes <- as.character(wound1$CellTypes)
+wound1 <- subset(wound1, subset = CellTypes != "Basal-IV")
+
+wound1$CellTypes <- factor(wound1$CellTypes, levels = fact_lev[-4])
+#wound1$CellTypes <- factor(wound1$CellTypes, levels = fact_levs)
+p2 <- DimPlot(object = wound1, 
+        reduction = "umap", 
+        label = F, 
+        group.by = "CellTypes", label.size = 4) + NoAxes() + ggtitle("Wound1")
+p2
+pdf("wound1_umap.pdf", useDingbats = F, width = 8, height = 4)
+p2
+dev.off()
+
+DimPlot(object = hswound.combined.sct, 
+        reduction = "umap", 
+        label = TRUE, 
+        group.by = "CellTypes", label.size = 3) + NoAxes() + ggtitle("Cell Types")
+#metadata.output <- hswound.combined.sct@meta.data %>% rownames_to_column(var = "cellID")
+#data.table::fwrite(metadata.output, file = "00-Previous_metadata.txt", sep = "\t")
+
+an_maria <- data.table::fread("cell_identity_MariaKasper_Lab.txt", header = FALSE)
+colnames(an_maria) <- c("CellID", "Annotated")
+
+mt <- hswound.combined.sct@meta.data %>% rownames_to_column(var = "CellID") %>% 
+  left_join(., an_maria, by = c("CellID" = "CellID")) %>% column_to_rownames(var = "CellID")
+
+hswound.combined.sct <- AddMetaData(hswound.combined.sct, metadata = mt)
+p1 + DimPlot(object = hswound.combined.sct, 
+        reduction = "umap", 
+        label = TRUE, 
+        group.by = "Annotated", label.size = 4) + NoAxes() + NoLegend() + ggtitle("Annotated")
+```
+
+## 2. Unsupervised hierarchical tree
+```{r fig.width=5, fig.height=6, fig.align='center'}
+hswound.combined.sct <- BuildClusterTree(object = hswound.combined.sct, assay = "SCT", slot = "scale.data")
+suppressMessages(library(scales))
+cluster.color <- hue_pal()(length(levels(hswound.combined.sct)))
+# pull the tree
+hswound.clustertree <- Tool(object = hswound.combined.sct, slot = "BuildClusterTree")
+# plot the tree
+suppressMessages(require(ape))
+{plot.phylo(x = hswound.clustertree, direction = "rightwards", use.edge.length = TRUE, font = 4, tip.color = cluster.color, edge.width = 2, label.offset = 5, no.margin = TRUE)
+tiplabels(pch = 19, col = cluster.color, adj = 3, cex = 2)}
+
+####----This step can also reset the active.ident cell names into default number labels----####
+hswound.combined.sct <- SetIdent(hswound.combined.sct, value = hswound.combined.sct@meta.data$SCT_snn_res.0.8)
+```
+
+
+## 3. Proportion of cell types from each batch in each cluster
+### 3.1 Plot for each sample
+```{r fig.height=8, fig.width=10, warning=FALSE, message=FALSE}
+####----Please pay attentions to the original numbers of cells per sample----####
+clusters <- unique(hswound.combined.sct@meta.data[["CellTypes"]])
+fact_levs <- c("Basal-I", "Basal-II", "Basal-III", "Basal-IV",
+                      "Spinous-I", "Spinous-II", "Spinous-III",
+                      "Granular-I", "Granular-II",
+                      "FB-I", "FB-II", "FB-III", "FB-IV",
+                      "PC-vSMC", "MEL", "Schwann", 
+                      "LE", "VE", 
+                      "Mast-cell", 
+                      "NK-cell", "Th", 
+                      "Plasma_B-cell", 
+                      "Mono-Mac",
+                      "LC", 
+                      "DC", "Dermal-DC", "DC-LAMP")
+levels(clusters) <- rev(fact_levs)
+
+# step 1. 12 individuals divided into 27 cell types and their numbers
+step1 <- table(hswound.combined.sct$orig.ident, hswound.combined.sct$CellTypes) %>% as.data.frame()
+step1$sepa <- ifelse(step1$Var2 %in% c("Basal-I", "Basal-II", "Basal-III", "Basal-IV",
+                                                "Spinous-I", "Spinous-II", "Spinous-III",
+                                                "Granular-I", "Granular-II", "LC", "MEL"), "Epidemis", "Dermis")
+
+# step 2. 12 individuals divided into dermis and epidermis and their total cell numbers
+step2 <- step1 %>%
+  group_by(sepa, Var1) %>%
+  summarise(a_sum=sum(Freq)) %>% ungroup() %>% 
+  left_join(., step1[, -2:-3]) %>% distinct()
+data.table::fwrite(step2, file = "all_epidermis_dermis_perIndi_220613.txt", sep = "\t")
+
+#data.table::fwrite(sepa, file = "allOrig_cellproportion_epidermis_dermis.txt", sep = "\t")
+
+# step 3. calculate the proportion of each cell type for each individual
+step3 <- step1 %>% left_join(., step2, by=c("sepa"="sepa", "Var1"="Var1")) %>% distinct() %>% 
+  mutate(Prop=Freq/a_sum)
+
+# step 4. calculate the total normalized proportions of each cell type 
+step4 <- step3 %>% group_by(Var2) %>% summarise(totalP=sum(Prop))
+
+step5 <- step3 %>% left_join(., step4) %>% mutate(Freq_n = Prop/totalP)
+
+df.group <- step5 %>% mutate(Sample = gsub("PWH..", "", Var1)) %>% group_by(Var2, Sample) %>% 
+  summarise(Freq = sum(Freq_n)) %>% ungroup()
+
+df.group$Cluster <- df.group$Var2
+df.group$Sample <- gsub("D0", "Skin", df.group$Sample)
+df.group$Sample <- gsub("D1", "Wound1", df.group$Sample)
+df.group$Sample <- gsub("D7", "Wound7", df.group$Sample)
+df.group$Sample <- gsub("D30", "Wound30", df.group$Sample)
+df.group$Sample <- factor(df.group$Sample, levels = c("Skin", "Wound1", "Wound7", "Wound30"))
+
+df.group$Condition <- df.group$Sample
+
+df.group$Cluster <- factor(df.group$Cluster, levels = fact_levs)
+df.group <- df.group %>% left_join(., anno[, c(2,5)], by=c("Cluster"="CellType"))
+
+df.group.f <- df.group %>% filter(MainCellTypes == "Keratinocytes" & Cluster != "Basal-IV" )
+
+df.group.f <- df.group %>% filter(MainCellTypes == "MastCells" | MainCellTypes == "PlasmaBcells" | MainCellTypes == "PericytesSmoothMuscleCells" | MainCellTypes == "Melanocytes" | MainCellTypes == "SchwannCells")
+
+df.group.f <- df.group
+
+df.group.f$Cluster <- factor(df.group.f$Cluster, levels = fact_levs)
+
+ggplot(df.group.f, aes(x = Cluster, y = Freq, fill = Condition)) +
+  geom_bar(position = "stack", stat = "identity") +
+  scale_fill_brewer(palette = "Dark2") + # Paired or Set3 maximum variable = 12
+  xlab('') +
+  scale_y_continuous(breaks = seq(0, 1, 0.1),
+                     expand = c(0, 0.01),
+                     name = 'Percentage') +
+  geom_hline(yintercept=0.25, linetype="dashed", color = "black") +
+  geom_hline(yintercept=0.5, linetype="dashed", color = "black") +
+  geom_hline(yintercept=0.75, linetype="dashed", color = "black") +
+  theme_bw() +
+  theme(
+    panel.grid.major.x = element_blank(),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    strip.background = element_blank(),
+    #panel.border = element_rect(size = 0.35),
+    axis.ticks = element_blank(),
+    axis.text.x = element_text(size = 12, color = "black", angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 12, color = "black"),
+    axis.title.y = element_text(size = 16, color = "black"),
+    legend.position = "right",
+    legend.text = element_text(size = 10, color = "black")
+  )
+
+
+clusters <- clusters[order(clusters)]
+df <- data.frame()
+for(i in 1:length(clusters)){
+  SmCell_sum <- table(hswound.combined.sct$orig.ident) %>% as.data.frame()
+  #using original cell number of each sample 
+  #SmCell_sum <- structure(c(4702, 5035, 4815, 3692, 3597, 7280, 7338, 6605, 5038, 4973, 5973, 6414),
+  #                        names=c("PWH26D0", "PWH26D1", "PWH26D7", "PWH26D30", "PWH27D0", "PWH27D1", "PWH27D7", "PWH27D30", "PWH28D0", "PWH28D1", "PWH28D7", "PWH28D30"))
+  tmp.df1 <- hswound.combined.sct@meta.data %>% subset(CellTypes == clusters[i]) %>% select(orig.ident) %>% table()
+  if(length(tmp.df1) == 12){
+    #First normalize the total cell counts per sample
+    cur_df <- as.data.frame(tmp.df1 / SmCell_sum)
+    colnames(cur_df) <- c("Sample", "Freq")
+    #Calculate the normalized proportion 
+    cur_df$Freq <- cur_df$Freq * 1/(sum(cur_df$Freq))
+    cur_df$Cluster <- clusters[i]
+    df <- rbind(df, cur_df)
+  } else {
+    #print(i);print(tmp.df1)
+    #only include the matched samples
+    match.sample <- SmCell_sum[names(SmCell_sum) %in% names(tmp.df1)]
+    #print(match.sample)
+    #First normalize the total cell counts per sample
+    cur_df <- as.data.frame(tmp.df1 / match.sample)
+    colnames(cur_df) <- c("Sample", "Freq")
+    #Calculate the normalized proportion 
+    cur_df$Freq <- cur_df$Freq * 1/(sum(cur_df$Freq))
+    cur_df$Cluster <- clusters[i]
+    df <- rbind(df, cur_df)
+  }
+}
+
+ggplot(df, aes(x = Cluster, y = Freq, fill = Sample)) +
+  geom_bar(position = "stack", stat = "identity") +
+  scale_fill_brewer(palette = "Paired") + # Paired or Set3 maximum variable = 12
+  xlab('Cell Types') +
+  scale_y_continuous(breaks = seq(0, 1, 0.1),
+                     expand = c(0, 0),
+                     name = 'Percentage') +
+  theme_bw() +
+  theme(
+    panel.grid.major.x = element_blank(),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    strip.background = element_blank(),
+    #panel.border = element_rect(size = 0.35),
+    axis.text.x = element_text(size = 10, color = "black"),
+    axis.text.y = element_text(size = 10, color = "black")
+  ) +
+  coord_flip()
+```
+
+### 3.2 Plot for each condition
+```{r fig.height=8, fig.width=10, warning=FALSE, message=FALSE}
+df.group <- df %>% mutate(Sample = gsub("PWH..", "", Sample)) %>% group_by(Cluster, Sample) %>% 
+  summarise(Freq = sum(Freq)) %>% ungroup()
+df.group$Sample <- gsub("D0", "Skin", df.group$Sample)
+df.group$Sample <- gsub("D1", "Wound1", df.group$Sample)
+df.group$Sample <- gsub("D7", "Wound7", df.group$Sample)
+df.group$Sample <- gsub("D30", "Wound30", df.group$Sample)
+df.group$Sample <- factor(df.group$Sample, levels = rev(c("Skin", "Wound1", "Wound7", "Wound30")))
+
+df.group$Condition <- df.group$Sample
+
+df.group <- df.group %>% left_join(., anno[,c(2,5)], by=c("Cluster" = "CellType"))
+df.group$Cluster <- factor(df.group$Cluster, levels = rev(fact_levs))
+ggplot(df.group, aes(x = Cluster, y = Freq, fill = Condition)) +
+  geom_bar(position = "stack", stat = "identity") +
+  scale_fill_brewer(palette = "Dark2") + # Paired or Set3 maximum variable = 12
+  xlab('Cell Types') +
+  scale_y_continuous(breaks = seq(0, 1, 0.1),
+                     expand = c(0, 0.01),
+                     name = 'Percentage') +
+  theme_bw() +
+  theme(
+    panel.grid.major.x = element_blank(),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    strip.background = element_blank(),
+    #panel.border = element_rect(size = 0.35),
+    axis.ticks = element_blank(),
+    axis.text.x = element_text(size = 11, color = "black"),
+    axis.text.y = element_text(size = 11, color = "black"),
+    legend.position = "bottom"
+  ) +
+  coord_flip() 
+```
+
+### 3.3 Plot for each condition (Flip)
+```{r fig.height=8, fig.width=10, warning=FALSE, message=FALSE}
+####----Please pay attentions to the original numbers of cells per sample----####
+smNames_cal <- unique(hswound.combined.sct@meta.data[["Condition"]])
+levels(smNames_cal) <- c("Skin", "Wound1", "Wound7", "Wound30")
+smNames_cal <- smNames_cal[order(smNames_cal)]
+
+df_sm <- data.frame()
+for(i in 1:length(smNames_cal)){
+  SmCell_sum <- table(hswound.combined.sct$CellTypes)
+  tmp.df1 <- hswound.combined.sct@meta.data %>% subset(Condition == smNames_cal[i]) %>% select(CellTypes) %>% table()
+  if(length(tmp.df1) == 27){
+    #First normalize the total cell counts per sample
+    cur_df <- as.data.frame(tmp.df1 / SmCell_sum)
+    colnames(cur_df) <- c("CellTypes", "Freq")
+    #Calculate the normalized proportion 
+    cur_df$Freq <- cur_df$Freq * 1/(sum(cur_df$Freq))
+    cur_df$Sample <- smNames_cal[i]
+    df_sm <- rbind(df_sm, cur_df)
+  } else {
+    #print(i);print(tmp.df1)
+    #only include the matched samples
+    match.sample <- SmCell_sum[names(SmCell_sum) %in% names(tmp.df1)]
+    #print(match.sample)
+    #First normalize the total cell counts per sample
+    cur_df <- as.data.frame(tmp.df1 / match.sample)
+    colnames(cur_df) <- c("CellTypes", "Freq")
+    #Calculate the normalized proportion 
+    cur_df$Freq <- cur_df$Freq * 1/(sum(cur_df$Freq))
+    cur_df$Sample <- smNames_cal[i]
+    df_sm <- rbind(df_sm, cur_df)
+  }
+}
+
+df_sm$CellTypes <- factor(df_sm$CellTypes, levels = 
+                            c("Basal-I", "Basal-II", "Basal-III", "Basal-IV",
+                              "Spinous-I", "Spinous-II", "Spinous-III",
+                              "Granular-I", "Granular-II",
+                              "FB-I", "FB-II", "FB-III", "FB-IV",
+                              "PC-vSMC", 
+                              "MEL", 
+                              "Schwann", 
+                              "LE", "VE", 
+                              "Mast-cell", 
+                              "NK-cell", "Th", 
+                              "Plasma_B-cell", 
+                              "Mono-Mac",
+                              "LC", 
+                              "DC", "Dermal-DC", "DC-LAMP"))
+
+df_sm <- df_sm %>%
+  group_by(Sample, CellTypes) %>%
+  mutate(percentage = Freq * 100)
+df_sm$TimePoint <- rep(c(0, 1, 7, 30), each=27)
+  #mutate(label_y = cumsum(Freq) - 0.1 * Freq) %>%  #Need change the value to adjust the text location
+  #mutate(FreqLabel = formatC(Freq * 100,format='f',digits=2)) #Format the label text
+
+cl.celltype <- c('#006d2c', '#31a354', '#74c476', '#a1d99b', 
+                 '#08519c', '#3182bd', '#6baed6',
+                 '#e6550d', '#fd8d3c',
+                 '#756bb1', '#9e9ac8', '#bcbddc', '#dadaeb',
+                 '#fb9a99',
+                 '#e31a1c',
+                 '#fdbf6f',
+                 '#878787', '#bababa',
+                 '#b15928',
+                 '#fee08b', '#ffff99',
+                 '#4d4d4d', 
+                 '#7fbc41',
+                 '#fcc5c0',
+                 '#c51b7d', '#de77ae', '#f1b6da')
+  
+##Plot for each group
+ggplot(df_sm, aes(x = Sample, y = percentage, fill = CellTypes)) +
+  geom_bar(position = "stack", stat = "identity") +
+  #geom_area(alpha=1, size=.3, colour="white") + #Or plot the area barplot
+  #scale_fill_igv() + #Change the color
+  scale_fill_manual(values = cl.celltype) +
+  #geom_text(aes(y = label_y, label = FreqLabel), colour = "white") +
+  xlab("Time points") +
+  ylab("Cell type proportions") +
+  theme_bw() +
+  theme(
+    panel.grid.major.x = element_blank(),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    strip.background = element_blank(),
+    panel.border = element_rect(size = 0.5, color = "black"),
+    axis.text.x = element_text(size = 14, color = "black"),
+    axis.text.y = element_text(size = 14, color = "black")
+  )
+```
+
+
+## 4. Check the doublet scores and draw the plots
+```{r fig.align='center', fig.width=12, fig.height=4}
+samples.py <- list.files("../../01_Seurat_qc_Doublets/", pattern = "^Scrublet_")
+samples.py.path <- paste0("../../01_Seurat_qc_Doublets/", samples.py)
+sm_pyfiles <- lapply(samples.py.path, FUN = function(x){
+  data.table::fread(x)
+})
+smnames <- gsub("Scrublet_", "", samples.py)
+smnames <- gsub(".txt", "", smnames)
+names(sm_pyfiles) <- smnames
+
+for (i in seq_along(sm_pyfiles)) {
+ sm_pyfiles[[i]] <-  sm_pyfiles[[i]] %>% 
+   mutate(mad_pre = mad(sm_pyfiles[[i]]$doublet_scores),
+          med_pre = median(sm_pyfiles[[i]]$doublet_scores)) %>% 
+   mutate(mad_Doublet = ifelse(doublet_scores > (med_pre + 3*mad_pre), "Doublet", "Singlet"))
+}
+sm_doublets <- do.call("rbind", sm_pyfiles) %>% 
+  rename('py_predDoublets' = 'NewDoublets') %>% 
+  rename('oldpredicted_doublets' = 'predicted_doublets') %>% select(-1,-5)
+
+##Doublets from pyScrublet (Updted 27 Oct)##
+samples.newpy <- list.files("../../01_Seurat_qc_Doublets/pyScrublet/", pattern = ".txt")
+samples.newpy.path <- paste0("../../01_Seurat_qc_Doublets/pyScrublet/", samples.newpy)
+sm_newpyfiles <- lapply(samples.newpy.path, FUN = function(x){
+  data.table::fread(x)
+})
+names(sm_newpyfiles) <- smnames
+for (i in seq_along(sm_newpyfiles)) {
+ sm_newpyfiles[[i]] <-  sm_newpyfiles[[i]] %>% 
+   mutate(predicted_doublets = ifelse(predicted_doublets == "TRUE", "Doublet", "Singlet")) %>% 
+   mutate(barcodename = paste0(smnames[i], "_", barcode))
+}
+sm_NEWdoublets <- do.call("rbind", sm_newpyfiles) %>% 
+  rename('py_NewpredDoublets' = 'predicted_doublets')
+
+####----Doublets from either DoubletFinder or Scrublet----####
+sm_doublets_f <- data.table::fread("../../01_Seurat_qc_Doublets/Doublets_either_Scrublet_DoubletFinder.txt")
+sm_doublets <- sm_doublets_f %>% select(1, 3) %>% left_join(., sm_doublets, by=c("barcodename" = "barcodename")) %>% 
+  left_join(., sm_NEWdoublets[, 3:4], by=c("barcodename" = "barcodename"))
+
+metadata <- hswound.combined.sct@meta.data %>% rownames_to_column(var = "barcode") %>% 
+  left_join(., sm_doublets, by=c("barcode" = "barcodename")) %>% 
+  mutate(mtPergreat0 = ifelse(percent.mt > 0, "mtGreat0", "mtEqual0")) %>% 
+  mutate(mtPer1 = ifelse(percent.mt < 1, "mtLessThan1", "mtGreatThan1")) %>% 
+  column_to_rownames(var = "barcode")
+
+metadata_db1 <- metadata %>% filter(predicted_doublets == "Doublet") 
+#table(metadata_db1$SCT_snn_res.0.8)
+metadata_db2 <- metadata %>% filter(py_predDoublets == "Doublet") 
+#table(metadata_db2$SCT_snn_res.0.8)
+metadata_db3 <- metadata %>% filter(py_NewpredDoublets == "Doublet") 
+#table(metadata_db3$SCT_snn_res.0.8)
+metadata_db4 <- metadata %>% filter(mad_Doublet == "Doublet")
+#table(metadata_db4$SCT_snn_res.0.8)
+
+metadata_mt <- metadata %>% filter(mtPer1 == "mtLessThan1")
+#table(metadata_mt$SCT_snn_res.0.8)
+metadata_mt0 <- metadata %>% filter(mtPergreat0 == "mtEqual0")
+#table(metadata_mt0$SCT_snn_res.0.8)
+
+hswound.combined.sct <- AddMetaData(hswound.combined.sct, metadata = metadata)
+```
+
+### 4.1 Dimplots for checking doublets and mt-percent
+```{r fig.align='center', fig.width=12, fig.height=4}
+(DimPlot(object = hswound.combined.sct, 
+        reduction = "umap", 
+        label = FALSE, 
+        group.by = "predicted_doublets") + NoAxes() + ggtitle("Doublets_either_Two_Tools")) +
+  (DimPlot(object = hswound.combined.sct, 
+        reduction = "umap", 
+        label = FALSE, 
+        group.by = "py_predDoublets") + NoAxes() + ggtitle("Doublets_only_Srublet")) +
+  (DimPlot(object = hswound.combined.sct, 
+        reduction = "umap", 
+        label = FALSE, 
+        group.by = "py_NewpredDoublets") + NoAxes())
+```
+```{r fig.align='center', fig.width=12, fig.height=4}
+(DimPlot(object = hswound.combined.sct, 
+        reduction = "umap", 
+        label = FALSE, 
+        group.by = "mad_Doublet") + NoAxes()) +
+  (DimPlot(object = hswound.combined.sct, 
+        reduction = "umap", 
+        label = FALSE, 
+        group.by = "mtPergreat0") + NoAxes()) +
+   (DimPlot(object = hswound.combined.sct, 
+        reduction = "umap", 
+        label = FALSE, 
+        group.by = "mtPer1") + NoAxes())
+```
+
+### 4.2 FeaturePlots for metrics of quality
+```{r fig.align='center', fig.width=12, fig.height=8}
+# Determine metrics to plot present in hswound.combined.sct@meta.data
+metrics <-  c("nCount_RNA", "nFeature_RNA", "S.Score", "G2M.Score", "percent.mt", "doublet_scores")
+
+p3 <- FeaturePlot(
+  hswound.combined.sct,
+  features = metrics,
+  cols = c("gray","red"), combine = FALSE)
+p2_list <- lapply(p3, function(x) {x + NoAxes() + theme(text = element_text(size = 10))})
+cowplot::plot_grid(plotlist = p2_list, ncol = 3)
+```
+
+### 4.3 Violin plots for those metrics of quality
+```{r fig.align='center', fig.width=12, fig.height=11}
+VlnPlot(hswound.combined.sct, features = metrics, group.by='CellTypes', pt.size = 0, ncol = 2)
+```
+
+
+## 5. Check some known cell type markers
+### 5.1 Well-known cell type markers
+```{r eval=TRUE, fig.height=4.5, fig.width=12}
+####----Marker genes----####
+canonical_markers <- list(
+  'Keratinocytes' = c('KRT5', 'KRT14', 'KRT10'), 
+  'Fibroblasts' = c('COL1A1', 'COL1A2', 'LUM'), 
+  'Melanocytes' =	c('PMEL',	'MLANA', 'TYRP1'), 
+  'Endothelial-cells' = c('PECAM1', 'VWF', 'EGFL7'), 
+  'Myeloid-cells' = c('LYZ', 'HLA-DRA', 'HLA-DRB1'), 
+  'Mono-mac' = c('CD68', 'CD163', 'CD14'), #In dermis  
+  'Macrophages' = c('CD209', 'FCGR2A', 'MRC1'), #CD209, FCGR2A aka CD32 or FCGR1A aka CD64, 
+  #MRC1 aka CD206 (markers of macrophages, immature dendritic cells)
+  'T-cells' = c('CD7', 'CD3D', 'CD3E'), 
+  'T-cells2' = c('CD4', 'CD8A', 'NKG7'), 
+  'B-cells' = c('MS4A1', 'CD79A', 'CD19'), 
+  'Plasma-cells' = c('JCHAIN', 'IGHG1', 'MZB1'), 
+  'LC-cells' = c('CD207', 'CD1A'), #Primarily located in epidermis (CD1A aka CD1)  
+  'Dendritic-cells' = c('CD1C', 'CD1B', 'ITGAX'), #immature DC primarily located in superior dermis (ITGAX aka CD11C)
+  'Dendritic-cells2' = c('CD83', 'LAMP3', 'THBD'), #mature DC: LAMP3 aka CD208, THBD aka CD141
+  'Dendritic-cells3' = c('CLEC9A'), #CLEC9A aka DNGR1, a Dendritic Cell-Specific Sensor 
+  'Schwann' = c('SOX10', 'SOX2'), 
+  'PC-vSMC' = c('ACTA2', 'MCAM'), 
+  'Epithelial_Mesenchymal' = c('EPCAM', 'PDGFRB')
+)
+plot_list <- FeaturePlot(
+  hswound.combined.sct,
+  features=unlist(canonical_markers),
+  combine=FALSE, cols = c("gray","red")
+)
+
+# apply theme to each feature plot
+for(i in 1:length(plot_list)){
+  plot_list[[i]] <- plot_list[[i]] + NoLegend() + NoAxes()
+}
+
+cowplot::plot_grid(plotlist = plot_list[1:3], ncol = 3) + draw_figure_label(label = "Keratinocytes", size = 8, fontface = "bold", position = "top.right")
+cowplot::plot_grid(plotlist = plot_list[4:6], ncol = 3) + draw_figure_label(label = "Fibroblasts", size = 8, fontface = "bold", position = "top.right")
+cowplot::plot_grid(plotlist = plot_list[7:9], ncol = 3) + draw_figure_label(label = "Melanocytes", size = 8, fontface = "bold", position = "top.right")
+cowplot::plot_grid(plotlist = plot_list[10:12], ncol = 3) + draw_figure_label(label = "Endothelial cells", size = 8, fontface = "bold", position = "top.right")
+cowplot::plot_grid(plotlist = plot_list[13:15], ncol = 3) + draw_figure_label(label = "Myeloid Cells", size = 8, fontface = "bold", position = "top.right")
+cowplot::plot_grid(plotlist = plot_list[16:18], ncol = 3) + draw_figure_label(label = "Monocytes & Macrophages", size = 8, fontface = "bold", position = "top.right")
+cowplot::plot_grid(plotlist = plot_list[19:21], ncol = 3) + draw_figure_label(label = "Macrophages", size = 8, fontface = "bold", position = "top.right")
+cowplot::plot_grid(plotlist = plot_list[22:24], ncol = 3) + draw_figure_label(label = "T/Th cells", size = 8, fontface = "bold", position = "top.right")
+cowplot::plot_grid(plotlist = plot_list[25:27], ncol = 3) + draw_figure_label(label = "T/NK cells", size = 8, fontface = "bold", position = "top.right")
+cowplot::plot_grid(plotlist = plot_list[28:30], ncol = 3) + draw_figure_label(label = "B cells", size = 8, fontface = "bold", position = "top.right")
+cowplot::plot_grid(plotlist = plot_list[31:33], ncol = 3) + draw_figure_label(label = "Plasma cells", size = 8, fontface = "bold", position = "top.right")
+cowplot::plot_grid(plotlist = plot_list[34:35], ncol = 3) + draw_figure_label(label = "Langerhans cells", size = 8, fontface = "bold", position = "top.right")
+cowplot::plot_grid(plotlist = plot_list[36:38], ncol = 3) + draw_figure_label(label = "Dermal Dendritic cells", size = 8, fontface = "bold", position = "top.right")
+cowplot::plot_grid(plotlist = plot_list[39:41], ncol = 3) + draw_figure_label(label = "Mature Dendritic cells", size = 8, fontface = "bold", position = "top.right")
+cowplot::plot_grid(plotlist = plot_list[42], ncol = 3) + draw_figure_label(label = "Specific Dendritic cells", size = 8, fontface = "bold", position = "top.right")
+cowplot::plot_grid(plotlist = plot_list[43:44], ncol = 3) + draw_figure_label(label = "Schwann cells", size = 8, fontface = "bold", position = "top.right")
+cowplot::plot_grid(plotlist = plot_list[45:46], ncol = 3) + draw_figure_label(label = "PC-vSMC cells", size = 8, fontface = "bold", position = "top.right")
+cowplot::plot_grid(plotlist = plot_list[47:48], ncol = 3) + draw_figure_label(label = "Epithelial / Mesenchymal cells", size = 8, fontface = "bold", position = "top.right")
+```
+
+### 5.2 Cell type markers of basal cells
+```{r fig.height=4.5, fig.width=12}
+plotcom <- FeaturePlot(
+  hswound.combined.sct,
+  features=c("KRT14", "KRT10","IVL",
+    "ASS1", "COL17A1", "KRT19", "GJB2","PTTG1", "CDC20", "RRM2", "PCLAF", "SPINK5","CALML5"),
+  combine=FALSE, cols = c("gray","red")
+)
+####----markers from https://www.nature.com/articles/s41467-020-18075-7 ----####
+#BAS-III cluster (ASS1 and COL17A1) #enrichment between rete ridges
+#BAS-III/IV clusters (KRT19 and GJB2) #KRT19 BAS-III show at the bottom/side of the rete ridges, GJB2 at the bottom/side of the rete ridges with some expression in the upper strata 
+#BAS-I cluster (PTTG1 and CDC20) #BAS-I and BAS-II basal clusters are enriched for cell cycle marker genes, show a transitional position within the epidermis
+#BAS-II cluster (RRM2 and PCLAF)
+#GRN cluster (SPINK5 and CALML5)
+
+# apply theme to each feature plot
+for(i in 1:length(plotcom)){
+  plotcom[[i]] <- plotcom[[i]] + NoLegend() + NoAxes()
+}
+
+cowplot::plot_grid(plotlist = plotcom[1:3], ncol = 3) + draw_figure_label(label = "Keratinocytes", size = 8, fontface = "bold", position = "top.right")
+cowplot::plot_grid(plotlist = plotcom[4:5], ncol = 3) + draw_figure_label(label = "Basal_rete ridges", size = 8, fontface = "bold", position = "top.right")
+cowplot::plot_grid(plotlist = plotcom[6:7], ncol = 3) + draw_figure_label(label = "Basal_rete ridges bottom & upper strata", size = 8, fontface = "bold", position = "top.right")
+cowplot::plot_grid(plotlist = plotcom[8:9], ncol = 3) + draw_figure_label(label = "Basal_cell cycle (transitional position)", size = 8, fontface = "bold", position = "top.right")
+cowplot::plot_grid(plotlist = plotcom[10:11], ncol = 3) + draw_figure_label(label = "Basal", size = 8, fontface = "bold", position = "top.right")
+cowplot::plot_grid(plotlist = plotcom[12:13], ncol = 3) + draw_figure_label(label = "Granular", size = 8, fontface = "bold", position = "top.right")
+```
+
+```{r eval=FALSE, fig.height=8, fig.width=12}
+hswound.combined.sct <- readRDS("s1_cleanSeurat_harmony_allSamples_clusters.rds") # or read *normGene.rds file
+#"FOXM1", "MYBL2", "E2F1", "E2F8", "KLF4", "CEBPA"
+plotcom <- FeaturePlot(
+  hswound.combined.sct,
+  features=c("HOXC13-AS"), #THBD aka CD141, CD1A aka CD1, CD208 aka LAMP3, ITGAX aka CD11C
+  combine=F, cols = c("grey","red"), split.by = "Condition"
+)
+
+plotcom <- FeaturePlot(
+  hswound.combined.sct,
+  features=c("HOXC13-AS"), #THBD aka CD141, CD1A aka CD1, CD208 aka LAMP3, ITGAX aka CD11C
+  combine=F, cols = c("grey","red")
+)
+
+# apply theme to each feature plot
+for(i in 1:length(plotcom)){
+  plotcom[[i]] <- plotcom[[i]] + NoLegend() + NoAxes()
+}
+
+plotcom[[3]] <- DimPlot(object = hswound.combined.sct, 
+        reduction = "umap", 
+        label = TRUE, 
+        group.by = "CellTypes", label.size = 3) + NoAxes() + NoLegend() + ggtitle("Cell Types")
+
+cowplot::plot_grid(plotlist = plotcom, ncol = 2)
+```
+
+```{r eval=FALSE}
+library(rBCS)
+hswound.combined.sct <- readRDS("s1_cleanSeurat_harmony_allSamples_clusters.rds") # or read *normGene.rds file
+doublet_scores <- data.table::fread("/Users/zhuliu/Desktop/scRNA_STseq/proj_10X_woundhealing/03_results/01-Seurat-PreAnalysis/02_Seurat_BatchCorrection/s1_Seurat_allSample_harmony/py_doublet_OriScores.txt")
+
+doublet_scores_f <- colnames(hswound.combined.sct) %>% as.data.frame() %>% rename("ID" = ".") %>% left_join(., doublet_scores, by=c("ID" = "barcodename"))
+hswound.combined.sct$doublet_scores <- doublet_scores_f$doublet_scores
+
+DimPlot(object = hswound.combined.sct, 
+        reduction = "umap", 
+        label = TRUE, 
+        group.by = "CellTypes") + NoAxes() + NoLegend() + ggtitle("Cell Clusters")
+
+ExportSeurat(hswound.combined.sct,
+             "s2_cleanSeurat_harmony_humanWound_clusters.bcs",
+             unique.limit = 100,
+             clustering.name = "seurat_clusters",
+             compression.level = 5,
+             author = "zhuang.liu@ki.se",
+             raw.rna = "RNA",
+             norm.rna = "RNA",
+             overwrite = TRUE)
+```
+
+```{r eval=TRUE}
+
+canonical_markers <- c("KRT5", "KRT15", "CENPF", "GJB2", 
+                       "KRT10", "KRTDAP", "MT1X", "KRT17",
+                       "KRT16", "IVL",
+                       "COL1A1", "LUM", "POSTN", "CCL19", "PTGDS", "INHBA",
+                       "ACTA2", "MYH11",
+                       "TYRP1", "PMEL",
+                       "SOX10", "SOX2",
+                       "VWF", "CCL21", "SELE",
+                       "TPSAB1",
+                       "NKG7", "CD3D",
+                       "JCHAIN", "MS4A1",
+                       "CD14", "CD163", "CD207", "CLEC9A", "CD1C", "LAMP3")
+
+hswound.combined.sct$CellTypes <- factor(hswound.combined.sct$CellTypes, levels = rev(fact_levs))
+
+DotPlot(hswound.combined.sct, features = canonical_markers, 
+        group.by = "CellTypes", cols = c("lightgrey", "red"), 
+        dot.scale = 4, col.min = 0, dot.min = 0.1
+        ) + theme(axis.text.x = element_text(angle = 45, hjust = 1)) + labs(x="", y="")
+
+
+plot_list <- FeaturePlot(
+  hswound.combined.sct,
+  features=unlist(canonical_markers),
+  combine=FALSE, cols = c("gray","red")
+)
+
+# apply theme to each feature plot
+for(i in 1:length(plot_list)){
+  plot_list[[i]] <- plot_list[[i]] + NoLegend() + NoAxes()
+}
+
+wrap_plots(plot_list, ncol = 4)
+```
+
+
+```{r eval=TRUE}
+
+canonical_markers <- c("ASPN", "CCL19", "COL13A1", "ANGPTL1",
+                       "POSTN", "CXCL3", "APCDD1", "MFAP5",
+                       "COL11A1", "APOE", "COL18A1")
+
+plot_list <- FeaturePlot(
+  hswound.combined.sct,
+  features=unlist(canonical_markers),
+  combine=FALSE, cols = c("gray","red")
+)
+
+# apply theme to each feature plot
+for(i in 1:length(plot_list)){
+  plot_list[[i]] <- plot_list[[i]] + NoLegend() + NoAxes()
+}
+
+wrap_plots(plot_list, ncol = 4)
+```
+
+```{r}
+tmp <- FeaturePlot(
+  hswound.combined.sct,
+  features=c("PCOLCE", "GLIS3"),
+  combine=F, cols = c("gray","red"), split.by = "Condition")
+
+for(i in 1:length(tmp)){
+  tmp[[i]] <- tmp[[i]] + NoAxes()
+}
+
+wrap_plots(tmp, ncol = 2)
+
+DefaultAssay(hswound.combined.sct) <- "RNA"
+p1 + (FeaturePlot(
+  hswound.combined.sct,
+  features=c("LAMB1"),
+  combine=T, cols = c("gray","red")
+) + scale_color_gradientn(colors = c("grey", "red", "black")))
+
+(FeaturePlot(
+  hswound.combined.sct,
+  features=c("PLOD2"),
+  combine=T, split.by = "Condition", cols = c("gray","red")
+) + scale_color_gradientn(colors = c("grey", "red", "black")))
+VlnPlot(hswound.combined.sct, features = c("FSIP1")) + NoLegend()
+```
+
+
+# SessionInfo
+```{r}
+sessionInfo()
+```

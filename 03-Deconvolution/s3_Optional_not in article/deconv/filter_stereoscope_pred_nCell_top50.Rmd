@@ -1,0 +1,247 @@
+---
+title: "Filter stereoscope predictions"
+author: "Åsa Björklund"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  html_document:
+    self_contained: true
+    highlight: tango
+    df_print: paged
+    toc: yes
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    toc_depth: 3
+    fig_caption: true
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message=FALSE, warning=FALSE, result='hold',fig.width=12,fig.height = 10,tidy=TRUE)
+knitr::opts_knit$set(progress=TRUE,verbose=TRUE)
+```
+
+Load the Stereoscope output, but filter the number of predicted celltypes per spot based on number of expressed genes per spot.
+
+## Load
+
+### Load packages
+
+```{r packages}
+suppressPackageStartupMessages(require(Matrix))
+suppressPackageStartupMessages(require(dplyr))
+suppressPackageStartupMessages(require(Seurat))
+suppressPackageStartupMessages(require(ggplot2))
+suppressPackageStartupMessages(require(gridExtra))
+source("../functions/overlap_phyper_v2.R")
+```
+
+```{r}
+cl.colors = c("#e6194B", "#3cb44b", "#ffe119", "#4363d8", "#f58231", "#911eb4", "#42d4f4",
+    "#f032e6", "#bfef45", "#fabed4", "#469990", "#dcbeff", "#9A6324", "#fffac8",
+    "#800000", "#aaffc3", "#808000", "#ffd8b1", "#000075", "#a9a9a9", "#000000")
+names(cl.colors) = as.character(0:20)
+
+
+```
+
+
+Load ST data
+
+```{r, }
+input_dir = "../../deconv/results/stereoscope50/"
+st.data = readRDS(file = file.path(input_dir, "seurat_object.rds"))
+
+p1 = DimPlot(st.data, group.by = "integrated_clust", label = T, cols = cl.colors, reduction = "umap") + NoAxes() + ggtitle("Integrated clusters")
+p3 = DimPlot(st.data, group.by = "Condition", reduction = "umap") + NoAxes()
+grid.arrange(p1,p3, ncol=2)
+```
+
+## With weighting based on gene detection
+
+Estimate number of cells per spot based on gene detection, make a conditional cutoff to call a cell present based on number of cells.
+
+Most of the dermis part only has nuclei at very sparse positions, so lowest number would be a single cell, or no cell.
+
+```{r}
+p1 = VlnPlot(st.data, group.by = "Sample_name", features = "nFeature_Spatial", pt.size = 0)
+p2 = ggplot(st.data@meta.data, aes(nFeature_Spatial)) + geom_histogram(bins = 100)
+grid.arrange(p1,p2, ncol = 2)
+
+p1 = VlnPlot(st.data, group.by = "Sample_name", features = "nCount_Spatial", pt.size = 0)
+p2 = ggplot(st.data@meta.data, aes(nCount_Spatial)) + geom_histogram(bins = 100)
+grid.arrange(p1,p2, ncol = 2)
+```
+
+
+Predict number of cells as linear respons to nFeature with lowest at 1 cells, highest at 50 cells.
+
+```{r}
+nF = st.data$nFeature_Spatial
+
+
+nCell = round((nF-min(nF))/max(nF)*50) + 1
+table(nCell)
+
+st.data$nCell = nCell
+p = SpatialFeaturePlot(st.data, features = "nCell", combine = F)
+grid.arrange(grobs = p, ncol = 4)
+```
+
+Compare to number of different predicted celltypes with > 0.05% detection
+
+```{r}
+FeatureScatter(st.data, "nCell", "nCelltypes")
+```
+
+Clearly we have many different  celltypes predicted also for the spots with very few detected genes.
+
+
+Take only top predictions from Stereoscope and set cutoff for lowest detection at 1/nCell. But none has predicted prop of 1, so just take top predicted celltype if none abouve cutoff.
+
+
+```{r}
+prop = st.data@assays$Stereoscope@counts
+
+# first remove all below 1/50 and rescale
+prop[prop<0.02]=0
+prop = sweep(prop,2,colSums(prop),"/")
+
+cut = 1/(nCell+1)
+
+
+#high = st.data@assays$Stereoscope@counts[,which(nCell == 47)]
+#low = st.data@assays$Stereoscope@counts[,which(nCell == 1)[1]]
+
+det.cell = mapply(function(x,y){ prop[,x]>y }, x=1:ncol(prop),y=cut)
+
+nCT = colSums(det.cell)
+plot(nCell,nCT)
+
+# quite a few with no predicted celltype
+sum(nCT == 0)
+
+# set to highest predicted celltype
+empt = which(nCT == 0)
+
+a = apply(prop[,empt],2, which.max)
+
+det.cell[cbind(a,empt)] = TRUE
+
+```
+
+Number of spots with detection per celltype:
+
+```{r}
+rs = rowSums(det.cell)
+
+barplot(sort(rs),las=2)
+```
+
+Make nwe matrix with presense absence of celltype...
+
+```{r}
+colnames(det.cell) = colnames(prop)
+
+st.data = AddMetaData(st.data, t(det.cell), col.name = rownames(det.cell))
+
+sample = "Donor1_Skin"
+celltypes = rownames(prop)
+celltypes = gsub("-",".", celltypes)
+
+tmp = st.data[, st.data$Sample_name == sample]
+pl = SpatialDimPlot(tmp, group.by = celltypes, images = sample, cols = c("gray","black"), combine = F) 
+grid.arrange(grobs = pl, ncol=4)
+```
+
+## Redo graphs
+
+New graphs based on the cutoffs.
+
+```{r}
+co.occ = apply(det.cell,1,which)
+
+o = overlap_phyper2(co.occ, co.occ, title = "All", remove.diag = T, plot = F)
+
+all.overlap = list()
+for (cond in unique(st.data$Condition)) {
+  tmp = det.cell[,st.data$Condition == cond]
+  co.occ = apply(tmp,1,which)
+  all.overlap[[cond]] = overlap_phyper2(co.occ, co.occ, title = cond, remove.diag = T)
+}
+```
+
+
+As graph
+
+```{r}
+celltypes = rownames(prop)
+
+cols = rep(NA, 26)
+# greens for basal
+cols[2:4] = colorRampPalette(c("green", "darkgreen"))(3)
+# pink/purple for fibs
+cols[6:9] = colorRampPalette(c("pink", "purple3"))(4)
+# blu spinous
+cols[22:24] = colorRampPalette(c("lightblue", "darkblue"))(3)
+# cyans for Granular
+cols[10:11] = c("cyan", "cyan3")
+# immune cells in yellow to orange
+cols[c(1, 5, 14, 15, 17:19, 25)] = colorRampPalette(c("yellow", "red"))(8)
+# rest in grays
+cols[c(12, 13, 16, 20, 21, 26)] = colorRampPalette(c("grey82", "gray30"))(6)
+
+names(cols) = celltypes
+
+
+```
+
+
+```{r}
+library(igraph)
+make.igraph = function(ptest, cutoff = 0.1, title = "Celltype co-occurence") {
+    pvals = ptest$P[-ncol(ptest$P), -nrow(ptest$P)]
+
+    pseudo = min(pvals[pvals > 0 & !is.na(pvals)])
+    pvals[pvals == 0] = pseudo
+
+    # filer all edgens with pval > cutoff
+    pvals[pvals > cutoff] = 1
+
+    # convert to weights
+    w = -log10(pvals)
+    g = graph_from_adjacency_matrix(w, mode = "undirected", weighted = T, diag = F)
+    set.seed(13)
+    g.layout <- layout_with_graphopt(g)
+    # g.layout<-layout_with_lgl(g, maxiter = 500)
+    V(g)$color = cols
+    # scale point size by proportions
+    nC = ptest$M[-ncol(ptest$M), ncol(ptest$M)]
+
+    # plot.igraph(g,layout=g.layout, vertex.label.color='black',
+    # edge.width=E(g)$weight/10, main = title)
+    plot.igraph(g, layout = g.layout, vertex.label.color = "black", edge.width = E(g)$weight/10,
+        vertex.size = nC/sum(nC) * 200, vertex.label.dist = 2, main = title)
+
+    return(list(g = g, layout = g.layout))
+}
+
+g = make.igraph(o, title = "All", cutoff = 1e-5)
+```
+
+
+```{r}
+par(mfrow = c(2, 2), mar = c(0, 0, 1, 0))
+graphs = sapply(names(all.overlap), function(x) make.igraph(all.overlap[[x]], title = x, cutoff = 1e-2))
+```
+
+Seems like FB-III is mainly in singleton spots (e.g. where only one celltype) and hence has very little connections.
+
+
+
+
+### Session info
+
+```{r}
+sessionInfo()
+```

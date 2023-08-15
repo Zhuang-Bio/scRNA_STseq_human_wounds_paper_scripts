@@ -1,0 +1,415 @@
+---
+title: "CellChat analysis of all celltypes in human scRNA-seq"
+author: "Zhuang Liu"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    toc: true #add a table of contents (TOC)
+    toc_depth: 3 #headers' level in the toc
+    toc_float: true #toc visible even when scrolled
+    theme: lumen
+    highlight: tango
+    code_folding: hide
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.align='center', fig.width=12, warning=FALSE, message=FALSE)
+```
+
+Following tutorial: https://htmlpreview.github.io/?https://github.com/sqjin/CellChat/blob/master/tutorial/CellChat-vignette.html
+
+Load the required libraries
+
+```{r warning=FALSE, message=FALSE}
+library(CellChat)
+library(patchwork)
+library(Seurat)
+options(stringsAsFactors = FALSE)
+
+cond = "Wound30"
+print(cond)
+```
+
+###################################################
+# Part 1: Data input, processing and initialization
+CellChat requires two user inputs: one is the gene expression data of cells, and the other is either user assigned cell labels (i.e., label-based mode) or a low-dimensional representation of the single-cell data (i.e., label-free mode). For the latter, CellChat automatically groups cells by building a shared neighbor graph based on the cell-cell distance in the low-dimensional space or the pseudotemporal trajectory space.
+
+## a. Load the seurat object
+For the gene expression data matrix, genes should be in rows with rownames and cells in columns with colnames. Normalized data (e.g., library-size normalization and then log-transformed with a pseudocount of 1) is required as input for CellChat analysis. If user provides count data, we provide a normalizeData function to account for library size and then do log-transformed. For the cell group information, a dataframe with rownames is required as input for CellChat.
+
+```{r}
+seuratObj = readRDS(file = "/Users/zhuliu/Desktop/sc st/plotting scripts/Figure 1/allcombined_wounds_newAnnotation.rds")
+
+#exclude the cluster Bas_II (low quality)
+seuratObj=seuratObj[, seuratObj$newCellTypes != "Bas-II"]
+seuratObj@meta.data = droplevels(seuratObj@meta.data)
+table(seuratObj$newCellTypes)
+
+(DimPlot(object = seuratObj, 
+        reduction = "umap", 
+        label = TRUE, 
+        group.by = "newCellTypes") + NoAxes() + NoLegend() + ggtitle("")) +
+  (DimPlot(object = seuratObj, 
+        reduction = "umap", 
+        label = TRUE, 
+        group.by = "newMainCellTypes") + NoAxes() + NoLegend() + ggtitle(""))
+
+# keep only RNA assay
+seuratObj@active.assay = "RNA"
+seuratObj = DietSeurat(seuratObj, assays = "RNA")
+invisible(gc())
+
+table(seuratObj$newCellTypes, seuratObj$Condition)
+
+#select condition
+seuratObj = seuratObj[, seuratObj$Condition == cond]
+print(dim(seuratObj))
+seuratObj@meta.data = droplevels(seuratObj@meta.data)
+print(paste0("Cell number of each cell type in ", cond))
+table(seuratObj$newCellTypes) %>% as.data.frame()
+
+# normalize the data
+options(future.globals.maxSize = 15000 * 1024^2)
+seuratObj = NormalizeData(seuratObj)
+```
+
+
+## b. Create a CellChat object
+USERS can create a new CellChat object from a data matrix, Seurat or SingleCellExperiment object. If input is a Seurat or SingleCellExperiment object, the meta data in the object will be used by default and USER must provide group.by to define the cell groups. e.g, group.by = “ident” for the default cell identities in Seurat object.
+
+```{r}
+cellchat <- createCellChat(object = seuratObj, group.by = "newCellTypes")
+groupSize <- as.numeric(table(cellchat@idents))  # number of cells in each cell group
+
+# Define 3 main groups of cells, keratinocytes, fibroblasts, rest.
+s = lapply(split(seuratObj$newCellTypes, seuratObj$newMainCellTypes), unique)
+kera = as.character(s$Keratinocytes)
+fibro = as.character(s$Fibroblasts)
+immune_m = as.character(c(s$MyeloidCells, s$LangerhansCells))
+immune_t = as.character(c(s$NKTcells, s$PlasmaBcells))
+
+# get the index of each main cell type
+kera.idx = which(levels(cellchat@idents) %in% kera)
+fibro.idx = which(levels(cellchat@idents) %in% fibro)
+immune_m.idx = which(levels(cellchat@idents) %in% immune_m)
+immune_t.idx = which(levels(cellchat@idents) %in% immune_t)
+```
+
+## c. set the L-R interaction database
+Our database CellChatDB is a manually curated database of literature-supported ligand-receptor interactions in both human and mouse. CellChatDB in mouse contains 2,021 validated molecular interactions, including 60% of secrete autocrine/paracrine signaling interactions, 21% of extracellular matrix (ECM)-receptor interactions and 19% of cell-cell contact interactions. CellChatDB in human contains 1,939 validated molecular interactions, including 61.8% of paracrine/autocrine signaling interactions, 21.7% of extracellular matrix (ECM)-receptor interactions and 16.5% of cell-cell contact interactions.
+
+```{r}
+CellChatDB <- CellChatDB.human 
+showDatabaseCategory(CellChatDB)
+
+# Show the structure of the database
+dplyr::glimpse(CellChatDB$interaction)
+table(CellChatDB$interaction$annotation)
+
+# use a subset of CellChatDB for cell-cell communication analysis
+# CellChatDB.use <- subsetDB(CellChatDB, search = 'Secreted Signaling') # use Secreted Signaling use all CellChatDB for cell-cell communication analysis
+CellChatDB.use <- CellChatDB  # simply use the default CellChatDB
+
+# set the used database in the object
+cellchat@DB <- CellChatDB.use
+```
+
+## d. Preprocessing the expression data
+To infer the cell state-specific communications, we identify over-expressed ligands or receptors in one cell group and then identify over-expressed ligand-receptor interactions if either ligand or receptor is over-expressed.
+
+We also provide a function to project gene expression data onto protein-protein interaction (PPI) network. Specifically, a diffusion process is used to smooth genes’ expression values based on their neighbors’ defined in a high-confidence experimentally validated protein-protein network. This function is useful when analyzing single-cell data with shallow sequencing depth because the projection reduces the dropout effects of signaling genes, in particular for possible zero expression of subunits of ligands/receptors. One might be concerned about the possible artifact introduced by this diffusion process, however, it will only introduce very weak communications. USERS can also skip this step and set raw.use = TRUE in the function computeCommunProb().
+
+```{r}
+# subset the expression data of signaling genes for saving computation cost
+cellchat <- subsetData(cellchat)  # This step is necessary even if using the whole database
+#future::plan("multisession", workers = 4)  # do parallel
+cellchat <- identifyOverExpressedGenes(cellchat)
+cellchat <- identifyOverExpressedInteractions(cellchat)
+# project gene expression data onto PPI network (optional)
+cellchat <- projectData(cellchat, PPI.human)
+```
+
+
+######################################################
+# Part 2: Inference of cell-cell communication network
+CellChat infers the biologically significant cell-cell communication by assigning each interaction with a probability value and peforming a permutation test. CellChat models the probability of cell-cell communication by integrating gene expression with prior known knowledge of the interactions between signaling ligands, receptors and their cofactors using the law of mass action.
+
+The number of inferred ligand-receptor pairs clearly depends on the method for calculating the average gene expression per cell group. By default, CellChat uses a statistically robust mean method called ‘trimean’, which produces fewer interactions than other methods. However, we find that CellChat performs well at predicting stronger interactions, which is very helpful for narrowing down on interactions for further experimental validations. In computeCommunProb, we provide an option for using other methods, such as 5% and 10% truncated mean, to calculating the average gene expression. Of note, ‘trimean’ approximates 25% truncated mean, implying that the average gene expression is zero if the percent of expressed cells in one group is less than 25%. To use 10% truncated mean, USER can set type = "truncatedMean" and trim = 0.1. If very well-known signaling pathways in the studied biological process are not predicted, USER can try truncatedMean with different trim values. The function computeAveExpr can help to check the average expression of signaling genes of interest, e.g, computeAveExpr(cellchat, features = c("CXCL12","CXCR4"), type =  "truncatedMean", trim = 0.1).
+
+When analyzing unsorted single-cell transcriptomes, under the assumption that abundant cell populations tend to send collectively stronger signals than the rare cell populations, CellChat can also consider the effect of cell proportion in each cell group in the probability calculation. USER can set population.size = TRUE.
+
+## a. Compute the probability and infer communication network
+The default setting is population.size = FALSE and does not take abundance of the celltypes into account. Set intstead to TRUE? Run for now with default settings.
+
+```{r}
+force = FALSE
+tmpfile = paste0("cellchat_rdsfiles/tmp_cellchat_", cond, ".rds")
+if (file.exists(tmpfile) & !force) {
+    cellchat = readRDS(tmpfile)
+} else {
+    cellchat <- computeCommunProb(cellchat)
+    saveRDS(cellchat, file = tmpfile)
+}
+# Filter out the cell-cell communication if there are only few number of cells
+# in certain cell groups set to 10 as we may have very few cells from some celltypes.
+cellchat <- filterCommunication(cellchat, min.cells = 5)
+```
+
+## b. Extract the inferred cellular network as df
+We provide a function `subsetCommunication` to easily access the inferred cell-cell communications of interest. For example, 
+
+* ```df.net <- subsetCommunication(cellchat)``` returns a data frame consisting of all the inferred cell-cell communications at the level of ligands/receptors. Set `slot.name = "netP"` to access the the inferred communications at the level of signaling pathways
+
+* ```df.net <- subsetCommunication(cellchat, sources.use = c(1,2), targets.use = c(4,5))``` gives the inferred cell-cell communications sending from cell groups 1 and 2 to cell groups 4 and 5. 
+
+* ```df.net <- subsetCommunication(cellchat, signaling = c("WNT", "TGFb"))``` gives the inferred cell-cell communications mediated by signaling WNT and TGFb. 
+
+Export all the L-R pairs into a .txt file.
+```{r}
+df.net <- subsetCommunication(cellchat)
+
+# export the data
+data.table::fwrite(df.net, paste0("cellchat_rdsfiles/cellchat_all_L_R_", cond, ".txt"), sep="\t")
+```
+
+## c. Infer the cell-cell crosstalk at a signaling pathway level
+CellChat computes the communication probability on signaling pathway level by summarizing the communication probabilities of all ligands-receptors interactions associated with each signaling pathway.  
+
+NB: The inferred intercellular communication network of each ligand-receptor pair and each signaling pathway is stored in the slot 'net' and 'netP', respectively.
+
+```{r}
+cellchat <- computeCommunProbPathway(cellchat)
+```
+
+## d. Calculate the aggregated cell-cell network 
+We can calculate the aggregated cell-cell communication network by counting the number of links or summarizing the communication probability. USER can also calculate the aggregated network among a subset of cell groups by setting `sources.use` and `targets.use`. 
+
+```{r}
+cellchat <- aggregateNet(cellchat)
+```
+
+We can also visualize the aggregated cell-cell communication network. For example, showing the number of interactions or the total interaction strength (weights) between any two cell groups using circle plot.
+
+```{r fig.height = 6}
+groupSize <- as.numeric(table(cellchat@idents))
+par(mfrow = c(1,2), xpd=TRUE)
+netVisual_circle(cellchat@net$count, vertex.weight = groupSize, weight.scale = T, label.edge= F, title.name = "Number of interactions")
+netVisual_circle(cellchat@net$weight, vertex.weight = groupSize, weight.scale = T, label.edge= F, title.name = "Interaction weights/strength")
+```
+
+Due to the complicated cell-cell communication network, we can examine the signaling sent from each cell group. Here we also control the parameter `edge.weight.max` so that we can compare edge weights between differet networks. 
+
+```{r fig.height = 10}
+mat <- cellchat@net$weight
+par(mfrow = c(3,4), xpd=TRUE)
+for (i in 1:nrow(mat)) {
+    mat2 <- matrix(0, nrow = nrow(mat), ncol = ncol(mat), dimnames = dimnames(mat))
+    mat2[i, ] <- mat[i, ]
+    netVisual_circle(mat2, vertex.weight = groupSize, weight.scale = T, edge.weight.max = max(mat),
+        title.name = rownames(mat)[i])
+}
+```
+
+Is a hard to see in the thickness of the lines, plot instead as heatmap
+```{r fig.height=8}
+pheatmap::pheatmap(cellchat@net$count, main = "Counts", cluster_rows = F, cluster_cols = F)
+
+pheatmap::pheatmap(cellchat@net$weight, main = "Weights", cluster_rows = F, cluster_cols = F)
+```
+
+
+#################################################
+# Part 3: Visualization of cell-cell L-R network
+Upon infering the cell-cell communication network, CellChat provides various functionality for further data exploration, analysis, and visualization.
+
+* It provides several ways for visualizing cell-cell communication network, including hierarchical plot, circle plot, Chord diagram, and bubble plot. 
+
+* It provides an easy-to-use tool for extracting and visualizing high-order information of the inferred networks. For example, it allows ready prediction of major signaling inputs and outputs for cell populations and how these populations and signals coordinate together for functions.
+
+* It can quantitatively characterize and compare the inferred cell-cell communication networks using an integrated approach by combining social network analysis, pattern recognition, and manifold learning approaches.
+
+## a. Visualize each pathway using Hierarchy, Circle or Chord diagram plots
+**Hierarchy plot**: USER should define `vertex.receiver`, which is a numeric vector giving the index of the cell groups as targets in the left part of hierarchy plot. This hierarchical plot consist of two components: the left portion shows autocrine and paracrine signaling to certain cell groups of interest (i.e, the defined `vertex.receiver`), and the right portion shows autocrine and paracrine signaling to the remaining cell groups in the dataset. Thus, hierarchy plot provides an informative and intuitive way to visualize autocrine and paracrine signaling communications between cell groups of interest. For example, when studying the cell-cell communication between fibroblasts and immune cells, USER can define `vertex.receiver` as all fibroblast cell groups. 
+
+**Chord diagram**: CellChat provides two functions `netVisual_chord_cell` and `netVisual_chord_gene` for visualizing cell-cell communication with different purposes and different levels. `netVisual_chord_cell` is used for visualizing the cell-cell communication between different cell groups (where each sector in the chord diagram is a cell group), and `netVisual_chord_gene` is used for visualizing the cell-cell communication mediated by mutiple ligand-receptors or signaling pathways (where each sector in the chord diagram is a ligand, receptor or signaling pathway.)
+
+**Explnations of edge color/weight, node color/size/shape**: In all visualization plots, edge colors are consistent with the sources as sender, and edge weights are proportional to the interaction strength. Thicker edge line indicates a stronger signal. In the **Hierarchy plot and Circle plot**, circle sizes are proportional to the number of cells in each cell group. In the hierarchy plot, solid and open circles represent source and target, respectively. In the **Chord diagram**, the inner thinner bar colors represent the targets that receive signal from the corresponding outer bar. The inner bar size is proportional to the signal strength received by the targets. Such inner bar is helpful for interpreting the complex chord diagram. Note that there exist some inner bars without any chord for some cell groups, please just igore it because this is an issue that has not been addressed by [circlize](https://github.com/jokergoo/circlize) package. 
+
+**Visualization of cell-cell communication at different levels**: One can visualize the inferred communication network of signaling pathways using `netVisual_aggregate`, and visualize the inferred communication networks of individual L-R pairs associated with that signaling pathway using `netVisual_individual`.
+
+Here we take input of one signaling pathway as an example. All the signaling pathways showing significant communications can be accessed by `cellchat@netP$pathways`.
+
+First, check what pathways have significant interactions, use now all interactions.
+```{r}
+# check for any significance in a pathway @net has all LR pairs, @netP the signalling pathways.
+
+# select only immune cells as recievers and kera as senders kera =  setdiff(levels(seuratObj$newCellTypes), immune)
+mat = cellchat@netP$prob
+
+dfm = data.frame(mean.prob = apply(mat, 3, mean), max.prob = apply(mat, 3, max))
+head(dfm[order(dfm$max.prob, decreasing = T), ], 20)
+```
+
+Heatmap
+```{r fig.height=8}
+pathways.show <- rownames(dfm)[order(dfm$mean.prob, decreasing = T)][1]
+#pathways.show <- c("THBS") #set the interested pathway you want to show
+par(mfrow = c(1, 1))
+netVisual_heatmap(cellchat, signaling = pathways.show, color.heatmap = "Reds")
+```
+
+Chord diagram
+```{r fig.height=8, fig.width=8}
+par(mfrow = c(1, 1))
+netVisual_aggregate(cellchat, signaling = pathways.show, layout = "chord")
+```
+
+Plot the heatmap for several of the top pathways.
+```{r fig.height=8}
+sel.plot = rownames(dfm)[order(dfm$mean.prob, decreasing = T)][2:6]
+par(mfrow = c(1, 1))
+for (sel in sel.plot) {
+    n = netVisual_heatmap(cellchat, signaling = sel, color.heatmap = "Reds")
+    print(n)
+}
+```
+
+## b. Compute the contribution of each L-R pair
+Compute the contribution of each ligand-receptor pair to the overall signaling pathway and visualize cell-cell communication mediated by a single ligand-receptor pair
+
+```{r fig.height=15}
+netAnalysis_contribution(cellchat, signaling = pathways.show)
+```
+
+We can also visualize the cell-cell communication mediated by a single ligand-receptor pair. We provide a function extractEnrichedLR to extract all the significant interactions (L-R pairs) and related signaling genes for a given signaling pathway.
+
+```{r fig.height=8, fig.width=8}
+pairLR.CXCL <- extractEnrichedLR(cellchat, signaling = pathways.show, geneLR.return = FALSE)
+LR.show <- pairLR.CXCL[1, ]  # show one ligand-receptor pair
+
+# Chord diagram
+netVisual_individual(cellchat, signaling = pathways.show, pairLR.use = LR.show, layout = "chord")
+```
+
+## c. Visualize crosstalk by multiple L-R or signaling pathways
+### I. Bubble plot
+We can also show all the significant interactions (L-R pairs) from some cell groups to other cell groups using netVisual_bubble.
+
+Do for each group vs the other and only the top pathway.
+```{r fig.height=6, eval=FALSE}
+# show all the significant interactions (L-R pairs) from some cell groups
+# (defined by 'sources.use') to other cell groups (defined by 'targets.use')
+print("keratinocytes (Ligand) vs fibroblasts (Receptor)")
+netVisual_bubble(cellchat, sources.use = kera.idx, targets.use = fibro.idx, signaling = pathways.show,
+    remove.isolate = FALSE)
+```
+
+```{r, eval=FALSE}
+print("keratinocytes (Ligand) vs myeloid cells (Receptor)")
+netVisual_bubble(cellchat, sources.use = kera.idx, targets.use = immune_m.idx, signaling = pathways.show,
+    remove.isolate = FALSE)
+```
+
+```{r fig.height=8, eval=FALSE}
+print("keratinocytes (Ligand) vs lymphoid cells (Receptor)")
+netVisual_bubble(cellchat, sources.use = kera.idx, targets.use = immune_t.idx, signaling = pathways.show,
+    remove.isolate = FALSE)
+```
+
+```{r fig.height=8, eval=FALSE}
+print("fibroblasts (Ligand) vs keratinocytes (Receptor)")
+netVisual_bubble(cellchat, sources.use = fibro.idx, targets.use = kera.idx, signaling = pathways.show,
+    remove.isolate = FALSE)
+```
+
+```{r eval=FALSE}
+print("fibroblasts (Ligand) vs myeloid cells (Receptor)")
+netVisual_bubble(cellchat, sources.use = fibro.idx, targets.use = immune_m.idx, signaling = pathways.show,
+    remove.isolate = FALSE)
+```
+
+```{r eval=FALSE}
+print("fibroblasts (Ligand) vs lymphoid cells (Receptor)")
+netVisual_bubble(cellchat, sources.use = fibro.idx, targets.use = immune_t.idx, signaling = pathways.show,
+    remove.isolate = FALSE)
+```
+
+
+### II. Plot the gene expression using violin/dotplot
+We can plot the gene expression distribution of signaling genes related to L-R pairs or signaling pathway using a Seurat wrapper function `plotGeneExpression`.
+
+```{r fig.height=10}
+plotGeneExpression(cellchat, signaling = pathways.show)
+```
+By default, `plotGeneExpression` only shows the expression of signaling genes related to the inferred significant communications. USERS can show the expression of all signaling genes related to one signaling pathway by
+```{r}
+plotGeneExpression(cellchat, signaling = "EGF", enriched.only = FALSE)
+```
+Alternatively, USERS can extract the signaling genes related to the inferred L-R pairs or signaling pathway using `extractEnrichedLR`, and then plot gene expression using Seurat package.
+
+
+###############################################
+# Part 4: Systems analysis of cell-cell network
+To facilitate the interpretation of the complex intercellular communication networks, CellChat quantitively measures networks through methods abstracted from graph theory, pattern recognition and manifold learning. 
+
+* It can determine major signaling sources and targets as well as mediators and influencers within a given signaling network using centrality measures from network analysis
+
+* It can predict key incoming and outgoing signals for specific cell types as well as coordinated responses among different cell types by leveraging pattern recognition approaches. 
+
+* It can group signaling pathways by defining similarity measures and performing manifold learning from both functional and topological perspectives.
+
+* It can delineate conserved and context-specific signaling pathways by joint manifold learning of multiple networks.
+
+## a. Identify signaling roles and major contributer
+CellChat allows ready identification of **dominant senders, receivers, mediators and influencers** in the intercellular communication network by computing several network centrality measures for each cell group. Specifically, we used measures in weighted-directed networks, including **out-degree, in-degree, flow betweenesss and information centrality**, to respectively identify dominant senders, receivers, mediators and influencers for the intercellular communications. In a weighteddirected network with the weights as the computed communication probabilities, the outdegree, computed as the sum of communication probabilities of the outgoing signaling from a cell group, and the in-degree, computed as the sum of the communication probabilities of the incoming signaling to a cell group, can be used to identify the dominant cell senders and receivers of signaling networks, respectively. For the definition of flow betweenness and information centrality, please check [our paper](https://www.biorxiv.org/content/10.1101/2020.07.21.214387v1) and related [reference](https://link.springer.com/article/10.1007/s12599-010-0127-3). 
+
+### I. Compute and visualize the network centrality scores
+```{r fig.height=8, fig.width=8}
+# Compute the network centrality scores
+cellchat <- netAnalysis_computeCentrality(cellchat, slot.name = "netP") # the slot 'netP' means the inferred intercellular communication network of signaling pathways
+# Visualize the computed centrality scores using heatmap, allowing ready identification of major signaling roles of cell groups
+netAnalysis_signalingRole_network(cellchat, signaling = pathways.show, width = 8, height = 2.5, font.size = 10)
+```
+
+### II. Visualize the dominant senders and receivers 
+We also provide another intutive way to visualize the dominant senders (sources) and receivers (targets) in a 2D space using scatter plot. 
+```{r}
+# Signaling role analysis on the aggregated cell-cell communication network
+# from all signaling pathways
+gg1 <- netAnalysis_signalingRole_scatter(cellchat)
+# Signaling role analysis on the cell-cell communication networks of interest
+gg2 <- netAnalysis_signalingRole_scatter(cellchat, signaling = pathways.show) + ggtitle(pathways.show)
+gg1 + gg2
+```
+
+### III. Identify signals contributing most to outgoing or incoming signaling of certain cell groups
+We can also answer the question on which signals contributing most to outgoing or incoming signaling of certain cell groups.
+```{r fig.height=20}
+# Signaling role analysis on the aggregated cell-cell communication network from all signaling pathways
+ht1 <- netAnalysis_signalingRole_heatmap(cellchat, pattern = "outgoing", height = 20)
+ht2 <- netAnalysis_signalingRole_heatmap(cellchat, pattern = "incoming", height = 20)
+ht1 + ht2
+```
+```{r}
+# Signaling role analysis on the cell-cell communication networks of interest
+# take top 10 pathways
+sel.plot2 = rownames(dfm)[order(dfm$mean.prob, decreasing = T)][1:10]
+ht1 <- netAnalysis_signalingRole_heatmap(cellchat, signaling = sel.plot2, pattern = "outgoing")
+ht2 <- netAnalysis_signalingRole_heatmap(cellchat, signaling = sel.plot2, pattern = "incoming")
+ht1 + ht2
+```
+
+##################################
+# Part 5: Save the CellChat object
+```{r eval=TRUE}
+savefile2 = paste0("cellchat_rdsfiles/cellchat_all_L-R_", cond, ".rds")
+
+saveRDS(cellchat, file = savefile2)
+```
+
+# SessionInfo
+```{r}
+sessionInfo()
+```

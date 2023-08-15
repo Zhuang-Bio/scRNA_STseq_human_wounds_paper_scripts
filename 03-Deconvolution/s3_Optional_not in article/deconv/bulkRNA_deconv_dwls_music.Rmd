@@ -1,0 +1,287 @@
+---
+title: "BulkRNA deconvolution with neutrophils"
+author: "Åsa Björklund"
+date: '`r format(Sys.Date(), "%B %d, %Y")`'
+output:
+  html_document:
+    self_contained: true
+    highlight: tango
+    df_print: paged
+    toc: yes
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+    toc_depth: 3
+    fig_caption: true
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message=FALSE, warning=FALSE, result='hold',fig.width=12,tidy=TRUE)
+knitr::opts_knit$set(progress=TRUE,verbose=TRUE)
+```
+
+Take the files from bulkRNA_deconv_scdc_neut.Rmd with bulk RNA (both as counts and as FPKMs) and pseudobulks from ST and SC data.
+
+Take new subsampled scRNAseq with neutrophils included.
+
+Take new DEG list with neutrophils included.
+
+
+# Load
+
+### Load packages
+
+```{r packages}
+
+suppressPackageStartupMessages(require(Matrix))
+suppressPackageStartupMessages(require(dplyr))
+suppressPackageStartupMessages(require(Seurat))
+suppressPackageStartupMessages(require(ggplot2))
+suppressPackageStartupMessages(require(gridExtra))
+suppressPackageStartupMessages(require(magrittr))
+suppressPackageStartupMessages(require(patchwork))
+suppressPackageStartupMessages(require(pheatmap))
+suppressPackageStartupMessages(require(MuSiC))
+suppressPackageStartupMessages(require(Biobase))
+
+
+```
+
+
+# Load
+
+```{r}
+cl.colors = c("#e6194B", "#3cb44b", "#ffe119", "#4363d8", "#f58231", "#911eb4", "#42d4f4",
+    "#f032e6", "#bfef45", "#fabed4", "#469990", "#dcbeff", "#9A6324", "#fffac8",
+    "#800000", "#aaffc3", "#808000", "#ffd8b1", "#000075", "#a9a9a9", "#000000",
+    "#add8e6", "#ffa07a", "#228b22", "#dcdcdc")
+names(cl.colors) = as.character(0:24)
+
+cc = scale_color_gradientn(colors = c("grey", "yellow", "red", "black"))
+small.leg <- theme(legend.text = element_text(size = 6), legend.key.width = unit(0.1,
+    "cm"))
+
+outdir = "../../deconv/results/bulk_scdc"
+```
+
+
+
+## Load data
+
+
+```{r}
+all = readRDS( file = "../../deconv/inputs/bulks/bulk_sobject_neut.rds")
+
+mfile = file.path(outdir,"celltype_markers_w_neut.csv")
+markers = read.csv(mfile)
+
+sc.data = readRDS(file = file.path(outdir, "scRNAseq_subsampled_neut.rds"))
+
+celltypes = sort(unique(sc.data$Celltype))
+```
+
+
+```{r}
+diff.cutoff = 0.5
+pval.cutoff = 0.01
+```
+
+
+Filter DEGs based on pvalue FC and pct.diff
+
+```{r}
+# keep only genes in both datasets
+common.genes = intersect(rownames(sc.data), rownames(all))
+markers = markers[markers$gene %in% common.genes,]
+
+gene.info = read.csv("../../spatial/meta/genes_parsed.csv")
+pc.genes = gene.info$gene_name[gene.info$gene_type == "protein_coding"]
+
+markers.pc = markers[markers$gene %in% pc.genes,]
+
+
+
+markers.pc$pct.diff <- markers.pc$pct.1 - markers.pc$pct.2
+markers.pc$log.pct.diff <- log2((markers.pc$pct.1 * 99 + 1)/(markers.pc$pct.2 * 99 +
+    1))
+markers.pc %>%
+    group_by(cluster) %>%
+    top_n(-100, p_val) %>%
+    top_n(50, pct.diff) %>%
+    top_n(20, log.pct.diff) -> top20
+de.genes <- unique(as.character(top20$gene))
+print(length(de.genes))
+
+# take instead top 50 genes
+
+markers.pc %>%
+    group_by(cluster) %>%
+    top_n(-200, p_val) %>%
+    top_n(100, pct.diff) %>%
+    top_n(50, log.pct.diff) -> top20
+de.genes50 <- unique(as.character(top20$gene))
+print(length(de.genes50))
+
+# top 100 genes
+markers.pc %>%
+    group_by(cluster) %>%
+    top_n(-300, p_val) %>%
+    top_n(200, pct.diff) %>%
+    top_n(100, log.pct.diff) -> top20
+de.genes100 <- unique(as.character(top20$gene))
+print(length(de.genes100))
+
+# top 5 genes
+markers.pc %>%
+    group_by(cluster) %>%
+    top_n(-50, p_val) %>%
+    top_n(20, pct.diff) %>%
+    top_n(5, log.pct.diff) -> top20
+de.genes5 <- unique(as.character(top20$gene))
+print(length(de.genes5))
+
+```
+
+
+
+## Run deconvolution
+
+Run deconv with 4 different methods for normalization.
+
+* LogNormalized
+* RC - Relative Counts
+* CLR = Centered log ratio
+* SCT - SCTransform
+
+Run with DWLS, SCDC, MuSiC.
+
+Select top 5,20,50 or 100 genes per celltype. For DWLS an internal gene selection is done, so only run once (is still named top20 but is not really).
+
+
+```{r}
+source("deconv_cobos_paper.R")
+
+# DWLS will select genes on its own, so skip for the second gene list.
+
+
+norm.methods = c("LogNormalize","CLR","RC", "SCT")
+methods = c("SCDC","MuSiC","DWLS")
+de.list = list()
+de.list$top20 = de.genes
+de.list$top50 = de.genes50
+de.list$top100 = de.genes100
+de.list$top5 = de.genes5
+phenoData = sc.data@meta.data
+
+all.pred = list()
+
+for(norm in norm.methods){
+  if (norm == "SCT"){
+      # take the SCT corrected count values.
+    
+      tmp = SCTransform(sc.data)
+      tmp2 = SCTransform(all) 
+      
+      common.genes2 = intersect(rownames(tmp),rownames(tmp2))
+      
+      C.norm.sc = tmp@assays$SCT@counts[common.genes2,]
+      C.norm.bulk = tmp@assays$SCT@counts[common.genes2,]
+      
+      # filter for overlap to marker gene lists
+      tmp.markers = markers.pc[markers.pc$gene %in% common.genes2,]
+      tmp.de.list = lapply(de.list, intersect,common.genes2)
+      unlist(lapply(tmp.de.list,length))
+      
+  }else{
+    tmp = NormalizeData(sc.data, normalization.method  = norm)
+    C.norm.sc = tmp@assays$RNA@data[common.genes,]
+    tmp = NormalizeData(all, normalization.method =  norm)
+    C.norm.bulk = tmp@assays$RNA@data[common.genes,]
+    tmp.markers = markers.pc
+    tmp.de.list = de.list
+    unlist(lapply(tmp.de.list,length))
+  }
+  for (method in methods){
+    if (method == "MuSiC" & norm == "SCT") { next }
+    for (deg in names(de.list)){
+      if (deg != names(de.list)[1] & method == "DWLS") { next } # only run DWLS once.
+      
+      STRING = paste(c(method,norm,deg), collapse = "_")
+      print(STRING)
+      outfile = file.path(outdir,paste(STRING,"csv", sep = "."))
+      if (file.exists(outfile)){
+        all.pred[[STRING]]=read.csv(outfile)
+      }else{
+        res = Deconvolution(C.norm.bulk, C.norm.sc, method, phenoDataC = phenoData, path = outdir, STRING = STRING, de.genes = tmp.de.list[[deg]], markers = tmp.markers)
+        write.csv(res,file = outfile)
+        all.pred[[STRING]]=res
+      }
+    }
+  }
+}
+
+
+```
+
+Music with SCT gives error, skip for now.:
+
+```
+Error in h(simpleError(msg, call)) : 
+  error in evaluating the argument 'x' in selecting a method for function 't': system is computationally singular: reciprocal condition number = 5.32474e-24
+```
+
+## Plot results
+
+```{r}
+# color scale
+
+indir = "../../scRNAseq/results/zhuang_analysis/oct12/"
+anno <- readxl::read_xlsx(file.path(indir, "s5_cell_types_for_each_cluster_manually_updated.xlsx"),
+    sheet = 1)
+
+# remove Basal-IV from df
+anno = anno[anno$CellType != "Basal-IV",]
+# add Neutrophil info.
+anno = rbind(anno,c(27,"Neutrophil","Neutrophil","","Neutrophil"))
+
+anno = anno[order(anno$MainCellTypes,anno$CellType),]
+
+anno$Color = NA
+anno[grepl("Basal", anno$CellType),"Color"] = colorRampPalette(c("green", "darkgreen"))(3)
+anno[grepl("Spinous", anno$CellType),"Color"] = colorRampPalette(c("lightblue", "darkblue"))(3)
+anno[grepl("Granular", anno$CellType),"Color"] = c("cyan", "cyan3")
+anno[grepl("FB", anno$CellType),"Color"] = colorRampPalette(c("pink", "purple3"))(4)
+anno[anno$CellType %in% c("LC","LE","PC-vSMC","MEL","Schwann","VE"),"Color"] = colorRampPalette(c("grey82", "gray30"))(6)
+anno[anno$CellType == "Neutrophil","Color"] = "magenta"
+anno[is.na(anno$Color),"Color"] = colorRampPalette(c("yellow", "red"))(8)
+
+ct.cols = anno$Color
+names(ct.cols) = anno$CellType
+```
+
+
+```{r, fig.height=8}
+sample.order = colnames(all)[order(all$Tech, all$Condition)]
+sample.cols = factor(all@meta.data[sample.order,"Condition"])
+
+for (dname in names(all.pred)){
+  pred = all.pred[[dname]]
+  # reorder sample names as factor
+  pred$tissue = factor(pred$tissue, levels = sample.order)
+  p5 = ggplot(pred, aes(x = tissue, y = observed_values, fill = CT)) + 
+    geom_bar(position = "fill",  stat = "identity") + scale_fill_manual(values = ct.cols) + 
+    theme(axis.text.x = element_text(angle = 45, hjust = 1, colour = sample.cols)) + ggtitle(dname)
+  print(p5)
+  
+}
+
+
+```
+
+
+### Session info
+
+```{r}
+sessionInfo()
+```

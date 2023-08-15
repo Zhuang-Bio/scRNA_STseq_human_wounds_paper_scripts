@@ -1,0 +1,376 @@
+---
+title: "Diabetic foot ulcers"
+author: "Zhuang Liu"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true #add a table of contents (TOC)
+    toc_depth: 3 #headers' level in the toc
+    toc_float: true #toc visible even when scrolled
+    theme: lumen
+    highlight: tango
+    code_folding: show
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.align='center', fig.width=12, fig.height = 6, warning=FALSE, message=FALSE)
+```
+
+Download the data from Theocharidis et al. paper (GSE165816) https://www.nature.com/articles/s41467-021-27801-8 
+
+```{r warning=FALSE, message=FALSE}
+library(Seurat)
+library(SeuratObject)
+library(SeuratDisk)
+library(tidyverse)
+library(patchwork)
+library(sctransform)
+library(harmony)
+```
+
+
+# 1. load the data
+## 1.1 Quality control
+```{r eval=TRUE}
+inteData <- readRDS("step1_diabetic_foot_ulcer_skin_integrated_harmony.rds")
+
+DimPlot(inteData, group.by = "SCT_snn_res.1", label = T)
+# re-annotate the cell clusters
+anno.cl <- list()
+anno.cl$HE_Fibro = c(12) #MMP3, MMP1, CHI3L2, CHI3L1, TNFAIP6
+anno.cl$FB_I_III_DFU = c(2,8,25) #ASPN, POSTN, WISP2, IGFBP6, COMP, APCDD1, PI16, ELN
+anno.cl$FB_II_DFU = c(1,18) #APOD, CXCL14, C3, APOE, C2orf40
+anno.cl$NKT_Lympho = c(5) #CD69, IL32, CD52, IL7R, PTPRC, NKG7
+anno.cl$M1_Macro = c(11) #IL1B,EREG,
+anno.cl$M2_Macro = c(9) #C1QA, C1QB, CD14, CD163
+anno.cl$B_Lympho = c(23) #CD79A,MS4A1
+anno.cl$VasEndo_art = c(16) #"IGFBP3","HEY1","SEMA3G"
+anno.cl$VasEndo_ven = c(3) #RGCC
+anno.cl$LymphEndo = c(21)
+anno.cl$SMC2 = c(15) #MKI67, CENPF
+anno.cl$SMC1 = c(0,4,7,13,24)
+anno.cl$Melano_Schwann = c(19) #DCT, SOX10, SOX2
+anno.cl$Mast = c(20) #TPSAB1, MS4A2
+anno.cl$Sweat_Seba = c(17) #DCD, SCGB2A2, MUCL1, KRT19
+anno.cl$OtherKera = c(14,22) #KRT17, KRT6B, KRT6A, S100A2, KRT16
+anno.cl$BasalKera = c(10) #COL17A1, KRT5
+anno.cl$DiffKera = c(6) #KRT1, KRT10, KRT16, KRT6A
+
+trans = rep(names(anno.cl), times = unlist(lapply(anno.cl, length)))
+names(trans) = unlist(anno.cl)
+inteData$CellType = trans[as.character(inteData$SCT_snn_res.1)]
+#DimPlot(inteData, group.by = "SCT_snn_res.1", cols = ct.cols, label = T)
+DimPlot(inteData, group.by = "CellType", label = T) + ggtitle("") + NoLegend()
+
+fac_levs <- c("BasalKera", "DiffKera", "OtherKera", "Sweat_Seba", 
+              "HE_Fibro", "FB_I_III_DFU", "FB_II_DFU", "SMC1", "SMC2",
+              "M1_Macro", "M2_Macro", "B_Lympho", "NKT_Lympho", 
+              "LymphEndo", "VasEndo_art", "VasEndo_ven", "Melano_Schwann", "Mast")
+ct.cols <- c("#d94701", "#fdae61", "#fd8d3c", "#35978f", 
+             "#0570b0", "#33A02C", "#72BF5A", "#B2DF8A", "#3690c0", 
+             "#f768a1", "#d4b9da", "#92c5de", "#d1e5f0",
+             "#c0a700", "#1a9850", "#fb9a99", "#8d4720", "#fdbe85"
+             )
+names(ct.cols) <- fac_levs
+
+inteData$CellType <- factor(inteData$CellType, levels = fac_levs)
+DimPlot(inteData, group.by = "CellType", label = T, cols = ct.cols) + ggtitle("") + NoLegend()
+
+DefaultAssay(inteData) <- "RNA"
+inteData <- DietSeurat(inteData, assays = "RNA")
+
+table(inteData$CellType)
+
+# extract the otherEndo-related clusters
+DFU_skin <- subset(inteData, subset = CellType == "NKT_Lympho" | CellType == "B_Lympho")
+DFU_skin@meta.data <- droplevels(DFU_skin@meta.data)
+DFU_skin$SCT_snn_res.0.8 <- NULL
+DFU_skin$SCT_snn_res.1 <- NULL
+DFU_skin$seurat_clusters <- NULL
+DFU_skin$SCT_snn_res.0.5 <- NULL
+DFU_skin$nCount_SCT <- NULL
+DFU_skin$nFeature_SCT <- NULL
+
+rm(inteData);gc()
+```
+
+## 1.2 Wound KC data
+```{r}
+output_path <- "/Users/zhuliu/Desktop/scRNA_STseq/proj_10X_woundhealing/03_results/01-Seurat-PreAnalysis/02_Seurat_BatchCorrection/s5_Seurat_subImmu_LymphoidCells/"
+lym_sub <- readRDS(paste0(output_path, "s1_clean_immu_lymphoid_newUMAP.rds"))
+
+# re-annotate the cell clusters
+fac_levs <- c("Treg", "Th", "ILCs", "Tc", 
+              "ILC1/NK", "NK", "Ttol", 
+              "Plasma", "Bcell")
+
+current_cluster_ids <- c(5, 0, 1, 7, 
+                         3, 2, 4,
+                         6, 8) # List of current cluster IDs
+tmp <- plyr::mapvalues(x=lym_sub$SCT_snn_res.0.5, from=current_cluster_ids, to=fac_levs)
+
+lym_sub$upCellTypes <- tmp
+lym_sub$upCellTypes <- factor(lym_sub$upCellTypes, levels = fac_levs)
+Idents(lym_sub) <- lym_sub$upCellTypes
+
+# use new colors
+ct.cols <- c('#807dba','#9970ab','#810f7c', '#41ae76', 
+             '#74add1', '#8dd3c7','#76d72f',
+             '#f768a1', '#fdb462'
+)
+
+names(ct.cols) <- fac_levs
+
+DimPlot(lym_sub, group.by = "upCellTypes", cols = ct.cols)
+lym_sub <- DietSeurat(lym_sub, assays = "RNA")
+```
+
+
+# 2. Integrate the DFU skin data with lym_sub data
+```{r eval=TRUE}
+# DFU skin integration using the donor as the batch effect, 
+# while the lym_sub data using each sample as the batch effect
+DefaultAssay(DFU_skin) = "RNA"
+DFU_skin <- DietSeurat(DFU_skin, assays = "RNA")
+
+# check the overlapped genes and keep the overlapped genes
+overgene <- intersect(rownames(DFU_skin), rownames(lym_sub))
+length(overgene)
+
+DFU_skin <- DFU_skin[overgene, ]
+lym_sub <- lym_sub[overgene, ]
+
+# integrate based on sample names. For lym_sub data, use sample ID, 
+# while healthy adult data, use each donor as mentioned in the paper
+DFU_skin$Project="DFU"
+DFU_skin$oldSample=DFU_skin$Sample
+DFU_skin$Sample=DFU_skin$Donor1
+DFU_skin$CellType=DFU_skin$CellType
+
+lym_sub$Project="Woundhealing"
+lym_sub$Sample=lym_sub$orig.ident
+lym_sub$CellType = lym_sub$upCellTypes
+```
+
+
+# 3. Prepare data for integration
+```{r eval=TRUE}
+all.DFU = SplitObject(DFU_skin, split.by = "Sample")
+rm(DFU_skin);gc()
+# normalize and identify variable features for each dataset independently
+all.DFU <- lapply(X = all.DFU, FUN = function(x) {
+    x <- NormalizeData(x)
+    x <- CellCycleScoring(x, s.features = cc.genes.updated.2019$s.genes, g2m.features = cc.genes.updated.2019$g2m.genes, set.ident = F)
+})
+for (i in seq_along(all.DFU)) {
+  all.DFU[[i]]$CC.Difference <- all.DFU[[i]]$S.Score - all.DFU[[i]]$G2M.Score
+}
+
+
+all.lym_sub = SplitObject(lym_sub, split.by = "Sample")
+rm(lym_sub);gc()
+all.lym_sub <- lapply(X = all.lym_sub, FUN = function(x) {
+    x <- NormalizeData(x)
+    x <- CellCycleScoring(x, s.features = cc.genes.updated.2019$s.genes, g2m.features = cc.genes.updated.2019$g2m.genes, set.ident = F)
+})
+for (i in seq_along(all.lym_sub)) {
+  all.lym_sub[[i]]$CC.Difference <- all.lym_sub[[i]]$S.Score - all.lym_sub[[i]]$G2M.Score
+}
+
+alldata = append(all.DFU, all.lym_sub)
+rm(all.DFU, all.lym_sub)
+gc(verbose = F)
+
+alldata <- lapply(X = alldata, FUN = SCTransform, method = "glmGamPoi", vars.to.regress = c("CC.Difference"))
+```
+
+
+# 4. Run harmony, clustering, marker genes
+```{r eval=TRUE}
+# Run harmony using SCTransform
+options(future.globals.maxSize = 100000 * 1024^2) 
+features <- SelectIntegrationFeatures(object.list = alldata, nfeatures = 4000)
+#anno <- readRDS("humanAnnotation.rds")
+
+alldata <- PrepSCTIntegration(object.list = alldata, anchor.features = features)
+inteData <- merge(alldata[[1]], y = c(alldata[2:length(alldata)]), merge.data = TRUE)
+VariableFeatures(inteData) <- features
+rm(alldata);gc()
+
+inteData <- RunPCA(inteData, npcs = 40, assay = "SCT")
+ElbowPlot(inteData, ndims = 40)
+table(inteData$Sample)
+inteData <- RunHarmony(inteData, assay.use = "SCT", reduction = "pca", dims.use = 1:30, group.by.vars = "Sample", plot_convergence = TRUE)
+
+inteData <- RunUMAP(inteData, dims = 1:30, assay = "SCT", reduction = "harmony")
+DimPlot(inteData, group.by = "Sample") + NoAxes()
+
+inteData = FindNeighbors(inteData, dims = 1:30, reduction = "harmony", k.param = 30)
+inteData = FindClusters(inteData, resolution = 0.5)
+inteData = FindClusters(inteData, resolution = 0.8)
+inteData = FindClusters(inteData, resolution = 0.3)
+inteData = FindClusters(inteData, resolution = 1)
+DimPlot(inteData, group.by = "SCT_snn_res.1", label = T)
+DimPlot(inteData, group.by = "SCT_snn_res.0.8", label = T)
+DimPlot(inteData, group.by = "SCT_snn_res.0.5", label = T)
+DimPlot(inteData, group.by = "SCT_snn_res.0.3", label = T)
+
+DimPlot(inteData, group.by = "SCT_snn_res.0.3", label = T) +
+  DimPlot(inteData, group.by = "CellType", label = T)
+
+DimPlot(inteData, group.by = "SCT_snn_res.0.5", label = T) +
+  DimPlot(inteData, group.by = "CellType", label = T)
+
+DimPlot(inteData, group.by = "SCT_snn_res.0.8", label = T) +
+  DimPlot(inteData, group.by = "CellType", label = T)
+
+DimPlot(inteData, group.by = "SCT_snn_res.0.8", label = T, split.by = "Condition")  
+DimPlot(inteData, group.by = "CellType", label = T, split.by = "Condition")
+
+DimPlot(inteData, group.by = "CellType", label = T, split.by = "Project")
+FeaturePlot(inteData, features = c("MKI67"), cols = c("grey90", "red"))
+table(inteData$SCT_snn_res.0.8, inteData$Condition)
+
+#saveRDS(inteData, "step8_DFU_Wound_Lymphoid.rds")
+
+
+# Find markers
+Idents(inteData) <- "SCT_snn_res.0.5" 
+table(inteData$SCT_snn_res.0.5)
+markers2 <- FindAllMarkers(
+  inteData,
+  only.pos = TRUE,
+  min.pct = 0.25,  #min.pct = 0.5, logfc.threshold = 0.5,
+  logfc.threshold = 0.3,
+  test.use = "MAST") 
+cluster_markers_anno2 <- markers2 %>% arrange(cluster, desc(avg_log2FC))
+data.table::fwrite(cluster_markers_anno2, "step8_DFU_Wound_Lymphoid_mg0.5.txt", sep="\t")
+
+# Find markers
+Idents(inteData) <- "SCT_snn_res.0.8" 
+table(inteData$SCT_snn_res.0.8)
+markers1 <- FindAllMarkers(
+  inteData,
+  only.pos = TRUE,
+  min.pct = 0.25,  #min.pct = 0.5, logfc.threshold = 0.5,
+  logfc.threshold = 0.3,
+  test.use = "MAST") 
+cluster_markers_anno1 <- markers1 %>% arrange(cluster, desc(avg_log2FC))
+data.table::fwrite(cluster_markers_anno1, "step8_DFU_Wound_Lymphoid_mg0.8.txt", sep="\t")
+```
+
+
+# 5. re-annotate clusters
+```{r eval=TRUE}
+rm(list = ls())
+inteData <- readRDS("step8_DFU_Wound_Lymphoid.rds")
+DefaultAssay(inteData) <- "RNA"
+inteData <- NormalizeData(inteData)
+mg05 <- data.table::fread("step8_DFU_Wound_Lymphoid_mg0.5.txt")
+mg08 <- data.table::fread("step8_DFU_Wound_Lymphoid_mg0.8.txt")
+mg08$cluster <- factor(mg08$cluster)
+table(inteData$SCT_snn_res.0.8, inteData$Condition)
+
+DimPlot(inteData, group.by = "CellType", split.by = "Project", label = T)
+FeaturePlot(inteData, features = c("MMP9", "DAB2", "VEGFA"), cols = c("grey90", "red"), split.by = "Condition") 
+FeaturePlot(inteData, features = c("CD3D", "KLRB1", "CD4", "CD8A",
+                                   "CD3G", "KLRD1", "CD40LG", "CD8B"), cols = c("grey90", "red"), ncol = 4) 
+
+# re-annotate the cell clusters
+anno.cl <- list()
+anno.cl$Treg = c(3) 
+anno.cl$Th = c(0) 
+anno.cl$ILCs = c(1,8) 
+anno.cl$Tc = c(7) 
+anno.cl$ILC1_NK = c(6,11) 
+anno.cl$NK = c(4) 
+anno.cl$Ttol = c(2,5) 
+anno.cl$Plasma = c(9) 
+anno.cl$Bcell = c(10) 
+
+
+trans = rep(names(anno.cl), times = unlist(lapply(anno.cl, length)))
+names(trans) = unlist(anno.cl)
+inteData$newCellType = trans[as.character(inteData$SCT_snn_res.0.8)]
+DimPlot(inteData, group.by = "newCellType", label = T) + ggtitle("newModi_CT")
+DimPlot(inteData, group.by = "newCellType", label = T, split.by = "Condition") + ggtitle("newModi_CT")
+table(inteData$newCellType, inteData$Condition)
+#saveRDS(inteData, "step4_DFU_Wound_inteKC.rds")
+```
+
+
+# 6. Cell proportion analysis (Each bar filled with celltype represents each condition)
+```{r}
+# step 1. Samples divided into cell types and their numbers
+sm.tol <- table(inteData$Sample) %>% as.data.frame() %>% setNames(c("Sample", "TotalNumber"))
+
+step1 <- table(inteData$Sample, inteData$newCellType) %>% as.data.frame() %>% setNames(c("Sample", "CellType", "Freq"))
+step1$CellType <- as.character(step1$CellType) 
+step1 <- step1 %>% filter(CellType != "Other")
+
+# step 2. calculate the proportion of each cell type for each individual
+step2 <- step1 %>% left_join(., sm.tol, by="Sample") %>% distinct() %>% 
+  mutate(Prop=Freq/TotalNumber)
+
+# step 3. calculate the total normalized proportions of each cell type per condition
+df.group <- step2 %>% mutate(Sample = gsub("H[0-9]$", "H", Sample)) %>% 
+  mutate(Sample = gsub("^PWH[0-9]{2}", "", Sample)) %>% 
+  group_by(Sample, CellType) %>% summarise(Freq=sum(Prop)) %>% 
+  ungroup() %>% group_by(Sample) %>% 
+  mutate(Freq_new = Freq/sum(Freq), lbl = scales::percent(Freq_new)) %>% ungroup()
+
+df.group$Sample <- factor(df.group$Sample,  levels = c("H", "DFU_H", "DFU_NH", "D0", "D1", "D7", "D30"))
+df.group$CellType <- factor(df.group$CellType, levels = fac_levs)
+df.group <- df.group %>% dplyr::filter(Sample %in% c("DFU_NH", "DFU_H", "H"))
+p_cp_5 <- ggplot(df.group, aes(x = Sample, y = Freq_new, fill = CellType)) +
+  geom_bar(position = "fill", stat = "identity") +
+  scale_fill_manual(values = ct.cols) + 
+  xlab('') +
+  scale_y_continuous(breaks = seq(0, 1, .2), 
+                     expand = c(0, 0.01),
+                     labels = c("0%", "20%", "40%", "60%", "80%", "100%"),
+                     name = 'Percentage') +
+  #geom_text(aes(label = lbl), 
+  #          size = 4, 
+  #          position = position_stack(vjust = 0.5)) +
+  theme_bw() +
+  theme(
+    panel.grid.major.x = element_blank(),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    strip.background = element_blank(),
+    axis.text.x = element_text(size = 14, color = "black", angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 14, color = "black"),
+    axis.title.y = element_text(size = 16, color = "black"),
+    legend.position = "right",
+    legend.text = element_text(size = 12, color = "black")
+  ) 
+p_cp_5
+
+pdf("step8_DFU_Wound_Lymphoid_cellproportion.pdf", useDingbats = F, width = 3.5, height = 4)
+p_cp_5
+dev.off()
+
+
+# check the significance
+step2_sig <- step2 %>% 
+  mutate(Group = gsub("H[0-9]$", "H", Sample)) %>% 
+  mutate(Group = gsub("^PWH[0-9]{2}", "", Group)) %>% 
+  dplyr::filter(CellType %in% c("Bcell")) %>% # choose the cell type
+  dplyr::filter(Group %in% c("DFU_NH", "DFU_H")) # choose the pair-wise groups
+  dplyr::filter(Group %in% c("H", "DFU_H")) # choose the pair-wise groups
+
+test.quasi = glm(formula = Prop ~ Group, data = step2_sig, family=quasibinomial)
+print(summary(test.quasi))
+anova(test.quasi, test = "LRT")$`Pr(>Chi)`[2]
+#pav_tot_val <- anova(test.quasi, test = "LRT")$`Pr(>Chi)`[2]
+```
+
+
+# SessionInfo
+```{r}
+sessionInfo()
+```
+

@@ -1,0 +1,340 @@
+---
+title: "Sub-clustering of Fibroblasts"
+author: "Zhuang Liu"
+date: "30/11/2021 Updated: `r Sys.Date()`"
+output:
+  html_document:
+    toc: true #add a table of contents (TOC)
+    toc_depth: 3 #headers' level in the toc
+    toc_float: true #toc visible even when scrolled
+    theme: lumen
+    highlight: tango
+    code_folding: hide
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.align='center', fig.width = 12, warning = FALSE, message = FALSE)
+```
+
+```{r warning=FALSE, message=FALSE}
+library(Seurat)
+library(SeuratObject)
+library(SeuratDisk)
+library(tidyverse)
+library(magrittr)
+library(ggplot2)
+library(patchwork)
+library(harmony)
+```
+
+####################################################
+# Step. Plots
+####################################################
+## S. Load the data
+```{r fig.width=8, fig.height=6}
+hswound.immu.com <- readRDS("s1_clean_immu_myeloid.rds") 
+
+FeaturePlot(hswound.immu.com, features = c("CLEC4C", "NRP1", "IL3RA", "PTPRC", "CCR10", "IRF7", "ITGAM", "ITGAX", "ANPEP", "CD33"), cols = c("grey90", "red"))
+
+DotPlot(hswound.immu.com, features = c("CLEC4C", "NRP1", "CLEC9A", "CCR9", "CD209"), group.by = "SCT_snn_res.0.5")
+
+newmt <- data.table::fread("/Users/zhuliu/Desktop/sc st/plotting scripts/Figure 1/allcombined_wounds_newAnnotation_metadata.txt")
+
+mt <- colnames(hswound.immu.com) %>% as.data.frame() %>% rename("barcode" = ".") %>% 
+  left_join(., newmt, by=c("barcode" = "barcode"))
+
+hswound.immu.com$upCellType <- mt$newCellTypes
+
+p1 <- DimPlot(hswound.immu.com, reduction = "umap", group.by='SCT_snn_res.0.5', label=TRUE, label.size = 8) + NoAxes()
+p1 + DimPlot(hswound.immu.com, reduction = "umap", group.by='upCellType', label = T)
+
+FeaturePlot(
+  hswound.immu.com,
+  features=c("CD1C", "IRF4", "ID2", ""),
+  combine=T, cols = c("gray","red")
+)
+
+table(hswound.immu.com$SCT_snn_res.0.5)
+hswound.immu.com$fill <- ifelse(hswound.immu.com$SCT_snn_res.0.5 %in% c(7, 9, 10), "Yes", "No")
+newhswound <- subset(hswound.immu.com, subset = fill == "No")
+newhswound@meta.data <- droplevels(newhswound@meta.data)
+
+newhswound <- RunUMAP(object = newhswound, assay = "SCT", reduction = "harmony", dims = 1:30, n.neighbors = 30, min.dist = 0.3, spread = 1.5, learning.rate = 1)
+
+p2 <- DimPlot(newhswound, reduction = "umap", group.by='SCT_snn_res.0.5', label=F, label.size = 8) + NoAxes()
+p2 + DimPlot(newhswound, reduction = "umap", group.by='upCellType', label = T)
+```
+
+## FeaturePlot (Single)
+```{r}
+canonical_markers <- c("CD14", "HSPA6", "HSPA1B", "LTB", "ACOT7", "IGKC", "AREG","H1-5", "PCLAF") 
+
+#"THBS1", "TNFAIP6", "IL1B", "OLR1", "MMP9", "MMP19", "SDS", "CCL13", "CCL18", "RNASE1", "C1QB", "DAB2", "SERPINB2", "CCL20", "APOE", "PHLDA1", "CCL3", "FABP4", "SPP1", "APOC1"
+
+#"CLEC9A", "WDFY4","CCR7","IL1R2", "IL23A", "CLEC10A", "NFKBID", "LAMP3", "CCL19", "CCL22", "CD207", "CD1A", "FCGBP"
+
+plot_list <- FeaturePlot(
+  hswound.immu.com,
+  features=unlist(canonical_markers),
+  combine=FALSE, cols = c("gray","red")
+)
+
+# apply theme to each feature plot
+for(i in 1:length(plot_list)){
+  plot_list[[i]] <- plot_list[[i]] + NoLegend() + NoAxes()
+}
+
+wrap_plots(plot_list, ncol = 9)
+```
+
+## Dotplot
+```{r eval=TRUE}
+canonical_markers <- c("ASPN", "TAGLN", "LEPR", "KLF4", "HSPA6", "MMP11",
+                       "APOD", "IGF1", "CCN5", "SFRP4", "CCL19", "APOE",
+                       "H4C3", "H1-5", "G0S2", "PTX3", "COL4A1", "COL5A1",
+                       "COCH", "CRABP1")
+fac_levs <- seq(0,9)
+hswound.immu.com$SCT_snn_res.0.5 <- factor(hswound.immu.com$SCT_snn_res.0.5, levels = rev(fac_levs))
+
+DotPlot(hswound.immu.com, features = canonical_markers, 
+        group.by = "SCT_snn_res.0.5", cols = c("lightgrey", "red"), 
+        dot.scale = 4, col.min = 0, dot.min = 0.1
+        ) + theme(axis.text.x = element_text(angle = 45, hjust = 1)) + labs(x="", y="")
+
+
+plot_list <- FeaturePlot(
+  hswound.immu.com,
+  features=unlist(canonical_markers),
+  combine=FALSE, cols = c("gray","red")
+)
+
+# apply theme to each feature plot
+for(i in 1:length(plot_list)){
+  plot_list[[i]] <- plot_list[[i]] + NoLegend() + NoAxes()
+}
+
+wrap_plots(plot_list, ncol = 4)
+```
+
+## cell proportion normalized by dermis and epidermis separately
+```{r}
+hswound.immu.com@active.ident <- hswound.immu.com$SCT_snn_res.1
+clusters <- unique(hswound.immu.com@meta.data[["SCT_snn_res.1"]])
+
+# step 1. 12 individuals divided into 27 cell types and their numbers
+step1 <- table(hswound.immu.com$orig.ident, hswound.immu.com$SCT_snn_res.1) %>% as.data.frame()
+
+step1$sepa <- ifelse(step1$Var2 %in% c("9"), "Epidemis", "Dermis")
+
+# step 2. read the cell numbers of dermis and epidermis
+step2 <- data.table::fread("../s1_Seurat_allSample_harmony/all_epidermis_dermis_perIndi_220613.txt")
+
+# step 3. calculate the proportion of each cell type for each individual
+step3 <- step1 %>% left_join(., step2, by=c("sepa"="sepa", "Var1"="Var1")) %>% distinct() %>% 
+  mutate(Prop=Freq/a_sum)
+
+# step 4. calculate the total normalized proportions of each cell type 
+step4 <- step3 %>% group_by(Var2) %>% summarise(totalP=sum(Prop))
+
+step5 <- step3 %>% left_join(., step4) %>% mutate(Freq_n = Prop/totalP)
+
+df.group <- step5 %>% mutate(Sample = gsub("PWH..", "", Var1)) %>% group_by(Var2, Sample) %>% 
+  summarise(Freq = sum(Freq_n)) %>% ungroup()
+
+df.group$Cluster <- df.group$Var2
+df.group$Sample <- gsub("D0", "Skin", df.group$Sample)
+df.group$Sample <- gsub("D1", "Wound1", df.group$Sample)
+df.group$Sample <- gsub("D7", "Wound7", df.group$Sample)
+df.group$Sample <- gsub("D30", "Wound30", df.group$Sample)
+df.group$Sample <- factor(df.group$Sample, levels = c("Skin", "Wound1", "Wound7", "Wound30"))
+
+df.group$Condition <- df.group$Sample
+df.group.f <- df.group
+
+p2 <- ggplot(df.group.f, aes(x = Cluster, y = Freq, fill = Condition)) +
+  geom_bar(position = "stack", stat = "identity") +
+  scale_fill_brewer(palette = "Dark2") + # Paired or Set3 maximum variable = 12
+  xlab('') +
+  scale_y_continuous(breaks = seq(0, 1, 0.1),
+                     expand = c(0, 0.01),
+                     name = 'Percentage') +
+  geom_hline(yintercept=0.25, linetype="dashed", color = "black") +
+  geom_hline(yintercept=0.5, linetype="dashed", color = "black") +
+  geom_hline(yintercept=0.75, linetype="dashed", color = "black") +
+  theme_bw() +
+  theme(
+    panel.grid.major.x = element_blank(),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    strip.background = element_blank(),
+    #panel.border = element_rect(size = 0.35),
+    axis.ticks = element_blank(),
+    axis.text.x = element_text(size = 12, color = "black", angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 12, color = "black"),
+    axis.title.y = element_text(size = 16, color = "black"),
+    legend.position = "right",
+    legend.text = element_text(size = 10, color = "black")
+  )
+p2
+```
+
+```{r}
+hswound.immu.com@active.ident <- hswound.immu.com$SCT_snn_res.1
+clusters <- unique(hswound.immu.com@meta.data[["SCT_snn_res.1"]])
+df <- data.frame()
+for(i in 1:length(clusters)){
+  SmCell_sum <- table(hswound.immu.com$orig.ident)
+  tmp.df1 <- hswound.immu.com@meta.data %>% subset(SCT_snn_res.1 == clusters[i]) %>% select(orig.ident) %>% table()
+  if(length(tmp.df1) == 12){
+    #First normalize the total cell counts per sample
+    cur_df <- as.data.frame(tmp.df1 / SmCell_sum)
+    colnames(cur_df) <- c("Sample", "Freq")
+    #Calculate the normalized proportion 
+    cur_df$Freq <- cur_df$Freq * 1/(sum(cur_df$Freq))
+    cur_df$Cluster <- clusters[i]
+    df <- rbind(df, cur_df)
+  } else {
+    #print(i);print(tmp.df1)
+    #only include the matched samples
+    match.sample <- SmCell_sum[names(SmCell_sum) %in% names(tmp.df1)]
+    #print(match.sample)
+    #First normalize the total cell counts per sample
+    cur_df <- as.data.frame(tmp.df1 / match.sample)
+    colnames(cur_df) <- c("Sample", "Freq")
+    #Calculate the normalized proportion 
+    cur_df$Freq <- cur_df$Freq * 1/(sum(cur_df$Freq))
+    cur_df$Cluster <- clusters[i]
+    df <- rbind(df, cur_df)
+  }
+}
+
+df.group <- df %>% mutate(Sample = gsub("PWH..", "", Sample)) %>% group_by(Cluster, Sample) %>% 
+  summarise(Freq = sum(Freq)) %>% mutate(Group = Sample) %>% ungroup()
+df.group$Group <- gsub("D0", "Skin", df.group$Group)
+df.group$Group <- gsub("D1", "Wound1", df.group$Group)
+df.group$Group <- gsub("D7", "Wound7", df.group$Group)
+df.group$Group <- gsub("D30", "Wound30", df.group$Group)
+
+df.group$Group <- factor(df.group$Group, levels = c("Skin", "Wound1", "Wound7", "Wound30"))
+#df.group$Cluster <- factor(df.group$Cluster, levels = fac_levs)
+df.group.f <- df.group[!df.group$Cluster %in% c(1,2,3,6,7),]
+df.group.f <- df.group
+ggplot(df.group.f, aes(x = Cluster, y = Freq, fill = Group)) +
+  geom_bar(position = "stack", stat = "identity") +
+  scale_fill_brewer(palette = "Dark2") + # Paired or Set3 maximum variable = 12
+  xlab('Cell Types') +
+  scale_y_continuous(breaks = seq(0, 1, 0.1),
+                     expand = c(0, 0),
+                     name = 'Percentage') +
+  geom_hline(yintercept=0.25, linetype="dashed", color = "black") +
+  geom_hline(yintercept=0.5, linetype="dashed", color = "black") +
+  geom_hline(yintercept=0.75, linetype="dashed", color = "black") +
+  theme_bw() +
+  theme(
+    panel.grid.major.x = element_blank(),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    strip.background = element_blank(),
+    #panel.border = element_rect(size = 0.35),
+    axis.ticks = element_blank(),
+    axis.text.x = element_text(size = 14, color = "black", angle = 45, vjust = 0.6),
+    axis.text.y = element_text(size = 12, color = "black"),
+    axis.title.y = element_text(size = 16, color = "black")
+  ) 
+
+```
+
+## prepare file for scvelo
+```{r}
+hswound.immu.com <- readRDS("s1_clean_immu_myeloid.rds") 
+hswound.immu.com <- hswound.krt.com
+
+hswound.immu.com <- RunUMAP(object = hswound.immu.com, assay = "SCT", reduction = "harmony", dims = 1:30, n.neighbors = 40, min.dist = 0.3, n.epochs = 500, spread = 1, learning.rate = 1)
+
+DimPlot(hswound.immu.com, group.by = "upCellTypes", label = F, cols = cl.colors) +
+  NoAxes() + ggtitle("")
+
+DefaultAssay(hswound.immu.com) <- "RNA"
+# save metadata table: (first change the data type of cell clusters)
+hswound.immu.com$nCount_SCT <- NULL
+hswound.immu.com$nFeature_SCT <- NULL
+hswound.immu.com$fill <- NULL
+hswound.immu.com$orig.ident <- as.character(hswound.immu.com$orig.ident)
+hswound.immu.com$Age <- as.character(hswound.immu.com$Age)
+hswound.immu.com$Condition <- as.character(hswound.immu.com$Condition)
+hswound.immu.com$SCT_snn_res.1.2 <- as.character(hswound.immu.com$SCT_snn_res.1.2)
+hswound.immu.com$SCT_snn_res.0.5 <- as.character(hswound.immu.com$SCT_snn_res.0.5)
+hswound.immu.com$SCT_snn_res.0.8 <- as.character(hswound.immu.com$SCT_snn_res.0.8)
+hswound.immu.com$SCT_snn_res.1 <- as.character(hswound.immu.com$SCT_snn_res.1)
+hswound.immu.com$seurat_clusters <- as.character(hswound.immu.com$seurat_clusters)
+hswound.immu.com$newMainCellTypes <- as.character(hswound.immu.com$newMainCellTypes)
+hswound.immu.com$newCellTypes <- as.character(hswound.immu.com$newCellTypes)
+hswound.immu.com$upCellTypes <- as.character(hswound.immu.com$upCellTypes)
+str(hswound.immu.com@meta.data)
+
+hswound.immu.com$barcode <- as.character(colnames(hswound.immu.com))
+hswound.immu.com$UMAP_1 <- hswound.immu.com@reductions$umap@cell.embeddings[,1]
+hswound.immu.com$UMAP_2 <- hswound.immu.com@reductions$umap@cell.embeddings[,2]
+write.csv(hswound.immu.com@meta.data, file='s4_scVelo_preparation/metadata.csv', quote=F, row.names=F)
+
+# write expression counts matrix
+library(Matrix)
+counts_matrix <- GetAssayData(hswound.immu.com, assay='RNA', slot='counts')
+writeMM(counts_matrix, file='s4_scVelo_preparation/counts.mtx')
+
+# write dimesnionality reduction matrix, pca and harmony
+write.csv(hswound.immu.com@reductions$pca@cell.embeddings, file='s4_scVelo_preparation/pca.csv', quote=F, row.names=F)
+
+write.csv(hswound.immu.com@reductions$harmony@cell.embeddings, file='s4_scVelo_preparation/harmony.csv', quote=F, row.names=F)
+
+# write gene names
+write.table(
+  data.frame('gene'=rownames(counts_matrix)),file='s4_scVelo_preparation/gene_names.csv',
+  quote=F,row.names=F,col.names=F)
+```
+
+## Check the doublet scores
+```{r}
+hswound.immu.com <- readRDS("s1_clean_immu_myeloid.rds") 
+
+doublet_scores <- data.table::fread("/Users/zhuliu/Desktop/scRNA_STseq/proj_10X_woundhealing/03_results/01-Seurat-PreAnalysis/02_Seurat_BatchCorrection/s1_Seurat_allSample_harmony/py_doublet_OriScores.txt")
+
+doublet_scores_f <- colnames(hswound.immu.com) %>% as.data.frame() %>% rename("ID" = ".") %>% left_join(., doublet_scores, by=c("ID" = "barcodename"))
+hswound.immu.com$doublet_scores <- doublet_scores_f$doublet_scores
+
+metrics <-  c("nCount_RNA", "nFeature_RNA", "S.Score", "G2M.Score", "percent.mt", "doublet_scores")
+
+p3 <- FeaturePlot(
+  hswound.immu.com,
+  features = metrics,
+  cols = c("gray","red"), combine = FALSE)
+p2_list <- lapply(p3, function(x) {x + NoAxes() + theme(text = element_text(size = 10))})
+cowplot::plot_grid(plotlist = p2_list, ncol = 3)
+
+VlnPlot(hswound.immu.com, features = metrics, group.by='SCT_snn_res.0.5', pt.size = 0, ncol = 2)
+
+FeaturePlot(
+  hswound.immu.com,
+  features = c("LYZ", "HLA-DRA", "CCR7", "PTPRC", "CD1A", "CD1C", "CD209", "FCER1A", "CD14"),
+  cols = c("gray","red"), combine = T, ncol = 3)
+
+DimPlot(hswound.immu.com, reduction = "umap", group.by='SCT_snn_res.0.8', label=TRUE, label.size = 8) +
+  DimPlot(hswound.immu.com, reduction = "umap", group.by='SCT_snn_res.0.5', label=TRUE, label.size = 8)
+table(hswound.immu.com$SCT_snn_res.0.5)
+
+
+Tcells <- readRDS("../s5_Seurat_subImmu_LymphoidCells/s1_clean_immu_lymphoid.rds")
+FeaturePlot(
+  Tcells,
+  features = c("LYZ", "HLA-DRA", "CCR7", "PTPRC"),
+  cols = c("gray","red"), combine = T)
+
+```
+
+
+# SessionInfo
+```{r}
+sessionInfo()
+```
