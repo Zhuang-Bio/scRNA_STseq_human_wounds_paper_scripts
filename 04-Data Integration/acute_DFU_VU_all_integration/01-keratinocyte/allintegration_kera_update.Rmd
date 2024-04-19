@@ -1,0 +1,677 @@
+---
+title: "integration of wound healing"
+author: "Zhuang Liu"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true #add a table of contents (TOC)
+    toc_depth: 3 #headers' level in the toc
+    toc_float: true #toc visible even when scrolled
+    theme: lumen
+    highlight: tango
+    code_folding: show
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.align='center', fig.width=12, fig.height = 6, warning=FALSE, message=FALSE)
+```
+
+```{r warning=FALSE, message=FALSE}
+library(Seurat)
+library(SeuratObject)
+library(SeuratDisk)
+library(tidyverse)
+library(patchwork)
+library(harmony)
+```
+
+
+# 1. Prepare wound data
+```{r}
+outname="KC"
+```
+
+# 2. Integrate the human and VU, DFU chronic wound data
+```{r eval=TRUE}
+# vu data and acute wound data
+vu_seu <- readRDS("../subCellTypeInte_acute_vu/allWound_acute_vu_integrated_KC.rds")
+DefaultAssay(vu_seu) = "RNA"
+vu_seu <- DietSeurat(vu_seu, assays = "RNA")
+vu_seu
+
+# DFU data
+hs_seu <- readRDS("../subCellTypeInte_acute_dfu/step4_DFU_Wound_inteKC.rds")
+hs_seu
+hs_seu <- subset(hs_seu, subset= Project == "DFU")
+DefaultAssay(hs_seu) = "RNA"
+hs_seu <- DietSeurat(hs_seu, assays = "RNA")
+
+# check the overlapped genes and keep the overlapped genes
+overgene <- intersect(rownames(vu_seu), rownames(hs_seu))
+length(overgene)
+
+vu_seu <- vu_seu[overgene, ]
+hs_seu <- hs_seu[overgene, ]
+
+# integrate based on orig.ident names
+#vu_seu$Project="VU"
+#vu_seu$CellType=vu_seu$CellType
+hs_seu$orig.ident=hs_seu$Donor1
+#hs_seu$Project="DFU"
+hs_seu$CellType=hs_seu$oldDFUCellType
+```
+
+# 3. sctransform normalization
+```{r eval=TRUE}
+all_seu <- merge(vu_seu, y = c(hs_seu),
+                project = "wounds")
+
+rm(vu_seu);rm(hs_seu);gc()
+
+alldata = SplitObject(all_seu, split.by = "orig.ident")
+alldata <- lapply(X = alldata, FUN = function(x) {
+  x <- NormalizeData(x)
+  x <- CellCycleScoring(x, s.features = cc.genes.updated.2019$s.genes, g2m.features = cc.genes.updated.2019$g2m.genes, set.ident = F)
+})
+for (i in seq_along(alldata)) {
+  alldata[[i]]$CC.Difference <- alldata[[i]]$S.Score - alldata[[i]]$G2M.Score
+}
+
+rm(all_seu)
+alldata <- lapply(X = alldata, FUN = SCTransform, method = "glmGamPoi", vars.to.regress = c("CC.Difference"))
+```
+
+
+# 4. Run harmony Clustering
+```{r eval=TRUE}
+# Run harmony using SCTransform
+options(future.globals.maxSize = 1000000 * 1024^2) 
+features <- SelectIntegrationFeatures(object.list = alldata, nfeatures = 4000)
+
+alldata <- PrepSCTIntegration(object.list = alldata, anchor.features = features)
+inteData <- merge(alldata[[1]], y = c(alldata[2:length(alldata)]), merge.data = TRUE)
+VariableFeatures(inteData) <- features
+rm(alldata);gc()
+
+inteData <- RunPCA(inteData, npcs = 50, assay = "SCT")
+ElbowPlot(inteData, ndims = 50)
+table(inteData$orig.ident)
+# RunHarmony parameter: assay.use only for Seurat V3
+inteData <- RunHarmony(inteData, #assay.use = "SCT", reduction = "pca", 
+		       dims.use = 1:30, 
+                       group.by.vars = "orig.ident", plot_convergence = TRUE)
+
+inteData <- RunUMAP(inteData, dims = 1:30, assay = "SCT", reduction = "harmony", n.neighbors = 40)
+DimPlot(inteData, group.by = "orig.ident") + NoAxes()
+
+inteData = FindNeighbors(inteData, dims = 1:30, reduction = "harmony", k.param = 40)
+inteData = FindClusters(inteData, resolution = 0.3)
+inteData = FindClusters(inteData, resolution = 1)
+inteData = FindClusters(inteData, resolution = 1.2)
+inteData = FindClusters(inteData, resolution = 0.5)
+inteData = FindClusters(inteData, resolution = 0.8)
+
+inteData$Condition <- factor(inteData$Condition, levels = c("Skin", "Wound1", "Wound7", "Wound30","H", "DFU_NH", "DFU_H", "NS", "VU"))
+
+DimPlot(inteData, group.by = "SCT_snn_res.1", label = T, raster=FALSE)
+DimPlot(inteData, group.by = "SCT_snn_res.0.5", label = T, raster=FALSE)
+DimPlot(inteData, group.by = "SCT_snn_res.0.8", label = T, raster=FALSE)
+DimPlot(inteData, group.by = "SCT_snn_res.0.8", label = T, split.by = "Condition", raster=FALSE)  
+DefaultAssay(inteData) <- "RNA"
+inteData <- NormalizeData(inteData)
+```
+
+
+# 5. CellType plotting
+```{r fig.width=12, fig.height=8}
+DimPlot(inteData, group.by = "Project", cols = c("#fc8d59", "#d8b365", "#5ab4ac"), raster=FALSE) 
+DimPlot(inteData, group.by = "Project", split.by = "Project", cols = c("#fc8d59", "#d8b365", "#5ab4ac"), raster=FALSE) 
+
+
+DimPlot(inteData, group.by = "CellType", label = T, split.by = "Project", raster=FALSE) + ggtitle("")
+DimPlot(inteData, group.by = "CellType", label = T, split.by = "Condition", ncol = 4, raster=FALSE) + ggtitle("") + NoLegend()
+```
+
+
+# 6. Data exporting
+```{r}
+saveRDS(inteData, file=paste0("allacuteWound_DFU_VU_inte", outname, ".rds"))
+
+# export the reduced results for quickly plotting
+inteData@reductions$pca@assay.used <- "RNA"
+inteData@reductions$harmony@assay.used <- "RNA"
+inteData@reductions$umap@assay.used <- "RNA"
+
+inteData <- DietSeurat(inteData, assays = "RNA", dimreducs = c("umap"))
+saveRDS(inteData, file=paste0("allacuteWound_DFU_VU_inte", outname, "_redu.rds"))
+```
+
+
+# manuscript plotting
+```{r eval=FALSE}
+#If you are using Seurat V5 but do not want to use the V5 Assay, 
+#you can set the option to "v3"
+options(Seurat.object.assay.version = 'v3')
+
+library(scCustomize)
+library(Seurat)
+library(SeuratObject)
+library(tidyverse)
+library(patchwork)
+library(ggplot2)
+
+inteData <- readRDS("allacuteWound_DFU_VU_inteKC.rds")
+inteData
+DimPlot(inteData, group.by = "Project", cols = c("#fc8d59", "#d8b365", "#5ab4ac"), raster=FALSE) 
+DimPlot(inteData, group.by = "Project", split.by = "Project", cols = c("#fc8d59", "#d8b365", "#5ab4ac"), raster=FALSE) 
+
+
+DimPlot(inteData, group.by = "CellType", label = T, split.by = "Project", raster=FALSE) + ggtitle("") + NoLegend()
+DimPlot(inteData, group.by = "CellType", label = T, split.by = "Condition", ncol = 4, raster=FALSE) + ggtitle("") + NoLegend()
+DimPlot_scCustom(inteData,  group.by = "CellType", 
+                 label = T, split.by = "Project", 
+                 raster=F, #pt.size = 1, 
+                 label.size = 4,
+                 num_columns = 3) & NoLegend()
+
+DefaultAssay(inteData) <- "SCT"
+inteData = FindClusters(inteData, resolution = 1.5)
+DimPlot_scCustom(inteData,  group.by = "SCT_snn_res.1.5", 
+                 label = T, split.by = "Project", 
+                 ggplot_default_colors =T,
+                 num_columns = 3) & NoLegend()
+DimPlot_scCustom(inteData,  group.by = "SCT_snn_res.1.5", 
+                 label = T, split.by = "Condition", 
+                 raster=FALSE, pt.size = 1, label.size = 4,ggplot_default_colors =T,
+                 num_columns = 3) & NoLegend()
+# remove some inconsistent clusters or doublets through checking some markers below
+inteData$fil <- ifelse(inteData$SCT_snn_res.1.5 %in% c(20,21,23,24,18), "keep", "no")
+inteData <- subset(inteData, subset = fil == "no")
+Idents(inteData) <- inteData$SCT_snn_res.1.2
+inteData@meta.data <- droplevels(inteData@meta.data)
+Cluster_Highlight_Plot(seurat_object = inteData, 
+                       cluster_name = c("16","17","18"), 
+                       highlight_color = c("navy","forestgreen", "red"),
+                       background_color = "lightgray")
+table(inteData$SCT_snn_res.1.2, inteData$Project)
+
+inteData$fil <- ifelse(inteData$SCT_snn_res.1.2 %in% c(16,17,18,21,22), "keep", "no")
+inteData <- subset(inteData, subset = fil == "no")
+inteData@meta.data <- droplevels(inteData@meta.data)
+Idents(inteData) <- inteData$SCT_snn_res.1.2
+
+### re-run the UMAP
+inteData <- RunUMAP(inteData, dims = 1:30, assay = "SCT", reduction = "harmony", n.neighbors = 40, n.epochs = 500)
+
+DimPlot_scCustom(inteData,  group.by = "SCT_snn_res.0.3", 
+                 label = T, split.by = "Project", 
+                 ggplot_default_colors =T,
+                 num_columns = 3) & NoLegend()
+DimPlot_scCustom(inteData,  group.by = "SCT_snn_res.0.8", 
+                 label = T, split.by = "Project", 
+                 ggplot_default_colors =T,
+                 num_columns = 3) & NoLegend()
+DimPlot_scCustom(inteData,  group.by = "SCT_snn_res.1", 
+                 label = T, split.by = "Project", 
+                 ggplot_default_colors =T,
+                 num_columns = 3) & NoLegend()
+DimPlot_scCustom(inteData,  group.by = "SCT_snn_res.1.2", 
+                 label = T, split.by = "Project", 
+                 ggplot_default_colors =T,
+                 num_columns = 3) & NoLegend()
+DimPlot_scCustom(inteData,  group.by = "SCT_snn_res.1.2", 
+                 label = T, split.by = "Condition", 
+                 raster=FALSE, label.size = 4, ggplot_default_colors =T,
+                 num_columns = 3) & NoLegend()
+
+DefaultAssay(inteData) <- "RNA"
+FeaturePlot(inteData, features = c("MMP1", "MMP3", "KRT6A", "KRT17", "FOSL1"))
+FeaturePlot(inteData, features=c('KRT17', 'KRT6B', 'KRT6A', 'S100A2', 'KRT16', "MMP1", "MMP3","TNFRSF12A", "FGFBP1", "MKI67"), 
+            cols = c("grey90", "red"))
+
+FeaturePlot_scCustom(inteData,  features = c("FOSL1"), split.by = "Condition", 
+                     num_columns = 3)
+FeaturePlot_scCustom(inteData,  features = c("COL1A2"), split.by = "Condition", 
+                     num_columns = 3)
+FeaturePlot_scCustom(inteData,  features = c("SOX9"), split.by = "Condition", 
+                     num_columns = 3)
+FeaturePlot_scCustom(inteData,  features = c("KRT77"), split.by = "Condition", 
+                     num_columns = 3)
+FeaturePlot_scCustom(inteData,  features = c("ADGRL3"), split.by = "Condition", 
+                     num_columns = 3)
+FeaturePlot_scCustom(inteData,  features = c("FLG"), split.by = "Condition", 
+                     num_columns = 3)
+
+FeaturePlot_scCustom(inteData,  features = c("KRT17"), split.by = "Condition", 
+                     num_columns = 3)
+
+
+DimPlot_scCustom(inteData,  group.by = "CellType", 
+                 label = T, split.by = "Project", 
+                 ggplot_default_colors =T,
+                 num_columns = 3) & NoLegend()
+DimPlot_scCustom(inteData,  group.by = "CellType", 
+                 label = T, split.by = "Condition", 
+                 raster=FALSE, label.size = 4, ggplot_default_colors =T,
+                 num_columns = 3) & NoLegend()
+Idents(inteData) <- inteData$CellType
+Cluster_Highlight_Plot(seurat_object = inteData, 
+                       cluster_name = c("Spi_III","Spi_mig","Bas_mig"), 
+                       highlight_color = c("red", "navy","forestgreen"),
+                       background_color = "lightgray")
+Cluster_Highlight_Plot(seurat_object = inteData, 
+                       cluster_name = c("Spi_I","Spi_II_a","Spi_II_b"), 
+                       highlight_color = c("red", "navy","forestgreen"),
+                       background_color = "lightgray")
+Idents(inteData) <- inteData$SCT_snn_res.0.8
+Cluster_Highlight_Plot(seurat_object = inteData, 
+                       cluster_name = c("11","5","8"), 
+                       highlight_color = c("red", "navy","forestgreen"),
+                       background_color = "lightgray")
+
+table(inteData$CellType, inteData$SCT_snn_res.1.2)
+
+# re-annotate the cell clusters based on 1.2
+anno.cl <- list()
+anno.cl$Bas_I = c(0,2,8) 
+anno.cl$Bas_prolif = c(10) 
+anno.cl$Bas_mig = c(11)
+anno.cl$Spi_I = c(1,6,12,14) 
+anno.cl$Spi_II_a = c(4,9) 
+anno.cl$Spi_II_b = c(3,5) 
+anno.cl$Spi_III = c(20) 
+anno.cl$Spi_mig = c(7,13) 
+anno.cl$Gra_I = c(15) 
+
+trans = rep(names(anno.cl), times = unlist(lapply(anno.cl, length)))
+names(trans) = unlist(anno.cl)
+mt <- inteData@meta.data
+mt$newCellType <- trans[as.character(mt$SCT_snn_res.1.2)]
+inteData$newCellType <- mt$newCellType
+table(inteData$newCellType)
+
+ct.cols <- c('#807dba','#9e9ac8','#ccebc5',
+             '#fe9929','#fec44f','#fee391',
+             '#fb8072','#b3de69','#fccde5')
+               
+# cell type proportion analysis
+fac_levs <- c("Bas_I", "Bas_prolif", "Bas_mig", "Spi_I", "Spi_II_a", "Spi_II_b", "Spi_III", "Spi_mig", "Gra_I")
+names(ct.cols) <- fac_levs
+inteData$newCellType <- factor(inteData$newCellType, levels = rev(fac_levs))
+top_repre_markers <- c("KRT15", "KRT31", "COL17A1", "ASS1", "POSTN", 
+                       "NUSAP1", "STMN1", "TOP2A", "MKI67", "CENPF",
+                       "MMP3", "MMP1", "AREG", "TNFRSF12A", "FGFBP1", "S100A2", "S100A10",
+                       "ITPRIPL2", "NRARP", "MT1X", "MT1G", "APOE",
+                       "CHP2", "KCNK7", "DEFB1", 
+                       "THEM5", "DSC1", "KRTDAP",
+                       "TNFAIP2", "IRF1", "TNFSF10", "NFKBIA", "CCL27",
+                       "KRT6A", "KRT6B", "KRT6C", "KRT17", "KRT16", "S100A7", "S100A8", "S100A9",
+                       "SLURP2", "KLK7", "CNFN", "FLG", "LORICRIN")
+
+#----Dotplot plotting----#
+plot_marker <- DotPlot(inteData, features = top_repre_markers, 
+                       group.by = "newCellType", cols = c("white", "#cb181d"), 
+                       dot.scale = 4, col.min = 0, dot.min = 0.1
+) + theme(axis.text.x = element_text(angle = 90, hjust = 1),
+          panel.border = element_rect(colour = "black", fill=NA)) + labs(x="", y="")
+plot_marker
+
+
+
+DimPlot(inteData, group.by = "newCellType", cols = ct.cols, label = T) + NoAxes()
+DimPlot_scCustom(inteData,  group.by = "newCellType", 
+                 label = T, split.by = "Project", 
+                 colors_use = ct.cols,
+                 num_columns = 3) & NoLegend()
+DimPlot_scCustom(inteData,  group.by = "newCellType", 
+                 label = T, split.by = "Condition", 
+                 raster=FALSE, colors_use = ct.cols,
+                 num_columns = 5) & NoLegend()
+
+DefaultAssay(inteData) <- "RNA"
+inteData <- NormalizeData(inteData)
+# Plot gene expression using RNA or SCT assay
+FeaturePlot_scCustom(inteData,  features = c("FOSL1"), split.by = "Condition", 
+                     num_columns = 3)
+FeaturePlot_scCustom(inteData,  features = c("MMP1"), split.by = "Condition", 
+                     num_columns = 3)
+FeaturePlot_scCustom(inteData,  features = c("MMP3"), split.by = "Condition", 
+                     num_columns = 3)
+FeaturePlot_scCustom(inteData,  features = c("IL24"), split.by = "Condition", 
+                     num_columns = 3)
+FeaturePlot_scCustom(inteData,  features = c("S100A7"), split.by = "Condition", 
+                     num_columns = 3)
+FeaturePlot_scCustom(inteData,  features = c("S100A8"), split.by = "Condition", 
+                     num_columns = 3)
+FeaturePlot_scCustom(inteData,  features = c("KRT6A"), split.by = "Condition", 
+                     num_columns = 3)
+FeaturePlot_scCustom(inteData,  features = c("KRT16"), split.by = "Condition", 
+                     num_columns = 3)
+
+# Get cell names of POSTN positive expression
+POSTN <- WhichCells(object = inteData, expression = POSTN > 3)
+# Make into list
+cells <- list(POSTN = POSTN)
+# Plot
+Cell_Highlight_Plot(seurat_object = inteData, cells_highlight = cells)
+
+# export the reduced results for quickly plotting
+inteData@reductions$pca@assay.used <- "RNA"
+inteData@reductions$harmony@assay.used <- "RNA"
+inteData@reductions$umap@assay.used <- "RNA"
+
+inteData <- DietSeurat(inteData, assays = "RNA", dimreducs = c("umap", "harmony"))
+
+mt <- inteData@meta.data %>% rownames_to_column(var = "barcodeindex") %>% select(1:8,14:17,33,32,24,22,25,37,53,52)
+data.table::fwrite(mt, "allacuteWound_DFU_VU_inteKC_metadata.txt", sep = "\t")
+
+mt_f <- mt %>% column_to_rownames(var = "barcodeindex")
+inteData@meta.data <- mt_f
+Idents(inteData) <- inteData$newCellType
+saveRDS(inteData, file=paste0("allacuteWound_DFU_VU_inteKC_redu.rds"))
+```
+
+
+```{r eval=FALSE}
+library(scCustomize)
+library(patchwork)
+library(tidyverse)
+library(ggpubr)
+
+inteData <- readRDS("allacuteWound_DFU_VU_inteKC_redu.rds")
+
+# cell type proportion analysis
+ct.cols <- c('#807dba','#9e9ac8','#ccebc5',
+             '#fe9929','#fec44f','#fee391',
+             '#fb8072','#b3de69','#fccde5')
+
+fac_levs <- c("Bas_I", "Bas_prolif", "Bas_mig", "Spi_I", "Spi_II_a", "Spi_II_b", "Spi_III", "Spi_mig", "Gra_I")
+names(ct.cols) <- fac_levs
+inteData$newCellType <- factor(inteData$newCellType, levels = rev(fac_levs))
+top_repre_markers <- c("KRT15", "KRT31", "COL17A1", "ASS1", "POSTN", 
+                       "NUSAP1", "STMN1", "TOP2A", "MKI67", "CENPF",
+                       "MMP3", "MMP1", "AREG", "TNFRSF12A", "FGFBP1", "S100A2", "S100A10",
+                       "ITPRIPL2", "NRARP", "MT1X", "MT1G", "APOE",
+                       "CHP2", "KCNK7", "DEFB1", 
+                       "THEM5", "DSC1", "KRTDAP",
+                       "TNFAIP2", "IRF1", "TNFSF10", "NFKBIA", "CCL27",
+                       "KRT6A", "KRT6B", "KRT6C", "KRT17", "KRT16", "S100A7", "S100A8", "S100A9",
+                       "SLURP2", "KLK7", "CNFN", "FLG")
+
+#----Dotplot plotting----#
+plot_marker <- DotPlot(inteData, features = top_repre_markers, 
+                       #group.by = "newCellType", #cols = c("white", "#cb181d"), 
+                       split.by = "Condition", cols = ct.cols,
+                       dot.scale = 4, col.min = 0, dot.min = 0.1
+) + theme(axis.text.x = element_text(angle = 90, hjust = 1),
+          panel.border = element_rect(colour = "black", fill=NA)) + labs(x="", y="") +
+  coord_flip()
+plot_marker
+
+# Check the FOSL1 expression in each sample
+FeaturePlot_scCustom(inteData,  features = c("FOSL1"), split.by = "orig.ident", 
+                     num_columns = 10)
+
+# remove the NS23 due to the weired expression FOSL1
+inteData_f <- subset(inteData, subset = orig.ident != "NS23")
+inteData_f@meta.data <- droplevels(inteData_f@meta.data)
+FeaturePlot_scCustom(inteData_f,  features = c("FOSL1"), split.by = "orig.ident", 
+                     num_columns = 10)
+FeaturePlot_scCustom(inteData_f,  features = c("FOSL1"), split.by = "Condition", 
+                     num_columns = 3)
+
+# only foucus on the bas and spi migrating clusters
+inteData_mig <- subset(inteData_f, idents = c("Bas_mig", "Spi_mig")) 
+inteData_mig@meta.data <- droplevels(inteData_mig@meta.data)
+
+FeaturePlot_scCustom(inteData_mig,  features = c("IL24"), split.by = "Condition", 
+                     num_columns = 3)
+DotPlot(inteData_mig, features = top_repre_markers, 
+                       #group.by = "newCellType", #cols = c("white", "#cb181d"), 
+                       split.by = "Condition", cols = ct.cols,
+                       dot.scale = 4, col.min = 0, dot.min = 0.1
+) + theme(axis.text.x = element_text(angle = 90, hjust = 1),
+          panel.border = element_rect(colour = "black", fill=NA)) + labs(x="", y="") +
+  coord_flip()
+
+
+VlnPlot_scCustom(inteData_mig, features = c("FOSL1"), split.by = "Condition", 
+                 colors_use = c('#a6cee3','#1f78b4','#b2df8a','#33a02c','#fb9a99',
+                 '#e31a1c','#fdbf6f','#ff7f00','#cab2d6')) 
+
+my_comparisons <- list( c("DFU_H", "DFU_NH"), c("NS", "VU"), c("Wound1", "Wound30"))
+(VlnPlot_scCustom(seurat_object = inteData_mig, 
+                 idents = c("Spi_mig"),
+                 group.by = "Condition", 
+                 features = c("FOSL1"), 
+                 #plot_median = TRUE,
+                 #plot_boxplot = TRUE,
+                 y.max = 3,
+                 colors_use = c('#a6cee3','#1f78b4','#b2df8a','#33a02c','#fb9a99',
+                 '#e31a1c','#fdbf6f','#ff7f00','#cab2d6')) & NoLegend()) +
+  stat_compare_means(comparisons = my_comparisons)
+
+# FOSL1 positive cell number
+# Get cell names
+FOSL1 <- WhichCells(object = inteData_f, expression = FOSL1 > 0)
+# Make into list
+cells_fosl1 <- list(FOSL1 = FOSL1)
+# Plot
+Cell_Highlight_Plot(seurat_object = inteData_f, cells_highlight = cells_fosl1)
+
+
+###################
+# DE analysis in Bas_mig and Spi_mig across different conditions
+Idents(inteData_mig) <- inteData_mig$newCellType
+# load the gene annotation file
+anno_human <- readRDS("/Users/zhuliu/Desktop/sc st/Versions_SC_ST_Project/V2_Figures_231017/01-Scripts/custom functions/humanAnnotation.rds")
+
+####----DE functions----####
+DE.genes <- function(group1 = NULL, group2 = NULL, groupby = NULL, subsetIdent = NULL, minPct = 0.2, fc = 0){
+  tmp <- FindMarkers(inteData_mig, 
+                     ident.1 = group1, 
+                     ident.2 = group2, 
+                     group.by = groupby, 
+                     subset.ident = subsetIdent,
+                     assay = "RNA",
+                     test.use = "MAST",
+                     min.pct = minPct, 
+                     logfc.threshold = fc,
+                     min.diff.pct = 0)
+  tmp <- tmp %>% tibble::rownames_to_column(var = "gene") %>% 
+    arrange(desc(avg_log2FC)) %>% 
+    dplyr::mutate(cluster = subsetIdent) %>% 
+    left_join(., anno_human, by=c("gene" = "external_gene_name")) %>% 
+    dplyr::select(1, 3, 2, 6, everything()) %>% 
+    #filter(p_val_adj < 0.05) %>% #or filter out the genes with p-value < 0.05
+    mutate(Type = factor(ifelse(p_val_adj < 0.05 & abs(avg_log2FC) >= 0.3, ifelse(avg_log2FC >= 0.3 ,'Up','Down'),'Not'))) #add a column with regulation direction
+  return(tmp)
+}
+
+##-- draw the volcano plot --##
+DE.volcano <- function(data = NULL, avgfc = 1, padj = 0.05){
+  require(ggrepel)
+  data.fil <- data %>% filter(abs(avg_log2FC) >= avgfc & p_val_adj < padj)
+  ggplot(data=data, aes(x=avg_log2FC, y=-log10(p_val_adj), color=Type, fill=Type)) +
+    geom_point(size=1.5)+
+    scale_color_manual(values=c("blue","#B3B3B3", "red"))+
+    coord_fixed()+
+    theme_classic() +
+    theme(
+      legend.position = "right",#top,bottom,left,right
+      legend.spacing = unit(0,"cm"),
+      aspect.ratio = 1) +
+    geom_text_repel(data = data.fil, mapping = aes(x=avg_log2FC, y=-log10(p_val_adj), label = gene), show.legend = FALSE, max.overlaps = 50)
+}
+
+celltypename = "Bas_mig"
+DE.genes.sorted1 <- DE.genes(group1 = "Wound1", groupby = "Condition", subsetIdent = celltypename)
+data.table::fwrite(DE.genes.sorted1, file = "DEG_Bas_mig_Wound1_vs_allOther.txt", sep = "\t")
+DE.genes.sorted1.fil <- DE.genes.sorted1 %>% filter(abs(avg_log2FC) > 0.5 & p_val_adj < 0.05)
+DE.volcano(data = DE.genes.sorted1, avgfc = 1)
+
+celltypename = "Spi_mig"
+DE.genes.sorted2 <- DE.genes(group1 = "Wound1", groupby = "Condition", subsetIdent = celltypename)
+data.table::fwrite(DE.genes.sorted2, file = "DEG_Spi_mig_Wound1_vs_allOther.txt", sep = "\t")
+DE.genes.sorted2.fil <- DE.genes.sorted2 %>% filter(abs(avg_log2FC) > 0.5 & p_val_adj < 0.05)
+DE.volcano(data = DE.genes.sorted2, avgfc = 1)
+
+celltypename = "Bas_mig"
+DE.genes.sorted3 <- DE.genes(group1 = "Wound7", groupby = "Condition", subsetIdent = celltypename)
+data.table::fwrite(DE.genes.sorted3, file = "DEG_Bas_mig_Wound7_vs_allOther.txt", sep = "\t")
+DE.genes.sorted3.fil <- DE.genes.sorted3 %>% filter(abs(avg_log2FC) > 0.5 & p_val_adj < 0.05)
+DE.volcano(data = DE.genes.sorted3, avgfc = 1)
+
+celltypename = "Spi_mig"
+DE.genes.sorted4 <- DE.genes(group1 = "Wound7", groupby = "Condition", subsetIdent = celltypename)
+data.table::fwrite(DE.genes.sorted4, file = "DEG_Spi_mig_Wound7_vs_allOther.txt", sep = "\t")
+DE.genes.sorted4.fil <- DE.genes.sorted4 %>% filter(abs(avg_log2FC) > 0.5 & p_val_adj < 0.05)
+DE.volcano(data = DE.genes.sorted4, avgfc = 1)
+
+FeaturePlot_scCustom(inteData_f,  features = c("FOSL1"), split.by = "Condition", 
+                     num_columns = 3)
+
+inteData_mig$Condition <- factor(inteData_mig$Condition, 
+                                 levels = c("Skin", "Wound1", "Wound7", "Wound30",
+                                            "H", "DFU_H", "DFU_NH", "NS", "VU"))
+top_markers <- Extract_Top_Markers(marker_dataframe = DE.genes.sorted1.fil, 
+                                   num_genes = 35, named_vector = FALSE, make_unique = TRUE)
+
+p1 <- DotPlot(object = subset(inteData_mig, subset = Project == "AcuteWound"), 
+        features = top_markers, idents = c("Bas_mig"), cols = c("grey90", "#b30000"),
+        group.by = "Condition", dot.min = 0, col.min = -1, col.max = 1
+) + theme(axis.text.x = element_text(angle = 90, hjust = 1),
+          panel.border = element_rect(colour = "black", fill=NA)) + labs(x="", y="")
+
+p2 <- DotPlot(object = subset(inteData_mig, subset = Project == "DFU"), 
+        features = top_markers, idents = c("Bas_mig"), cols = c("grey90", "#b30000"),
+        group.by = "Condition", dot.min = 0, col.min = -1, col.max = 1
+) + theme(axis.text.x = element_text(angle = 90, hjust = 1),
+          panel.border = element_rect(colour = "black", fill=NA)) + labs(x="", y="")
+
+p3 <- DotPlot(object = subset(inteData_mig, subset = Project == "VU"), 
+        features = top_markers, idents = c("Bas_mig"), cols = c("grey90", "#b30000"),
+        group.by = "Condition", dot.min = 0, col.min = -1, col.max = 1
+) + theme(axis.text.x = element_text(angle = 90, hjust = 1),
+          panel.border = element_rect(colour = "black", fill=NA)) + labs(x="", y="")
+
+p1/p2/p3 + plot_layout(guides = "collect")
+
+
+top_markers <- Extract_Top_Markers(marker_dataframe = DE.genes.sorted3.fil, 
+                                   num_genes = 14, named_vector = FALSE, make_unique = TRUE)
+
+```
+
+# GO of DEGs
+```{r}
+require(clusterProfiler) #loading the package if it is not loaded
+require(org.Hs.eg.db)
+
+datatmp <- DE.genes.sorted4 %>% filter(avg_log2FC > 0.5 & p_val_adj < 0.05)
+#intersect(datatmp, datatmp2)
+
+Enriched_gene_up <- as.character(unique(datatmp$entrezgene_id))
+ego_BP_up <- enrichGO(gene = Enriched_gene_up,
+                      OrgDb         = org.Hs.eg.db,
+                      ont           = "BP",
+                      keyType = "ENTREZID",
+                      pAdjustMethod = "BH",
+                      pvalueCutoff  = 0.05,
+                      qvalueCutoff  = 0.1,
+                      minGSSize = 10,
+                      maxGSSize = 500,
+                      readable = T)
+
+go_df <- as.data.frame(ego_BP_up)
+
+data.table::fwrite(go_df, file = "DEG_Bas_mig_Wound1_vs_allOther_Up_GO.txt", sep = "\t")
+data.table::fwrite(go_df, file = "DEG_Spi_mig_Wound1_vs_allOther_Up_GO.txt", sep = "\t")
+
+data.table::fwrite(go_df, file = "DEG_Bas_mig_Wound7_vs_allOther_Up_GO.txt", sep = "\t")
+data.table::fwrite(go_df, file = "DEG_Spi_mig_Wound7_vs_allOther_Up_GO.txt", sep = "\t")
+
+
+go1 <- readxl::read_xlsx("Table DEGs_GO_cross species.xlsx", sheet = 1) %>% dplyr::slice(1:6) %>% mutate(species = "Human")
+go2 <- readxl::read_xlsx("Table DEGs_GO_cross species.xlsx", sheet = 2) %>% dplyr::slice(1:6) %>% mutate(species = "Mouse")
+
+go_plot <- rbind(go1, go2)
+go_plot$Description <- factor(go_plot$Description, levels = rev(go_plot$Description))
+ggplot(data = go_plot, aes(x=Description, y = Count, 
+                           color = species)) + 
+  scale_color_manual(values = c("#c45027", "#00afbb")) +
+  geom_point(stat='identity', fill="black", size=6) +
+  geom_segment(aes(y=0, x=Description, yend=Count, xend=Description)) +
+  
+  coord_flip() +
+  #scale_y_continuous(limits = c(0,30),breaks = c(0,10,20,30)) +
+  theme_bw() + 
+  ylab("") + 
+  xlab("") +
+  theme(axis.text.x = element_text(size = 12, angle = 0, hjust = 1))
+pdf("DEGs_migratingKC_GO_BPs_cluster3and4.pdf", useDingbats = F, width = 6, height = 4)
+dev.off()
+```
+
+
+# DEGs plotting
+```{r}
+library(scRNAtoolVis)
+# Bas_mig DEGs
+## Day 1
+metallothionein <- c("MT1G", "MT1H") 
+woundhealing <- c("TNFRSF12A", "SDC1", "S100A10", "CD59", "HRAS", "MYL12A", "ITGB1") 
+mig_gene <- c("MMP1", "MMP3", "ANXA3", "PRSS3", "LTB4R2", "FGFBP1") 
+## Day 7
+ecm_day7 <- c("ITGAV", "LAMC2","LAMA3", "CASP14", "SPINK5", "COL7A1", "FOSL1") 
+
+higenes <- c(mig_gene, metallothionein, woundhealing, ecm_day7)
+
+#pdf("DEG_Bas_mig_dotplot.pdf", useDingbats = F, width = 8, height = 5)
+jjDotPlot(object = subset(inteData_f, subset = Project == "AcuteWound"), #subset(inteData, idents = c("Bas_mig")
+          gene = higenes,
+          xtree = FALSE, ytree = FALSE,
+          id = 'Condition',
+          cluster.order = rev(c("Skin","Wound1","Wound7","Wound30",
+                                "H","DFU_H","DFU_NH","NS","VU")),
+          rescale = T,
+          #dot.col = c('blue','white','red'),
+          #midpoint = 0,
+          rescale.min = 0,
+          rescale.max = 1) + scale_size(breaks = c(0, 25, 50, 75, 100), range = c(1,4))
+#dev.off()
+
+
+# Spi_mig DEGs
+## Day 1
+ribonucleoprotein <- c("EBNA1BP2", "SNRPF", "MRPL20", "C1QBP", "DDX21", "EIF4A3", "SNU13", "NPM1", "SRSF9")
+diff <- c("IVL", "AQP3", "SPRR1B", "SULT2B1", "NME2")
+## Day 7
+diff_day7 <- c("IMPA2","ALDH2","AKR1B10","KRT5","CASP14")
+
+higenes <- c(ribonucleoprotein, diff, diff_day7)
+
+pdf("DEG_Spi_mig_dotplot.pdf", useDingbats = F, width = 8, height = 5)
+jjDotPlot(object = subset(inteData, idents = c("Spi_mig")),
+          gene = higenes,
+          xtree = FALSE, ytree = FALSE,
+          id = 'Condition',
+          cluster.order = rev(c("Skin","Wound1","Wound7","Wound30",
+                                "H","DFU_H","DFU_NH","NS","VU")),
+          rescale = T,
+          #dot.col = c('blue','white','red'),
+          #midpoint = 0,
+          rescale.min = 0,
+          rescale.max = 1) + scale_size(breaks = c(0, 25, 50, 75, 100), range = c(1,4))
+dev.off()
+
+```
+
+
+# SessionInfo
+```{r}
+sessionInfo()
+```
+
