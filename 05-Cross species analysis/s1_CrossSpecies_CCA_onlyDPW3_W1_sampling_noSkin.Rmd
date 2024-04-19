@@ -1,0 +1,491 @@
+---
+title: "Cross species integration of wound healing"
+author: "Zhuang Liu"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true #add a table of contents (TOC)
+    toc_depth: 3 #headers' level in the toc
+    toc_float: true #toc visible even when scrolled
+    theme: lumen
+    highlight: tango
+    code_folding: show
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.align='center', fig.width=12, fig.height = 6, warning=FALSE, message=FALSE)
+```
+
+```{r warning=FALSE, message=FALSE}
+library(Seurat)
+library(SeuratObject)
+library(SeuratDisk)
+library(tidyverse)
+library(patchwork)
+library(harmony)
+```
+
+First give a try to integrate all the human wound and mouse wound data
+
+# 1. Prepare wound data
+```{r eval=FALSE}
+# load the human and mouse converted gene symbols (made by myself)
+hs_ms_genes <- data.table::fread("Private_human_mouse_GeneSymbol_conversion.txt")
+
+# Day 3 after wounding (Dongqing Snhg26)
+ms_seu <- readRDS("../s1-scData/01-our ms data/s2_miceD3data_onlyWT.rds")
+## convert the mouse gene symbol to human gene symbol (orthology)
+exp_mtx <- as.matrix(ms_seu@assays$RNA@counts);dim(exp_mtx)
+v2genes <- data.frame(ms_gene = rownames(exp_mtx)) %>% left_join(., hs_ms_genes)
+
+table(is.na(v2genes$hs_gene))
+##lots of NAs for which there are no human genes matching
+## Remove NAs
+v2genes <- v2genes[!is.na(v2genes$hs_gene),,F]
+## Filter the expression matrix for genes which a mouse counterpart is available
+exp_mtx <- exp_mtx[v2genes$ms_gene,]
+## Now change the rownames of the matrix to the mouse gene names
+rownames(exp_mtx) <- v2genes$hs_gene
+#check the duplicated gene names
+duplicated(rownames(exp_mtx)) %>% table()
+exp_mtx <- exp_mtx[!duplicated(rownames(exp_mtx)),]
+dim(exp_mtx);identical(colnames(exp_mtx), colnames(ms_seu))
+## Create the seurat object with mouse genes.
+ms_seu <- CreateSeuratObject(counts = exp_mtx, meta.data = ms_seu@meta.data)
+rownames(ms_seu)[grep("KRT6", rownames(ms_seu))]
+rownames(ms_seu)[grep("MMP", rownames(ms_seu))]
+
+saveRDS(ms_seu, file = "../s1-scData/01-our ms data/s2_miceD3data_onlyWT_humanGenes.rds")
+```
+
+
+# 2. Integrate the human and mouse wound data
+```{r eval=TRUE}
+# mouse wound with human gene symbol (own data)
+ms_seu <- readRDS("../all_miceD3data_onlyWT_humanGenes.rds")
+ms_seu$Condition <- gsub("Skin", "Unwound", ms_seu$Condition) # Change the name since it is the same as human wound
+ms_seu$Condition <- gsub("Wound", "DPW3", ms_seu$Condition)
+ms_seu <- subset(ms_seu, subset = Condition == "DPW3")
+table(ms_seu$orig.ident)
+rownames(ms_seu)[grep("^IL", rownames(ms_seu))] %>% sort()
+
+# Human skin wound healing 
+hs_seu <- readRDS("../all_human_wound_metadata.rds")
+#hs_seu <- subset(hs_seu, subset = Condition == "Skin" | Condition == "Wound1")
+hs_seu <- subset(hs_seu, subset = Condition == "Wound1")
+hs_seu@meta.data <- droplevels(hs_seu@meta.data)
+table(hs_seu$orig.ident)
+rownames(hs_seu)[grep("^IL", rownames(hs_seu))] %>% sort()
+
+# check the overlapped genes and keep the overlapped genes
+overgene <- intersect(rownames(ms_seu), rownames(hs_seu))
+length(overgene)
+
+ms_seu <- ms_seu[overgene, ]
+hs_seu <- hs_seu[overgene, ]
+
+# integrate based on orig.ident names
+ms_seu$Species="Mouse"
+hs_seu$Species="Human"
+```
+
+
+# 3. sctransform normalization
+```{r eval=TRUE}
+all_seu <- merge(hs_seu,  y = c(ms_seu),
+                project = "wounds")
+
+# sampling the cell numbers 
+lowNum <- min(table(all_seu$Species))
+metadata <- all_seu@meta.data %>% rownames_to_column(var = "barcode")
+to_keep <- metadata %>% group_by(Species) %>% sample_n(size = lowNum, replace = FALSE) %>%
+    pull(barcode)
+all_seu <- subset(all_seu, cells = to_keep)
+table(all_seu$Condition)
+
+alldata = SplitObject(all_seu, split.by = "orig.ident")
+rm(all_seu)
+# normalize and identify variable features for each dataset independently
+alldata <- lapply(X = alldata, FUN = function(x) {
+    x <- NormalizeData(x)
+    x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 4000)
+})
+```
+
+# 4. Run CCA Clustering
+```{r eval=TRUE}
+# Run CCA using defaults
+features <- SelectIntegrationFeatures(object.list = alldata, nfeatures = 3000)
+anno <- readRDS("../gene_conversion_hs_ms/humanAnnotation.rds")
+features <- features %>% as.data.frame() %>% setNames("gene") %>% left_join(., anno[, c(1,3)], by=c("gene"="external_gene_name")) %>% 
+  filter(gene_biotype == "protein_coding" | gene_biotype == "lncRNA") %>% distinct(gene) %>% pull(gene)
+
+rn <- lapply(alldata, rownames) 
+nE <- colSums(Reduce(rbind, lapply(rn, function(x) features %in% x))) 
+features <- features[nE == length(alldata)] #Keep only variable genes expressed in all samples
+length(features)
+
+alldata.anchors <- FindIntegrationAnchors(object.list = alldata, anchor.features = features)
+# this command creates an 'integrated' data assay
+inteData <- IntegrateData(anchorset = alldata.anchors)
+
+# specify that we will perform downstream analysis on the corrected data note that the
+# original unmodified data still resides in the 'RNA' assay
+DefaultAssay(inteData) <- "integrated"
+VariableFeatures(inteData) <- features
+
+# Run the standard workflow for visualization and clustering
+inteData <- ScaleData(inteData, verbose = FALSE)
+inteData <- RunPCA(inteData, npcs = 30, verbose = FALSE)
+
+inteData <- RunUMAP(inteData, dims = 1:30, assay = "integrated", reduction = "pca", n.neighbors = 30,
+                    min.dist = 0.5, n.epochs = 500, spread = 1, learning.rate = 1)
+
+DimPlot(inteData, group.by = "orig.ident") + NoAxes()
+
+inteData = FindNeighbors(inteData, dims = 1:30, reduction = "pca", k.param = 30)
+inteData = FindClusters(inteData, resolution = 0.3)
+inteData = FindClusters(inteData, resolution = 1)
+inteData = FindClusters(inteData, resolution = 0.5)
+inteData = FindClusters(inteData, resolution = 0.8)
+
+#inteData$Condition <- factor(inteData$Condition, levels = c("Skin", "Wound1", "Unwound", "DPW3"))
+inteData$Condition <- factor(inteData$Condition, levels = c("Wound1",  "DPW3"))
+
+DefaultAssay(inteData) <- "RNA"
+inteData <- NormalizeData(inteData)
+```
+
+
+# 5. CellType plotting
+```{r fig.width=12, fig.height=8}
+DimPlot(inteData, group.by = "Species", cols = c("#d8b365", "#5ab4ac")) + ggtitle("Cross species integration")
+DimPlot(inteData, group.by = "Species", split.by = "Species", cols = c("#d8b365", "#5ab4ac")) + ggtitle("Cross species integration")
+
+DimPlot(inteData, group.by = "CellType", label = T, split.by = "Species") + ggtitle("")
+DimPlot(inteData, group.by = "CellType", label = T, split.by = "Condition", ncol = 4) + ggtitle("") + NoLegend()
+DimPlot(inteData, group.by = "integrated_snn_res.0.3", label = T, split.by = "Condition")
+DimPlot(inteData, group.by = "integrated_snn_res.0.5", label = T, split.by = "Condition")
+DimPlot(inteData, group.by = "integrated_snn_res.0.8", label = T, split.by = "Condition")
+DimPlot(inteData, group.by = "integrated_snn_res.1", label = T, split.by = "Condition")
+```
+
+
+# 6. Data exporting
+```{r}
+saveRDS(inteData, "all_HsMs_CCA_W1_DPW3_sampling_noSkin.rds")
+```
+
+
+```{r eval=FALSE}
+inteData <- readRDS("all_HsMs_CCA_W1_DPW3_sampling_noSkin.rds")
+# UMAP changes a bit (n.epochs = 200)
+inteData <- RunUMAP(inteData, dims = 1:30, assay = "integrated", reduction = "pca", n.neighbors = 40,
+                    min.dist = 0.5, n.epochs = 500, spread = 1, learning.rate = 1)
+
+
+DimPlot(inteData, group.by = "CellType", label = T, split.by = "Condition", ncol = 4) + ggtitle("") + NoLegend()
+DimPlot(inteData, group.by = "integrated_snn_res.0.3", label = T, split.by = "Condition", ncol = 4) + ggtitle("") + NoLegend()
+FeaturePlot(inteData, features = c("IL24"), split.by = "Condition", cols = c("grey90", "red"), order = T)
+VlnPlot(inteData, features = c("IL24"), group.by = "integrated_snn_res.0.3", split.by = "Condition")
+
+FeaturePlot(inteData, features = c("FOSL1"), split.by = "Condition", cols = c("grey90", "red"), order = T, pt.size = 0.8, min.cutoff = 0.1)
+VlnPlot(inteData, features = c("FOSL1"), group.by = "integrated_snn_res.0.3", split.by = "Condition")
+
+table(inteData$CellType, inteData$integrated_snn_res.0.3)
+table(inteData$CellType, inteData$integrated_snn_res.0.5)
+table(inteData$CellType, inteData$integrated_snn_res.0.8)
+
+FeaturePlot(inteData, features = c("IL24", "GJB2", "FOSL1", "ITGA5"), split.by = "Condition", cols = c("grey90", "red"))
+FeaturePlot(inteData, features = c("IL24"), split.by = "Condition", cols = c("grey90", "red"), order = T)
+```
+
+
+# 8. Marker genes of cell cluster
+```{r eval=FALSE}
+library(future)
+options(future.globals.maxSize = 20000 * 1024^2)
+plan("multisession", workers = 4)
+plan()
+
+Idents(inteData) <- "integrated_snn_res.0.3" 
+markers <- FindAllMarkers(
+  inteData,
+  only.pos = TRUE,
+  min.pct = 0.25,
+  min.diff.pct = 0.1,
+  logfc.threshold = 0.3,
+  test.use = "wilcox")
+
+# load the gene anno
+annot <- readRDS("/Users/zhuliu/Desktop/sc st/Versions_SC_ST_Project/V2_Figures_230817/06-CrossSpecies/02-scRNA-seq mouse wound healing/s2-human_mouse_integration/00-gene_conversion_hs_ms/humanAnnotation.rds")
+####----add the info and reorder the columns----####
+cluster_markers_anno <- markers %>% 
+  #left_join(., annot, by=c("gene" = "external_gene_name")) %>% 
+  dplyr::select(6, 7, 2:4, 1, 5, everything()) %>% arrange(cluster, desc(avg_log2FC))
+
+data.table::fwrite(cluster_markers_anno, "all_HsMs_CCA_W1_DPW3_sampling_withSkin_0.3Marker.txt", sep="\t")
+
+topmg10 <- cluster_markers_anno %>% filter(cluster == 7) %>% slice(1:15) %>% pull(gene)
+FeaturePlot(inteData, features = topmg10[1:5], split.by = "Condition", cols = c("grey90", "red"), order = F)
+FeaturePlot(inteData, features = topmg10[6:10], split.by = "Condition", cols = c("grey90", "red"), order = F)
+FeaturePlot(inteData, features = topmg10[11:15], split.by = "Condition", cols = c("grey90", "red"), order = F)
+
+
+topmg10_2 <- cluster_markers_anno %>% filter(cluster == 9) %>% slice(1:15) %>% pull(gene)
+FeaturePlot(inteData, features = topmg10_2[1:5], split.by = "Condition", cols = c("grey90", "red"), order = F)
+FeaturePlot(inteData, features = topmg10_2[6:10], split.by = "Condition", cols = c("grey90", "red"), order = F)
+FeaturePlot(inteData, features = topmg10_2[11:15], split.by = "Condition", cols = c("grey90", "red"), order = F)
+
+FeaturePlot(inteData, features = "MKI67", split.by = "Condition", cols = c("grey90", "red"), order = F)
+```
+
+
+# rename the cell cluster number
+```{r eval=FALSE}
+# re-joint the cell clusters
+anno.cl <- list()
+anno.cl$'0' = c(3) # Bas-I
+anno.cl$'1' = c(5) # Bas-prolif
+anno.cl$'2' = c(7) # Bas-mig
+anno.cl$'3' = c(9) # Spi-mig
+anno.cl$'4' = c(0) # Spi 
+anno.cl$'5' = c(1) # Gra 
+anno.cl$'6' = c(4) #HF 
+anno.cl$'7' = c(13) #HF 
+anno.cl$'8' = c(11) # MEL
+anno.cl$'9' = c(2) # FB-I
+anno.cl$'10'  = c(14) # FB-II
+anno.cl$'11'  = c(16) # FB-III
+anno.cl$'12'  = c(15) # Mus
+anno.cl$'13'  = c(10) # LE
+anno.cl$'14'  = c(8) # VE
+anno.cl$'15'  = c(6) # Th
+anno.cl$'16'  = c(12) # NK 
+anno.cl$'17'  = c(17) # NK 
+
+trans = rep(names(anno.cl), times = unlist(lapply(anno.cl, length)))
+names(trans) = unlist(anno.cl)
+inteData$newCluster = trans[as.character(inteData$integrated_snn_res.0.3)] %>% as.character()
+inteData$newCluster = factor(inteData$newCluster, levels = names(anno.cl))
+table(inteData$newCluster, inteData$Condition)
+```
+
+### Pie chart
+```{r eval=FALSE}
+###############################################
+#-- Cell proportion analysis across species --#
+## Step 1. calculate the cell types number per sample, add the location information, 
+## total numbers, as well the condition information
+metadata <- inteData@meta.data
+cl_species <- table(metadata$Condition, metadata$Species) %>% as.data.frame() %>% dplyr::filter(Freq > 0)
+
+sm_ct_nu <- table(metadata$Condition, metadata$integrated_snn_res.0.3) %>% as.data.frame() %>% 
+  setNames(c("Sample", "CellCluster", "Num")) %>%
+  left_join(., cl_species, by = c("Sample" = "Var1"))  %>% mutate(prop = Num / Freq)
+
+## step 2. calculate the total normalized proportions of each cell type per condition
+df.group <- sm_ct_nu %>% group_by(CellCluster, Var2) %>% summarise(Freq2=sum(prop)) %>% 
+  ungroup() %>% group_by(CellCluster) %>% mutate(Freq_new = Freq2/sum(Freq2), lbl = scales::percent(Freq_new)) %>% ungroup()
+
+df.group$CellCluster <- factor(df.group$CellCluster, levels = names(trans))
+ggplot(data=df.group, aes(x=" ", y=Freq_new, group=Var2, colour=Var2, fill=Var2)) +
+  geom_bar(width = 1, stat = "identity") +
+  scale_fill_manual(values = c("#c45027", "#00afbb")) +
+  scale_color_manual(values = c("#c45027", "#00afbb")) +
+  coord_polar("y", start=0) + 
+  facet_grid(CellCluster ~ .) + theme_void()
+
+pdf("all_HsMs_CCA_W1_DPW3_sampling_noSkin_PieChart_res0.03.pdf", useDingbats = FALSE, width = 3, height = 6)
+dev.off()
+```
+
+
+```{r eval=TRUE, fig.width=8, fig.height=6}
+ct.cols <- c("#d94701", "#fd8d3c", "#fdbe85", #Basal clusters
+             "#33A02C", "#72BF5A", "#B2DF8A", #Spinous clusters
+             "#f768a1", "#d4b9da", #Granular, Hair follicle
+             "#737373", #MEL
+             "#0570b0", "#3690c0", "#92c5de", "#d1e5f0", #Fibroblast clusters
+             "#c0a700", "#1a9850", "#fb9a99", "#8d4720", 
+             "#35978f", "#41b6c4", "#80cdc1","#df65b0", 
+             "#dd3497", "#807dba","#6a3d9a","#9e9ac8", "#b15928"
+)
+
+fact_lev <- c("Bas-I", "Bas-prolif", "Bas-mig", 
+              "Spi-I", "Spi-II", "Spi-mig", 
+              "Gra-I", "HF", 
+              "MEL", 
+              "FB-I", "FB-II", "FB-III", "FB-prolif", 
+              "Schwann", "PC-vSMC", "LE", "VE", 
+              "NK-cell", "Th", "Plasma_Bcell", "Mast-cell", 
+              "Mono-Mac", "cDC1", "cDC2", "DC3", "LC")
+
+ct.type =sort(unique(inteData$CellType));ct.type
+dif.ct=setdiff(ct.type, fact_lev)
+
+fac_ms <- c("Bas1","Bas2","Bas3","Bas4","Spi","Gra",
+"HF1","HF2","HF3","HF4","Mel",
+"Fb1","Fb2","Fb3",
+"Mus1","Mus2","SG","EC1","EC2",
+"gdT","Th", # Th is the same name as in human wound
+"Mac","Lc")
+nodecolor <- c('#3366cc','#be4032','#f27706','#85139e',#BAS
+               '#8c970b','#39683f', # Spi, Gra
+               '#0692c4', "#ac5688", "#94822e", "#897414", #HF
+               "#961506", #MEL
+               "#3a6095", "#8f4698","#3e8779", #FB
+               "#e26e00", "#700d49",#MUSC
+               "#6eaa4c", #SG
+               "#8f7b5a", "#81409f", #EC
+               "#4a5364", "#418f99", # Tcell
+               "#506aa7", "#943b48" #LC, MAC
+)
+ct.type.final <- c(fact_lev, fac_ms)
+# change a bit the color of unknown cell type
+#library(scales)
+#hex <- hue_pal()(23)
+ct.cols.final <- c(ct.cols, nodecolor)
+
+names(ct.cols.final) <- ct.type.final
+```
+
+
+```{r eval=TRUE, fig.width=8, fig.height=6}
+p1 <- DimPlot(inteData, group.by = "Species", cols = c("#d8b365", "#5ab4ac")) + ggtitle("Cross species integration") + NoLegend() + NoAxes()
+p2 <- DimPlot(inteData, group.by = "Species", split.by = "Species", cols = c("#d8b365", "#5ab4ac")) + ggtitle("Cross species integration") + NoLegend() + NoAxes()
+pdf("Human_mouse_Wound1_DPW3_integration.pdf", useDingbats = F, width = 12, height = 5)
+p1 + p2 + plot_layout(widths = c(1,2))
+dev.off()
+
+pdf("Human_mouse_Wound1_DPW3_integration_SampleQC.pdf", useDingbats = F, width = 5, height = 4)
+DimPlot(inteData, group.by = "orig.ident", label = F) + NoAxes()
+dev.off()
+
+p1 <- DimPlot(inteData, group.by = "integrated_snn_res.0.3", raster = F, label = T,label.size = 4) + NoAxes() + NoLegend()
+p2 <- DimPlot(inteData, group.by = "integrated_snn_res.0.3", combine = T, split.by = "Condition", raster = F,label.size = 4, label = T, pt.size = 0.6) + ggtitle("Cross species integration") + NoLegend() + NoAxes()
+#pdf("Human_mouse_Wound1_DPW3_integration_cluster.pdf", useDingbats = F, width = 12, height = 5)
+p1 + p2 + plot_layout(widths = c(1,2))
+#dev.off()
+
+p1 <- DimPlot(inteData, group.by = "newCluster", raster = F, label = T,label.size = 4) + NoAxes() + NoLegend()
+p2 <- DimPlot(inteData, group.by = "newCluster", combine = T, split.by = "Condition", raster = F,label.size = 4, label = T, pt.size = 0.6) + ggtitle("Cross species integration") + NoLegend() + NoAxes()
+p1 + p2 + plot_layout(widths = c(1,2))
+
+inteData$CellType2 <- ifelse(inteData$CellType == "Th", ifelse(inteData$Species == "Mouse", "Th_ms", inteData$CellType), inteData$CellType)
+ct.type.final[47] <- "Th_ms"
+inteData$CellType2 <- factor(inteData$CellType2, levels = ct.type.final)
+
+
+pdf("Human_mouse_Wound1_DPW3_integration_celltype.pdf", useDingbats = F, width = 11, height = 5)
+DimPlot(inteData, group.by = "CellType2", label = T, split.by = "Condition", cols = ct.cols.final) + NoAxes()
+dev.off()
+
+table(inteData$newCluster, inteData$Condition)
+```
+
+
+# Plotting Sankey driagram and pie chart
+```{r eval=FALSE}
+metadata <- inteData@meta.data
+metadata_hs <- metadata %>% filter(Species %in% "Human")
+metadata_hs_df <- table(metadata_hs$CellType, metadata_hs$integrated_snn_res.0.3) %>% as.data.frame() %>% 
+  setNames(c("source", "target", "value")) %>% dplyr::filter(value > 0)
+
+metadata_ms <- metadata %>% filter(Species %in% "Mouse")
+metadata_ms_df <- table(metadata_ms$integrated_snn_res.0.3, metadata_ms$CellType) %>% as.data.frame() %>% 
+  setNames(c("source", "target", "value")) %>% dplyr::filter(value > 0) 
+metadata_ms_df$target <- gsub("Th", "Th_ms", metadata_ms_df$target)
+fac_ms <- c("Bas1","Bas2","Bas3","Bas4","Spi","Gra",
+"HF1","HF2","HF3","HF4","Mel",
+"Fb1","Fb2","Fb3",
+"Mus1","Mus2","SG","EC1","EC2",
+"gdT","Th_ms", # Th is the same name as in human wound
+"Mac","Lc")
+metadata_ms_df$target <- factor(metadata_ms_df$target, levels = fac_ms)
+
+################
+# Sankey diagram
+library(networkD3)
+metadata_sankey <- rbind(metadata_hs_df, metadata_ms_df)
+
+# normalization 
+norm_df <- table(metadata$Species)
+metadata_sankey$total <- c(rep(4601, 61), rep(4601, 79))
+metadata_sankey <- metadata_sankey %>% dplyr::mutate(freq = value / total)
+
+
+#metadata_sankey <- metadata_hs_df
+nodes_names <- data.frame(name=c(levels(metadata_sankey$source), levels(metadata_sankey$target)))
+nodes_names <- nodes_names %>% dplyr::slice(-27:-44)
+#nodes_names <- data.frame(name=c(as.character(metadata_sankey$source), as.character(metadata_sankey$target)))
+#nodes_names$name <- factor(nodes_names$name, levels = nodes_names)
+
+metadata_sankey$IDsource=match(metadata_sankey$source, nodes_names$name)-1 
+metadata_sankey$IDtarget=match(metadata_sankey$target, nodes_names$name)-1
+
+# prepare colour scale
+ColourScal ='d3.scaleOrdinal() .range(["#d94701","#fd8d3c", "#fdbe85", "#33A02C", "#72BF5A", "#B2DF8A", "#f768a1","#d4b9da", "#737373", "#0570b0", "#3690c0", "#92c5de", "#d1e5f0", "#c0a700", "#1a9850", "#fb9a99", "#8d4720", "#35978f", "#41b6c4", "#80cdc1","#df65b0", "#dd3497", "#807dba","#6a3d9a","#9e9ac8", "#b15928","#d94701", "#fd8d3c", "#fdbe85", "#33A02C", "#72BF5A", "#B2DF8A","#f768a1", "#d4b9da","#737373", "#0570b0", "#3690c0", "#92c5de", "#d1e5f0", "#c0a700", "#1a9850", "#fb9a99", "#8d4720", "#35978f", "#41b6c4", "#80cdc1", "#3366cc","#be4032","#f27706","#85139e","#8c970b","#39683f", "#0692c4", "#ac5688", "#94822e", "#897414", "#961506","#3a6095", "#8f4698","#3e8779","#e26e00", "#700d49","#6eaa4c", "#8f7b5a", "#81409f","#4a5364", "#418f99","#506aa7", "#943b48"])'
+
+# Make the Network
+sankeyNetwork(Links = metadata_sankey, Nodes = nodes_names,
+              Source = "IDsource", Target = "IDtarget",
+              Value = "value", NodeID = "name", 
+              sinksRight=FALSE, colourScale=ColourScal, 
+              nodeWidth=10, fontSize=10, nodePadding=10)#, width = 5)
+
+metadata_sankey$value <- metadata_sankey$value/1000
+sn <- sankeyNetwork(Links = metadata_sankey, Nodes = nodes_names,
+                    Source = "IDsource", Target = "IDtarget",
+                    Value = "value", NodeID = "name", fontFamily = "Arial",
+                    fontSize= 12, nodeWidth = 20, margin = list(left = 260, right = 260))
+sn
+
+sankey <- onRender(
+  sn,
+  '
+  function(el, x) {
+  d3.selectAll(".node text").attr("text-anchor", "begin").attr("x", 10);
+  }
+  '
+)
+sankey
+
+library(networkD3)
+library(htmlwidgets)
+saveWidget(sankey, file="./sankeyDiagram.html")
+```
+
+
+```{r eval=FALSE}
+inteData <- readRDS("all_HsMs_CCA_W1_DPW3_sampling_noSkin.rds")
+
+inteData <- DietSeurat(inteData, assays = "RNA")
+alldata = SplitObject(inteData, split.by = "orig.ident")
+
+# normalize and identify variable features for each dataset independently
+alldata <- lapply(X = alldata, FUN = SCTransform, method = "glmGamPoi")
+
+# Run CCA using defaults
+features <- SelectIntegrationFeatures(object.list = alldata, nfeatures = 3000)
+alldata <- PrepSCTIntegration(object.list = alldata, anchor.features = features)
+inteData <- merge(alldata[[1]], y = c(alldata[2:length(alldata)]), merge.data = TRUE)
+VariableFeatures(inteData) <- features
+inteData <- RunPCA(inteData, npcs = 50, assay = "SCT")
+ElbowPlot(inteData, ndims = 50)
+
+inteData <- RunUMAP(inteData, dims = 1:30, assay = "SCT", reduction = "pca")
+DimPlot(inteData, group.by = "Species") + NoAxes()
+
+pdf("Human_mouse_Wound1_DPW3_integration_SampleQC_beforeCCA.pdf", useDingbats = F, width = 5, height = 4)
+DimPlot(inteData, group.by = "Species") + NoAxes()
+dev.off()
+```
+
+# SessionInfo
+```{r}
+sessionInfo()
+```
+
