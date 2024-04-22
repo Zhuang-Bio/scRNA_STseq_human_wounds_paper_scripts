@@ -1,6 +1,6 @@
 # Spatiotemporal Dynamics of Skin Wound Healing
 
-This repository contains the data processing and analysis scripts for our single-cell RNA-seq and Spatial transcript (ST-seq) of skin wound healing study **Liu et al. preprint (2024)**.
+This repository contains the data processing and analysis scripts for our single-cell RNA-seq and Spatial transcript (ST-seq) of skin wound healing study leaded by ***Liu et al.***.
 
 
 ## Repository Contents
