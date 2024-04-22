@@ -1,0 +1,908 @@
+---
+title: "Cross species integration of wound healing"
+author: "Zhuang Liu"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true #add a table of contents (TOC)
+    toc_depth: 3 #headers' level in the toc
+    toc_float: true #toc visible even when scrolled
+    theme: lumen
+    highlight: tango
+    code_folding: show
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.align='center', fig.width=12, fig.height = 6, warning=FALSE, message=FALSE)
+```
+
+```{r warning=FALSE, message=FALSE}
+library(Seurat)
+library(SeuratObject)
+library(SeuratDisk)
+library(tidyverse)
+library(patchwork)
+library(harmony)
+library(scCustomize)
+```
+
+# load the data and re-run the UMAP
+```{r eval=TRUE}
+inteData <- readRDS("all_HsMs_CCA_W1_DPW3_sampling_noSkin.rds")
+# UMAP changes a bit (n.epochs = 200)
+#inteData <- RunUMAP(inteData, dims = 1:30, assay = "integrated", reduction = "pca", n.neighbors = 40,
+#                    min.dist = 0.5, n.epochs = 500, spread = 1, learning.rate = 1)
+
+DimPlot(inteData, group.by = "orig.ident") + NoAxes()
+DimPlot(inteData, group.by = "Species") + NoAxes()
+DimPlot(inteData, group.by = "CellType", label = T, split.by = "Condition", ncol = 4) + ggtitle("") + NoLegend()
+DimPlot(inteData, group.by = "integrated_snn_res.0.3", label = T, split.by = "Condition", ncol = 4) + ggtitle("") + NoLegend()
+```
+
+```{r eval=FALSE}
+p1 <- FeaturePlot(inteData, features = c("IL24"), split.by = "Condition", cols = c("grey90", "red"), order = T)
+p1
+pdf("gene_expression_IL24.pdf", useDingbats = FALSE, width = 8, height = 4)
+p1
+dev.off()
+
+p2 <- FeaturePlot(inteData, features = c("NRG1","AREG", "FOSL1", "GJB2", "MKI67"), split.by = "Condition", cols = c("grey90", "red"), order = T)
+p2
+pdf("gene_expression_other2.pdf", useDingbats = FALSE, width = 8, height = 20)
+p2
+dev.off()
+
+
+VlnPlot(inteData, features = c("IL24"), group.by = "integrated_snn_res.0.3", split.by = "Condition")
+
+FeaturePlot(inteData, features = c("FOSL1"), split.by = "Condition", cols = c("grey90", "red"), order = T, pt.size = 0.8, min.cutoff = 0.1)
+VlnPlot(inteData, features = c("FOSL1"), group.by = "integrated_snn_res.0.3", split.by = "Condition")
+
+table(inteData$CellType, inteData$integrated_snn_res.0.3)
+table(inteData$CellType, inteData$integrated_snn_res.0.5)
+table(inteData$CellType, inteData$integrated_snn_res.0.8)
+
+
+FeaturePlot(inteData, features = c("IL24"), split.by = "Condition", cols = c("grey90", "red"), order = T)
+
+FeaturePlot(inteData, features = c("KRT6B", "KRT16"), split.by = "Condition", cols = c("grey90", "red"), order = F)
+
+FeaturePlot(inteData, features = c("MRGPRX2", "CPA3", "KIT", "TPSB2", "CMA1"), split.by = "Condition", cols = c("grey90", "red"), order = F)
+
+
+# check the MMP expression in human and mouse wound healing
+mmps <- rownames(inteData)[grepl("^MMP", rownames(inteData))] %>% sort()
+timps <- rownames(inteData)[grepl("^TIMP", rownames(inteData))] %>% sort()
+
+FeaturePlot(inteData, features = mmps[1:5], split.by = "Condition", cols = c("grey90", "red"), order = T)
+FeaturePlot(inteData, features = mmps[6:10], split.by = "Condition", cols = c("grey90", "red"), order = T)
+FeaturePlot(inteData, features = mmps[11:15], split.by = "Condition", cols = c("grey90", "red"), order = T)
+FeaturePlot(inteData, features = mmps[16:19], split.by = "Condition", cols = c("grey90", "red"), order = T)
+
+FeaturePlot(inteData, features = c("MMP1", "MMP3", "MMP9", "MMP10", "MMP13"), split.by = "Condition", cols = c("grey90", "red"), order = T)
+FeaturePlot(inteData, features = c("MMP14", "MMP15", "MMP28"), split.by = "Condition", cols = c("grey90", "red"), order = T)
+FeaturePlot(inteData, features = timps, split.by = "Condition", cols = c("grey90", "red"), order = T)
+
+
+# Check the markers of mast cells from paper https://doi.org/10.1084/jem.20230570
+## Cluster 1
+FeaturePlot(inteData, features = c("TNFSF12","GRAP2","LTC4S","NCS1","SOCS1"), split.by = "Condition", cols = c("grey90", "red"), order = T)
+## Cluster 2
+FeaturePlot(inteData, features = c("PHLDA1","EGR3", "PTGS2","CD83","IL13"), split.by = "Condition", cols = c("grey90", "red"), order = T)
+## Cluster 3
+FeaturePlot(inteData, features = c("CCL2", "CTSG","ADCYAP1"), split.by = "Condition", cols = c("grey90", "red"), order = T)
+## Cluster 4
+FeaturePlot(inteData, features = c("VEGFA","CD274", "NR3C1","CSF1","IFNGR1", "IL18R1"), split.by = "Condition", cols = c("grey90", "red"), order = T)
+## Cluster 5
+FeaturePlot(inteData, features = c("CMA1","CXCR4", "CTSG","IL5RA","NR4A1", "NR4A2", "NR4A3"), split.by = "Condition", cols = c("grey90", "red"), order = T)
+## Cluster 6
+FeaturePlot(inteData, features = c("CXCL8","NTRK1", "ITGB2","CSF2RB","ITGAM"), split.by = "Condition", cols = c("grey90", "red"), order = T)
+
+```
+
+
+# 5. CellType plotting
+```{r fig.width=12, fig.height=8}
+DimPlot(inteData, group.by = "Species", cols = c("#d8b365", "#5ab4ac")) + ggtitle("Cross species integration")
+DimPlot(inteData, group.by = "Species", split.by = "Species", cols = c("#d8b365", "#5ab4ac")) + ggtitle("Cross species integration")
+
+DimPlot(inteData, group.by = "CellType", label = T, split.by = "Species") + ggtitle("")
+DimPlot(inteData, group.by = "CellType", label = T, split.by = "Condition", ncol = 4) + ggtitle("") + NoLegend()
+DimPlot(inteData, group.by = "integrated_snn_res.0.3", label = T, split.by = "Condition")
+DimPlot(inteData, group.by = "integrated_snn_res.0.5", label = T, split.by = "Condition")
+DimPlot(inteData, group.by = "integrated_snn_res.0.8", label = T, split.by = "Condition")
+DimPlot(inteData, group.by = "integrated_snn_res.1", label = T, split.by = "Condition")
+```
+
+
+# 8. Marker genes of cell cluster
+```{r eval=FALSE}
+library(future)
+options(future.globals.maxSize = 20000 * 1024^2)
+plan("multisession", workers = 4)
+plan()
+
+Idents(inteData) <- "integrated_snn_res.0.3" 
+markers <- FindAllMarkers(
+  inteData,
+  only.pos = TRUE,
+  min.pct = 0.25,
+  min.diff.pct = 0.1,
+  logfc.threshold = 0.3,
+  test.use = "wilcox")
+
+# load the gene anno
+annot <- readRDS("/Users/zhuliu/Desktop/sc st/Versions_SC_ST_Project/V2_Figures_230817/06-CrossSpecies/02-scRNA-seq mouse wound healing/s2-human_mouse_integration/00-gene_conversion_hs_ms/humanAnnotation.rds")
+####----add the info and reorder the columns----####
+cluster_markers_anno <- markers %>% 
+  #left_join(., annot, by=c("gene" = "external_gene_name")) %>% 
+  dplyr::select(6, 7, 2:4, 1, 5, everything()) %>% arrange(cluster, desc(avg_log2FC))
+
+data.table::fwrite(cluster_markers_anno, "all_HsMs_CCA_W1_DPW3_sampling_withSkin_0.3Marker.txt", sep="\t")
+
+topmg10 <- cluster_markers_anno %>% filter(cluster == 7) %>% slice(1:15) %>% pull(gene)
+FeaturePlot(inteData, features = topmg10[1:5], split.by = "Condition", cols = c("grey90", "red"), order = F)
+FeaturePlot(inteData, features = topmg10[6:10], split.by = "Condition", cols = c("grey90", "red"), order = F)
+FeaturePlot(inteData, features = topmg10[11:15], split.by = "Condition", cols = c("grey90", "red"), order = F)
+
+
+topmg10_2 <- cluster_markers_anno %>% filter(cluster == 9) %>% slice(1:15) %>% pull(gene)
+FeaturePlot(inteData, features = topmg10_2[1:5], split.by = "Condition", cols = c("grey90", "red"), order = F)
+FeaturePlot(inteData, features = topmg10_2[6:10], split.by = "Condition", cols = c("grey90", "red"), order = F)
+FeaturePlot(inteData, features = topmg10_2[11:15], split.by = "Condition", cols = c("grey90", "red"), order = F)
+
+FeaturePlot(inteData, features = "MKI67", split.by = "Condition", cols = c("grey90", "red"), order = F)
+```
+
+# rename the cell cluster number
+```{r eval=FALSE}
+# re-joint the cell clusters
+anno.cl <- list()
+anno.cl$'1' = c(3) 
+anno.cl$'2' = c(5)
+anno.cl$'3' = c(7)
+anno.cl$'4' = c(9) 
+anno.cl$'5' = c(0) 
+anno.cl$'6' = c(1) 
+anno.cl$'7' = c(4)  
+anno.cl$'8' = c(13) 
+anno.cl$'9' = c(11) 
+anno.cl$'10'  = c(2) 
+anno.cl$'11'  = c(14) 
+anno.cl$'12'  = c(16) 
+anno.cl$'13'  = c(15)
+anno.cl$'14'  = c(10)
+anno.cl$'15'  = c(8) 
+anno.cl$'16'  = c(6) 
+anno.cl$'17'  = c(12) 
+anno.cl$'18'  = c(17)
+
+trans = rep(names(anno.cl), times = unlist(lapply(anno.cl, length)))
+names(trans) = unlist(anno.cl)
+inteData$newCluster = trans[as.character(inteData$integrated_snn_res.0.3)] %>% as.character()
+inteData$newCluster = factor(inteData$newCluster, levels = names(anno.cl))
+table(inteData$newCluster, inteData$Condition)
+DimPlot(inteData, group.by = "newCluster", label = T) + DimPlot(inteData, group.by = "integrated_snn_res.0.3", label = T)
+```
+
+```{r}
+inteData <- NormalizeData(inteData)
+Idents(inteData) <- inteData$newCluster
+
+# compute the conserved marker genes in human and mouse
+get_conserved <- function(cluster){
+  FindConservedMarkers(inteData,
+                       ident.1 = cluster,
+                       grouping.var = "Condition",
+                       only.pos = TRUE, 
+                       logfc.threshold = 0.3,
+                       min.diff.pct = 0.1) %>%
+    rownames_to_column(var = "gene") %>% dplyr::mutate(cluster = cluster)
+}
+
+# Iterate function across desired clusters
+conserved_markers <- map_dfr(c(1:18), get_conserved)
+data.table::fwrite(conserved_markers, file = "Manuscript_newCluster_markergenes.txt", sep = "\t")
+```
+
+```{r}
+conserved_markers_anno <- data.table::fread("Manuscript_newCluster_markergenes.txt")
+conserved_markers_anno$cluster <- as.factor(conserved_markers_anno$cluster)
+
+# Extract top 10 markers per cluster
+top10 <- conserved_markers_anno %>% 
+  mutate(avg_fc = (Wound1_avg_log2FC + DPW3_avg_log2FC) /2) %>% 
+  group_by(cluster) %>% 
+  top_n(n = 10, 
+        wt = avg_fc)
+
+top5 <- conserved_markers_anno %>% 
+  dplyr::filter(Wound1_pct.1 > 0.5 & DPW3_pct.1 > 0.5) %>% 
+  mutate(avg_fc = (Wound1_avg_log2FC + DPW3_avg_log2FC) /2) %>% 
+  group_by(cluster) %>% 
+  top_n(n = 5, 
+        wt = avg_fc)
+DotPlot(inteData, features = unique(top5$gene), group.by = "newCluster", cols = c("white", "#cb181d"), 
+        dot.scale = 5, col.min = 0, dot.min = 0.1
+) + theme(axis.text.x = element_text(angle = 90),
+          panel.border = element_rect(colour = "black", fill=NA)) + labs(x="", y="") #coord_flip()
+
+
+topMarkers <- c("KRT15", "COL17A1", "MKI67", "CDC20", "NRG1", "IL24","AREG","FOSL1","GJB2",  "KRT6B", "KRT16", "KRT1", "KCNK7", # Cluster 1-5 
+                "DSC1", "SOX9", "DCT", "PDGFRA", "COL1A2", "ACTA2", "CCL21", "VWF", "CD3D", "CTSS", "IL1B", "TPSB2", "CD207")
+
+
+# Create Plots
+library(scCustomize)
+Stacked_VlnPlot(seurat_object = inteData, features = topMarkers, x_lab_rotate = F, group.by = "newCluster", 
+                assay= "RNA", slot = "data")
+
+DotPlot(inteData, features = rev(topMarkers), group.by = "newCluster", cols = c("white", "#cb181d"), 
+        dot.scale = 4, col.min = 0, dot.min = 0.1
+) +coord_flip() + theme(axis.text.x = element_text(angle = 0),
+          panel.border = element_rect(colour = "black", fill=NA)) + labs(x="", y="") 
+
+pdf("conserved_markers_res0.3.pdf", useDingbats = F, width = 6, height = 7)
+dev.off()
+
+
+DotPlot(inteData, features = topMarkers, group.by = "newCluster", cols = c("white", "#cb181d"), dot.scale = 5, col.min = 0, dot.min = 0) + RotatedAxis()
+FeaturePlot(inteData, features = c("KRT6B", "KRT16", "KRT1"), split.by = "Condition", cols = c("grey90", "red"), ncol = 4)
+```
+
+
+### Pie chart
+```{r eval=FALSE}
+###############################################
+#-- Cell proportion analysis across species --#
+## Step 1. calculate the cell types number per sample, add the location information, 
+## total numbers, as well the condition information
+metadata <- inteData@meta.data
+cl_species <- table(metadata$Condition, metadata$Species) %>% as.data.frame() %>% dplyr::filter(Freq > 0)
+
+sm_ct_nu <- table(metadata$Condition, metadata$integrated_snn_res.0.3) %>% as.data.frame() %>% 
+  setNames(c("Sample", "CellCluster", "Num")) %>%
+  left_join(., cl_species, by = c("Sample" = "Var1"))  %>% mutate(prop = Num / Freq)
+
+## step 2. calculate the total normalized proportions of each cell type per condition
+df.group <- sm_ct_nu %>% group_by(CellCluster, Var2) %>% summarise(Freq2=sum(prop)) %>% 
+  ungroup() %>% group_by(CellCluster) %>% mutate(Freq_new = Freq2/sum(Freq2), lbl = scales::percent(Freq_new)) %>% ungroup()
+
+df.group$CellCluster <- factor(df.group$CellCluster, levels = names(trans))
+ggplot(data=df.group, aes(x=" ", y=Freq_new, group=Var2, colour=Var2, fill=Var2)) +
+  geom_bar(width = 1, stat = "identity") +
+  scale_fill_manual(values = c("#c45027", "#00afbb")) +
+  scale_color_manual(values = c("#c45027", "#00afbb")) +
+  coord_polar("y", start=0) + 
+  facet_grid(CellCluster ~ .) + theme_void()
+
+pdf("all_HsMs_CCA_W1_DPW3_sampling_noSkin_PieChart_res0.03.pdf", useDingbats = FALSE, width = 3, height = 6)
+dev.off()
+```
+
+
+```{r eval=TRUE, fig.width=8, fig.height=6}
+ct.cols <- c("#d94701", "#fd8d3c", "#fdbe85", #Basal clusters
+             "#33A02C", "#72BF5A", "#B2DF8A", #Spinous clusters
+             "#f768a1", "#d4b9da", #Granular, Hair follicle
+             "#737373", #MEL
+             "#0570b0", "#3690c0", "#92c5de", "#d1e5f0", #Fibroblast clusters
+             "#c0a700", "#1a9850", "#fb9a99", "#8d4720", 
+             "#35978f", "#41b6c4", "#80cdc1","#df65b0", 
+             "#dd3497", "#807dba","#6a3d9a","#9e9ac8", "#b15928"
+)
+
+fact_lev <- c("Bas-I", "Bas-prolif", "Bas-mig", 
+              "Spi-I", "Spi-II", "Spi-mig", 
+              "Gra-I", "HF", 
+              "MEL", 
+              "FB-I", "FB-II", "FB-III", "FB-prolif", 
+              "Schwann", "PC-vSMC", "LE", "VE", 
+              "NK-cell", "Th", "Plasma_Bcell", "Mast-cell", 
+              "Mono-Mac", "cDC1", "cDC2", "DC3", "LC")
+
+ct.type =sort(unique(inteData$CellType));ct.type
+dif.ct=setdiff(ct.type, fact_lev)
+
+fac_ms <- c("Bas1","Bas2","Bas3","Bas4","Spi","Gra",
+            "HF1","HF2","HF3","HF4","Mel",
+            "Fb1","Fb2","Fb3",
+            "Mus1","Mus2","SG","EC1","EC2",
+            "gdT","Th", # Th is the same name as in human wound
+            "Mac","Lc")
+nodecolor <- c('#3366cc','#be4032','#f27706','#85139e',#BAS
+               '#8c970b','#39683f', # Spi, Gra
+               '#0692c4', "#ac5688", "#94822e", "#897414", #HF
+               "#961506", #MEL
+               "#3a6095", "#8f4698","#3e8779", #FB
+               "#e26e00", "#700d49",#MUSC
+               "#6eaa4c", #SG
+               "#8f7b5a", "#81409f", #EC
+               "#4a5364", "#418f99", # Tcell
+               "#506aa7", "#943b48" #LC, MAC
+)
+ct.type.final <- c(fact_lev, fac_ms)
+# change a bit the color of unknown cell type
+#library(scales)
+#hex <- hue_pal()(23)
+ct.cols.final <- c(ct.cols, nodecolor)
+
+names(ct.cols.final) <- ct.type.final
+```
+
+
+```{r eval=TRUE, fig.width=8, fig.height=6}
+p1 <- DimPlot(inteData, group.by = "Species", cols = c("#d8b365", "#5ab4ac")) + ggtitle("Cross species integration") + NoLegend() + NoAxes()
+p2 <- DimPlot(inteData, group.by = "Species", split.by = "Species", cols = c("#d8b365", "#5ab4ac")) + ggtitle("Cross species integration") + NoLegend() + NoAxes()
+#pdf("Human_mouse_Wound1_DPW3_integration.pdf", useDingbats = F, width = 12, height = 5)
+p1 + p2 + plot_layout(widths = c(1,2))
+#dev.off()
+
+#pdf("Human_mouse_Wound1_DPW3_integration_SampleQC.pdf", useDingbats = F, width = 5, height = 4)
+DimPlot(inteData, group.by = "orig.ident", label = F) + NoAxes()
+#dev.off()
+
+p1 <- DimPlot(inteData, group.by = "integrated_snn_res.0.3", raster = F, label = T,label.size = 4) + NoAxes() + NoLegend()
+p2 <- DimPlot(inteData, group.by = "integrated_snn_res.0.3", combine = T, split.by = "Condition", raster = F,label.size = 4, label = T, pt.size = 0.6) + ggtitle("Cross species integration") + NoLegend() + NoAxes()
+#pdf("Human_mouse_Wound1_DPW3_integration_cluster.pdf", useDingbats = F, width = 12, height = 5)
+p1 + p2 + plot_layout(widths = c(1,2))
+#dev.off()
+
+p1 <- DimPlot(inteData, group.by = "newCluster", raster = F, label = T,label.size = 4) + NoAxes() + NoLegend()
+p2 <- DimPlot(inteData, group.by = "newCluster", combine = T, split.by = "Condition", raster = F,label.size = 4, label = T, pt.size = 0.6) + ggtitle("Cross species integration") + NoLegend() + NoAxes()
+p1 + p2 + plot_layout(widths = c(1,2))
+
+inteData$CellType2 <- ifelse(inteData$CellType == "Th", ifelse(inteData$Species == "Mouse", "Th_ms", inteData$CellType), inteData$CellType)
+ct.type.final[47] <- "Th_ms"
+inteData$CellType2 <- factor(inteData$CellType2, levels = ct.type.final)
+
+DimPlot(inteData, group.by = "CellType2", label = T, split.by = "Condition", cols = ct.cols.final) + NoAxes() + NoLegend()
+
+#pdf("Human_mouse_Wound1_DPW3_integration_celltype.pdf", useDingbats = F, width = 11, height = 5)
+DimPlot(inteData, group.by = "CellType2", label = T, split.by = "Condition", cols = ct.cols.final) + NoAxes()
+#dev.off()
+
+table(inteData$newCluster, inteData$Condition)
+
+# Check the expression of mouse panniculus carnosus muscle marker
+pdf("Panniculus_carnosus_muscle_marker.pdf", useDingbats = F, width = 10, height = 10)
+dev.off()
+FeaturePlot(inteData, features = c("MYF5","MYF6", "PAX3", "PAX7", "MYH1"), split.by = "Condition", order = T, cols = c("grey90", "red"), ncol = 4)
+```
+
+
+# suppleFigure Migration and proliferation scores of migrating clusters 3&4
+```{r}
+conserved_markers_anno <- data.table::fread("Manuscript_newCluster_markergenes.txt")
+conserved_markers_anno$cluster <- as.factor(conserved_markers_anno$cluster)
+
+# Extract top 10 markers per cluster
+top10 <- conserved_markers_anno %>% 
+  mutate(avg_fc = (Wound1_avg_log2FC + DPW3_avg_log2FC) /2) %>% 
+  group_by(cluster) %>% 
+  top_n(n = 10, wt = avg_fc)
+basmig <- top10 %>% dplyr::filter(cluster == 3) %>% pull(gene)
+basmig <- list(basmig = basmig)
+Spimig <- top10 %>% dplyr::filter(cluster == 4) %>% pull(gene)
+Spimig <- list(Spimig = Spimig)
+Prolif <- top10 %>% dplyr::filter(cluster == 2) %>% pull(gene)
+Prolif <- list(Prolif = Prolif)
+
+# add the migration score (GO:0051549) to meta.data (KET16 AND KRT6A/B/C from literatures)
+mig_gene <- list(mig_score=c("HAS2", "FGF7", "KRT16", "KRT6A", "KRT6B", "KRT6C", 
+                             "MAPRE2", "IQSEC1", "FGF10", "ADAM9", "MMP9", "ARF6",
+                             "IQSEC1", "MTOR", "MAP4K4", "EPB41L4B", "HBEGF"))
+# combine all the migrating genes
+mig_com <- list(mig_score= c(mig_gene$mig_score, basmig$basmig, Spimig$Spimig))
+
+# add the proliferation score(Science, 374 (6574), abe6474. • DOI: 10.1126/science.abe6474)
+prolif_gene <- list(prolif_score=c("ZWINT", "E2F1", "FEN1", "FOXM1", "H2AZ1", "HMGB2", 
+                                   "MCM2", "MCM3", "MCM4", "MCM5", "MCM6", "MKI67", "MYBL2", 
+                                   "PCNA", "PLK1", "CCND1", "AURKA", "BUB1", "TOP2A", "TYMS", 
+                                   "DEK", "CCNB1", "CCNE1"))
+# combine all the proliferating genes
+prolif_com <- list(prolif_score= c(prolif_gene$prolif_score, Prolif$Prolif))
+
+inteData <- AddModuleScore(inteData, features = mig_gene, name = "mig_score", assay = "RNA") 
+inteData <- AddModuleScore(inteData, features = prolif_gene,name="prolif_score",assay = "RNA") 
+inteData <- AddModuleScore(inteData, features = basmig,name="BasMig_score", assay = "RNA") 
+inteData <- AddModuleScore(inteData, features = Spimig,name= "Spimig_score",assay = "RNA") 
+inteData <- AddModuleScore(inteData, features = Prolif,name="newProlif_score",assay = "RNA") 
+inteData <- AddModuleScore(inteData, features = Spimig,name= "mig_com_score",assay = "RNA") 
+inteData <- AddModuleScore(inteData, features = Prolif,name="prolif_com_score",assay = "RNA") 
+
+
+VlnPlot(inteData, features = "mig_score1", pt.size = 0, group.by = 'newCluster')
+VlnPlot(inteData, features = "prolif_score1", pt.size = 0, group.by = 'newCluster')
+VlnPlot(inteData, features = "BasMig_score1", pt.size = 0.0001, group.by = 'newCluster')
+VlnPlot(inteData, features = "Spimig_score1", pt.size = 0.0001, group.by = 'newCluster')
+VlnPlot(inteData, features = "newProlif_score1", pt.size = 0.0001, group.by = 'newCluster')
+VlnPlot(inteData, features = "mig_com_score1", pt.size = 0.0001, group.by = 'newCluster')
+VlnPlot(inteData, features = "prolif_com_score1", pt.size = 0.0001, group.by = 'newCluster')
+
+library(scCustomize)
+Stacked_VlnPlot(seurat_object = inteData, 
+                features = c(#"mig_score1", "prolif_score1",
+                             "BasMig_score1", "Spimig_score1", "newProlif_score1"#,
+                             #"mig_com_score1", "prolif_com_score1"
+                             ), 
+                x_lab_rotate = TRUE, group.by = 'newCluster', 
+                #pt.size = 0.0001, #split.by = "Condition"
+                ggplot_default_colors = T
+                )
+
+mt_scores <- inteData@meta.data %>% dplyr::filter(newCluster == 3 | newCluster == 4)
+
+p1 <- ggplot(mt_scores, aes(x=BasMig_score1, y=newProlif_score1,
+                            color=newCluster, fill=newCluster)) +
+  geom_point(size=0.8) +
+  #scale_color_manual(values=nodecolor)+ 
+  scale_x_continuous(limits = c(-0.2,2.2),breaks = c(0, 0.5,1,1.5,2)) +
+  scale_y_continuous(limits = c(-0.12, 0.8),breaks = c(0, 0.2, 0.4,0.6,0.8)) +
+  xlab("Basal migration score") + ylab("Proliferation score") + 
+  theme_classic() +
+  theme(
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.border = element_rect(colour = "black",fill = NA,size = 1),
+    axis.text.x = element_text(size = 12), 
+    axis.text.y = element_text(size = 12),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    legend.position = "right",#top,bottom,left,right
+    legend.spacing = unit(0,"cm"),
+    aspect.ratio = 1) +
+  facet_wrap(vars(Condition))
+p1
+
+p2 <- ggplot(mt_scores, aes(x=Spimig_score1, y=newProlif_score1,
+                            color=newCluster, fill=newCluster)) +
+  geom_point(size=0.8) +
+  #scale_color_manual(values=nodecolor)+ 
+  #scale_x_continuous(limits = c(-0.2,2.2),breaks = c(0, 0.5,1,2)) +
+  scale_y_continuous(limits = c(-0.12, 0.8),breaks = c(0, 0.2, 0.4,0.6,0.8)) +
+  xlab("Spinous migration score") + ylab("Proliferation score") + 
+  theme_classic() +
+  theme(
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.border = element_rect(colour = "black",fill = NA,size = 1),
+    axis.text.x = element_text(size = 12), 
+    axis.text.y = element_text(size = 12),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    legend.position = "right",#top,bottom,left,right
+    legend.spacing = unit(0,"cm"),
+    aspect.ratio = 1) +
+  facet_wrap(vars(Condition))
+p2
+
+p3 <- ggplot(mt_scores, aes(x=mig_score1, y=prolif_score1,
+                            color=newCluster, fill=newCluster)) +
+  geom_point(size=0.8) +
+  #scale_color_manual(values=nodecolor)+ 
+  #scale_x_continuous(limits = c(-0.2,2.2),breaks = c(0, 0.5,1,2)) +
+  #scale_y_continuous(limits = c(-0.12, 0.8),breaks = c(0, 0.2, 0.4,0.6,0.8)) +
+  xlab("Migration score") + ylab("Proliferation score") + 
+  theme_classic() +
+  theme(
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.border = element_rect(colour = "black",fill = NA,size = 1),
+    axis.text.x = element_text(size = 12), 
+    axis.text.y = element_text(size = 12),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    legend.position = "right",#top,bottom,left,right
+    legend.spacing = unit(0,"cm"),
+    aspect.ratio = 1) +
+  facet_wrap(vars(Condition))
+p3
+
+p4 <- ggplot(mt_scores, aes(x=mig_com_score1, y=prolif_com_score1,
+                            color=newCluster, fill=newCluster)) +
+  geom_point(size=0.8) +
+  #scale_color_manual(values=nodecolor)+ 
+  #scale_x_continuous(limits = c(-0.2,2.2),breaks = c(0, 0.5,1,2)) +
+  #scale_y_continuous(limits = c(-0.12, 0.8),breaks = c(0, 0.2, 0.4,0.6,0.8)) +
+  xlab("Migration score") + ylab("Proliferation score") + 
+  theme_classic() +
+  theme(
+    panel.grid.minor = element_blank(),
+    panel.grid.major = element_blank(),
+    panel.border = element_rect(colour = "black",fill = NA,size = 1),
+    axis.text.x = element_text(size = 12), 
+    axis.text.y = element_text(size = 12),
+    axis.title.x = element_text(size = 14),
+    axis.title.y = element_text(size = 14),
+    legend.position = "right",#top,bottom,left,right
+    legend.spacing = unit(0,"cm"),
+    aspect.ratio = 1) +
+  facet_wrap(vars(Condition))
+p4
+
+pdf(file = "Migration_score_Proliferation_score.pdf", width = 8, height = 8, useDingbats = F)
+p1/p2 + plot_layout(guides = "collect")
+dev.off()
+p1/p2/p3/p4 + plot_layout(guides = "collect")
+```
+
+# Plotting Sankey driagram and pie chart
+```{r eval=FALSE}
+metadata <- inteData@meta.data
+metadata_hs <- metadata %>% filter(Species %in% "Human")
+metadata_hs_df <- table(metadata_hs$CellType, metadata_hs$integrated_snn_res.0.3) %>% as.data.frame() %>% 
+  setNames(c("source", "target", "value")) %>% dplyr::filter(value > 0)
+
+metadata_ms <- metadata %>% filter(Species %in% "Mouse")
+metadata_ms_df <- table(metadata_ms$integrated_snn_res.0.3, metadata_ms$CellType) %>% as.data.frame() %>% 
+  setNames(c("source", "target", "value")) %>% dplyr::filter(value > 0) 
+metadata_ms_df$target <- gsub("Th", "Th_ms", metadata_ms_df$target)
+fac_ms <- c("Bas1","Bas2","Bas3","Bas4","Spi","Gra",
+            "HF1","HF2","HF3","HF4","Mel",
+            "Fb1","Fb2","Fb3",
+            "Mus1","Mus2","SG","EC1","EC2",
+            "gdT","Th_ms", # Th is the same name as in human wound
+            "Mac","Lc")
+metadata_ms_df$target <- factor(metadata_ms_df$target, levels = fac_ms)
+
+################
+# Sankey diagram
+library(networkD3)
+metadata_sankey <- rbind(metadata_hs_df, metadata_ms_df)
+
+# normalization 
+norm_df <- table(metadata$Species)
+metadata_sankey$total <- c(rep(4601, 61), rep(4601, 79))
+metadata_sankey <- metadata_sankey %>% dplyr::mutate(freq = value / total)
+
+
+#metadata_sankey <- metadata_hs_df
+nodes_names <- data.frame(name=c(levels(metadata_sankey$source), levels(metadata_sankey$target)))
+nodes_names <- nodes_names %>% dplyr::slice(-27:-44)
+#nodes_names <- data.frame(name=c(as.character(metadata_sankey$source), as.character(metadata_sankey$target)))
+#nodes_names$name <- factor(nodes_names$name, levels = nodes_names)
+
+metadata_sankey$IDsource=match(metadata_sankey$source, nodes_names$name)-1 
+metadata_sankey$IDtarget=match(metadata_sankey$target, nodes_names$name)-1
+
+# prepare colour scale
+ColourScal ='d3.scaleOrdinal() .range(["#d94701","#fd8d3c", "#fdbe85", "#33A02C", "#72BF5A", "#B2DF8A", "#f768a1","#d4b9da", "#737373", "#0570b0", "#3690c0", "#92c5de", "#d1e5f0", "#c0a700", "#1a9850", "#fb9a99", "#8d4720", "#35978f", "#41b6c4", "#80cdc1","#df65b0", "#dd3497", "#807dba","#6a3d9a","#9e9ac8", "#b15928","#d94701", "#fd8d3c", "#fdbe85", "#33A02C", "#72BF5A", "#B2DF8A","#f768a1", "#d4b9da","#737373", "#0570b0", "#3690c0", "#92c5de", "#d1e5f0", "#c0a700", "#1a9850", "#fb9a99", "#8d4720", "#35978f", "#41b6c4", "#80cdc1", "#3366cc","#be4032","#f27706","#85139e","#8c970b","#39683f", "#0692c4", "#ac5688", "#94822e", "#897414", "#961506","#3a6095", "#8f4698","#3e8779","#e26e00", "#700d49","#6eaa4c", "#8f7b5a", "#81409f","#4a5364", "#418f99","#506aa7", "#943b48"])'
+
+# Make the Network
+sankeyNetwork(Links = metadata_sankey, Nodes = nodes_names,
+              Source = "IDsource", Target = "IDtarget",
+              Value = "value", NodeID = "name", 
+              sinksRight=FALSE, colourScale=ColourScal, 
+              nodeWidth=10, fontSize=10, nodePadding=10)#, width = 5)
+
+metadata_sankey$value <- metadata_sankey$value/1000
+sn <- sankeyNetwork(Links = metadata_sankey, Nodes = nodes_names,
+                    Source = "IDsource", Target = "IDtarget",
+                    Value = "value", NodeID = "name", fontFamily = "Arial",
+                    fontSize= 12, nodeWidth = 20, margin = list(left = 260, right = 260))
+sn
+
+sankey <- onRender(
+  sn,
+  '
+  function(el, x) {
+  d3.selectAll(".node text").attr("text-anchor", "begin").attr("x", 10);
+  }
+  '
+)
+sankey
+
+library(networkD3)
+library(htmlwidgets)
+#saveWidget(sankey, file="./sankeyDiagram.html")
+```
+
+
+# 10. manuscript figures (DEGs)
+```{r}
+# DE analysis between human and mouse data
+Idents(inteData) <- inteData$newCluster
+# load the gene annotation file
+anno_human <- readRDS("/Users/zhuliu/Desktop/sc st/Versions_SC_ST_Project/V2_Figures_231017/01-Scripts/custom functions/humanAnnotation.rds")
+
+####----DE functions----####
+DE.genes <- function(group1 = NULL, group2 = NULL, groupby = NULL, subsetIdent = NULL, minPct = 0.25, fc = 0){
+  tmp <- FindMarkers(inteData, 
+                     ident.1 = group1, 
+                     ident.2 = group2, 
+                     group.by = groupby, 
+                     subset.ident = subsetIdent,
+                     assay = "RNA",
+                     test.use = "MAST",
+                     min.pct = minPct, 
+                     logfc.threshold = fc,
+                     min.diff.pct = 0.3)
+  tmp <- tmp %>% tibble::rownames_to_column(var = "gene") %>% 
+    arrange(desc(avg_log2FC)) %>% 
+    left_join(., anno_human, by=c("gene" = "external_gene_name")) %>% 
+    dplyr::select(1, 3, 2, 6, everything()) %>% 
+    #filter(p_val_adj < 0.05) %>% #or filter out the genes with p-value < 0.05
+    mutate(Type = factor(ifelse(p_val_adj < 0.05 & abs(avg_log2FC) >= 0.3, ifelse(avg_log2FC >= 0.3 ,'Up','Down'),'Not'))) #add a column with regulation direction
+  return(tmp)
+}
+
+##-- draw the volcano plot --##
+DE.volcano <- function(data = NULL, avgfc = 1, padj = 0.05){
+  require(ggrepel)
+  data.fil <- data %>% filter(abs(avg_log2FC) >= avgfc & p_val_adj < padj)
+  ggplot(data=data, aes(x=avg_log2FC, y=-log10(p_val_adj), color=Type, fill=Type)) +
+    geom_point(size=1.5)+
+    scale_color_manual(values=c("blue","#B3B3B3", "red"))+
+    coord_fixed()+
+    theme_classic() +
+    theme(
+      legend.position = "right",#top,bottom,left,right
+      legend.spacing = unit(0,"cm"),
+      aspect.ratio = 1) +
+    geom_text_repel(data = data.fil, mapping = aes(x=avg_log2FC, y=-log10(p_val_adj), label = gene), show.legend = FALSE, max.overlaps = 50)
+}
+
+celltypename = "3"
+DE.genes.sorted <- DE.genes(group1 = "Human", group2 = "Mouse", groupby = "Species", subsetIdent = celltypename)
+DE.genes.sorted.fil <- DE.genes.sorted %>% filter(abs(avg_log2FC) > 1 & p_val_adj < 0.05)
+DE.volcano(data = DE.genes.sorted, avgfc = 2)
+
+celltypename = "4"
+DE.genes.sorted2 <- DE.genes(group1 = "Human", group2 = "Mouse", groupby = "Species", subsetIdent = celltypename)
+DE.genes.sorted2.fil <- DE.genes.sorted2 %>% filter(abs(avg_log2FC) > 1 & p_val_adj < 0.05)
+DE.volcano(data = DE.genes.sorted2, avgfc = 2)
+
+# Combined cluster 3 and 4
+celltypename = c("3", "4")
+DE.genes.sorted2 <- DE.genes(group1 = "Human", group2 = "Mouse", groupby = "Species", subsetIdent = celltypename)
+DE.genes.sorted2.fil <- DE.genes.sorted2 %>% filter(abs(avg_log2FC) > 1 & p_val_adj < 0.05)
+DE.volcano(data = DE.genes.sorted2, avgfc = 2)
+
+
+# DEGs venn Diagram
+library(ggVennDiagram)
+library(ggplot2)
+gene_list <- list(Bas_up = DE.genes.sorted.fil %>% 
+                    dplyr::filter(Type == "Up") %>% pull(gene),
+                  Spi_up = DE.genes.sorted2.fil %>% 
+                    dplyr::filter(Type == "Up") %>% pull(gene))
+p1 <- ggVennDiagram(gene_list)
+p1
+gene_list <- list(Bas_down = DE.genes.sorted.fil %>% 
+                    dplyr::filter(Type == "Down") %>% pull(gene),
+                  Spi_down = DE.genes.sorted2.fil %>% 
+                    dplyr::filter(Type == "Down") %>% pull(gene))
+p2 <- ggVennDiagram(gene_list)
+p2
+p1 + p2
+pdf("DEGs_overlapNumber.pdf", useDingbats = F, width = 8, height = 6)
+dev.off()
+
+#################################
+#- Extract the gene expression -#
+#genes_exp <- AggregateExpression(inteData,assays = "RNA", features = DE.genes.sorted.fil$gene, slot = "data")$RNA
+genes_exp1 <- FetchData(inteData, vars = DE.genes.sorted2.fil$gene, slot = "data", cells = WhichCells(inteData, ident = "3"))
+genes_exp2 <- FetchData(inteData, vars = DE.genes.sorted2.fil$gene, slot = "data", cells = WhichCells(inteData, ident = "4"))
+# maximun expression values
+max(genes_exp1);max(genes_exp2)
+min(genes_exp1);min(genes_exp2)
+gene1 <- apply(genes_exp1, 2, max) %>% as.data.frame() %>% rownames_to_column(var = "genes") %>% setNames(c("gene", "exp"))
+gene2 <- apply(genes_exp2, 2, max) %>% as.data.frame() %>% rownames_to_column(var = "genes") %>% setNames(c("gene", "exp"))
+# only keep the maximum expression
+gene_max <- gene1 %>% left_join(., gene2, by="gene")
+gene_max$expmax <- apply(gene_max[, 2:3], 1, max)
+
+# make the new data for volcano plot
+DE.genes.sorted.fil.new <- DE.genes.sorted2.fil %>% left_join(., gene_max[, c(1,4)], by= c("gene"))
+
+# highlight the interested genes
+## according to fold change 
+hig_fc <- c("S100A2", "S100A7", "S100A8", "S100A9", "F12", "TNFSF10", "IFI16", "MMP1", "SERPINB4", "SERPINB3")
+FeaturePlot(inteData, features =hig_fc[1:5], split.by = "Condition", cols = c("grey90", "red"), order = F)
+FeaturePlot(inteData, features =hig_fc[6:10], split.by = "Condition", cols = c("grey90", "red"), order = F)
+## according to expression
+hig_mouse <- c("PABPC3", "LGALS7", "TMSB4Y", "MT1A", "TPM2", "PGAM4", "RBP2", "PI15", "TRBC2", "SPRR1A")
+FeaturePlot(inteData, features =hig_mouse[1:5], split.by = "Condition", cols = c("grey90", "red"), order = F)
+FeaturePlot(inteData, features =hig_mouse[6:10], split.by = "Condition", cols = c("grey90", "red"), order = F)
+
+DE.genes.sorted.fil.hig1 <- DE.genes.sorted.fil.new %>% 
+  arrange(desc(avg_log2FC)) %>% dplyr::slice(1:30)
+DE.genes.sorted.fil.hig2 <- DE.genes.sorted.fil.new %>% 
+  arrange(avg_log2FC, desc(expmax)) %>% dplyr::slice(1:30)
+FeaturePlot(inteData, features =DE.genes.sorted.fil.hig2$gene[1:5], split.by = "Condition", cols = c("grey90", "red"), order = F)
+
+#DE.genes.sorted.fil.hig3 <- DE.genes.sorted.fil.new %>% filter(gene %in% c("KRT16", "KRT17", "KRT6A", "GJB2", "IL18", "IFI16"))
+DE.genes.sorted.fil.hig <- DE.genes.sorted.fil.new %>% filter(gene %in% c(hig_fc, hig_mouse))
+
+FeaturePlot(inteData, features =c("MKI67"), split.by = "Condition", cols = c("grey90", "red"), order = F)
+
+pdf("DEGs_MKI67.pdf", useDingbats = F, width = 6, height = 3)
+FeaturePlot_scCustom(seurat_object = inteData, features = "MKI67", order = T, split.by = "Condition") & NoAxes()
+dev.off()
+
+pdf("DEGs_S100family_noOrder.pdf", useDingbats = F, width = 8, height = 21)
+FeaturePlot(inteData, 
+            features =c("S100A2", "S100A7", "S100A8", "S100A9","MMP1", "SERPINB3","SERPINB4"), 
+            split.by = "Condition", 
+            cols = c("grey90", "red"), order = F) 
+FeaturePlot_scCustom(seurat_object = inteData, features = c("S100A2", "S100A7", "S100A8", "S100A9","MMP1", "SERPINB3","SERPINB4"), order = F, split.by = "Condition") & NoAxes()
+dev.off()
+
+pdf("DEGs_migrationGenes_noOrder.pdf", useDingbats = F, width = 8, height = 15)
+FeaturePlot_scCustom(seurat_object = inteData, features = c("NRG1", "IL24", "AREG", "FOSL1","GJB2"), order = F, split.by = "Condition") & NoAxes()
+dev.off()
+
+ggplot(data=DE.genes.sorted.fil.new, aes(x=avg_log2FC, y=expmax, color=Type, fill=Type)) +
+    geom_point(size=1.5)+
+    scale_color_manual(values=c("blue", "red"))+
+    coord_fixed() +
+    labs(x = "log2(fold change)", y="Migrating cluster3&4 maximum expression") +
+    geom_vline(xintercept=c(-1,1), lty=4, col="grey", lwd=0.6)+ 
+    #geom_hline(yintercept = -log10(0.05), lty=4, col="grey", lwd=0.6)+
+    #scale_x_continuous(limits = c(-5,5),breaks = c(-4,-3,-2,-1,0,1,2,3,4)) +
+    scale_y_continuous(limits = c(0,8),breaks = c(0,2,4,6,8,10)) +
+    theme_classic() +
+    theme(
+      panel.grid.major = element_line(colour = "grey90",size = 0.5,linetype = 2),
+      panel.grid.minor = element_line(colour = "grey90",size = 0.5,linetype = 2),
+      axis.text.x = element_text(size = 12), 
+      axis.text.y = element_text(size = 12),
+      axis.title.x = element_text(size = 14),
+      axis.title.y = element_text(size = 14),
+      legend.position = "right",#top,bottom,left,right
+      legend.spacing = unit(0,"cm"),
+      aspect.ratio = 1) +
+    geom_text_repel(data = DE.genes.sorted.fil.hig, mapping = aes(x=avg_log2FC, y=expmax, label = gene), show.legend = FALSE, max.overlaps = 50,min.segment.length = 0.01)
+
+data.table::fwrite(DE.genes.sorted.fil.new, file = "DEGs_migratingKC_cluster3.txt", sep = "\t")
+data.table::fwrite(DE.genes.sorted.fil.new, file = "DEGs_migratingKC_cluster4.txt", sep = "\t")
+data.table::fwrite(DE.genes.sorted.fil.new, file = "DEGs_migratingKC_cluster3and4.txt", sep = "\t")
+pdf("DEGs_migratingKC_volcano_cluster3.pdf", useDingbats = F, width = 6, height = 6)
+pdf("DEGs_migratingKC_volcano_cluster4.pdf", useDingbats = F, width = 6, height = 6)
+pdf("DEGs_migratingKC_volcano_cluster3and4.pdf", useDingbats = F, width = 6, height = 6)
+dev.off()
+```
+
+
+# 11. manuscript figures (GO of DEGs)
+```{r}
+datatmp <- DE.genes.sorted.fil.new %>% filter(Type == "Up")
+require(clusterProfiler) #loading the package if it is not loaded
+require(org.Hs.eg.db)
+Enriched_gene_up <- as.character(unique(datatmp$entrezgene_id))
+ego_BP_up <- enrichGO(gene = Enriched_gene_up,
+                      OrgDb         = org.Hs.eg.db,
+                      ont           = "BP",
+                      keyType = "ENTREZID",
+                      pAdjustMethod = "BH",
+                      pvalueCutoff  = 0.05,
+                      qvalueCutoff  = 0.1,
+                      minGSSize = 10,
+                      maxGSSize = 500,
+                      readable = T)
+
+go_df <- as.data.frame(ego_BP_up)
+data.table::fwrite(go_df, file = "DEGs_migratingKC_cluster3and4_Up_humanGO.txt", sep = "\t")
+data.table::fwrite(go_df, file = "DEGs_migratingKC_cluster3and4_Down_mouseGO.txt", sep = "\t")
+
+dotplot(ego_BP_up, showCategory=20, label_format = 100) +
+  theme(
+    panel.grid.minor = element_blank(),
+    panel.border = element_rect(size = 0.5, color = "black"),
+    axis.text.x = element_text(size = 14, color = "black"),
+    axis.text.y = element_text(size = 14, color = "black"))
+
+## remove redundent GO terms
+ego2 <- simplify(ego_BP_up)
+cnetplot(ego2, foldChange=Enriched_gene_up)
+cnetplot(ego2, foldChange=Enriched_gene_up, circular = TRUE, colorEdge = TRUE)
+
+pdf("DEGs_migratingKC_cluster4_Up_humanGO.pdf", useDingbats = F, width = 8, height = 6)
+pdf("DEGs_migratingKC_cluster4_Down_mouseGO.pdf", useDingbats = F, width = 8, height = 6)
+dev.off()
+
+
+go1 <- readxl::read_xlsx("/Users/zhuliu/Desktop/sc st/Versions_SC_ST_Project/V3_Figures_240226/Table S3 DEGs_GO_cross species.xlsx", sheet = 1) %>% dplyr::slice(1:6) %>% mutate(species = "Human")
+go2 <- readxl::read_xlsx("/Users/zhuliu/Desktop/sc st/Versions_SC_ST_Project/V3_Figures_240226/Table S3 DEGs_GO_cross species.xlsx", sheet = 2) %>% dplyr::slice(1:6) %>% mutate(species = "Mouse")
+
+go_plot <- rbind(go1, go2)
+
+go_plot$Description <- factor(go_plot$Description, levels = rev(go_plot$Description))
+ggplot(data = go_plot, aes(x=Description, y = -log2(qvalue), 
+                           color = species)) + 
+  scale_color_manual(values = c("#c45027", "#00afbb")) +
+  geom_point(stat='identity', fill="black", size=6) +
+  geom_segment(aes(y=0, x=Description, yend=-log2(qvalue), xend=Description)) +
+  
+  coord_flip() +
+  #scale_y_continuous(limits = c(0,30),breaks = c(0,10,20,30)) +
+  theme_bw() + 
+  ylab("") + 
+  xlab("") +
+  theme(axis.text.x = element_text(size = 12, angle = 0, hjust = 1))
+#pdf("DEGs_migratingKC_GO_BPs_cluster3and4_NEWavalue.pdf", useDingbats = F, width = 6, height = 4)
+#dev.off()
+```
+
+
+# suppleFigure Human lncRNA and protein-coding genes expression
+```{r}
+mg_all <- data.table::fread("/Users/zhuliu/Desktop/sc st/plotting scripts/Figure 1/Fig 1 tmp files/all_cleanSeurat_harmony_allSamples_markerGene_220617_anno.txt")
+
+output_path="/Users/zhuliu/Desktop/scRNA_STseq/proj_10X_woundhealing/03_results/01-Seurat-PreAnalysis/02_Seurat_BatchCorrection/s1_Seurat_allSample_harmony/"
+anno <- readxl::read_xlsx(paste0(output_path, "s5_cell_types_for_each_cluster_manually_updated.xlsx"), sheet = 1)
+topDEgenes <- mg_all %>% left_join(., anno[, c(1,7,8)], by=c("cluster" = "Cluster")) %>% 
+  dplyr::select(12, 11, everything()) %>% rename("Cluster" = "newCellType") %>% 
+  dplyr::filter(p_val_adj < 0.05 & avg_log2FC > 0.5) %>% 
+  dplyr::filter(gene_biotype == "lncRNA" | gene_biotype == "protein_coding") %>% 
+  arrange(newOrderID)
+unique(topDEgenes$gene)
+
+inteData <- readRDS("/Users/zhuliu/Desktop/sc st/plotting scripts/Figure 1/allcombined_wounds_newAnnotation.rds")
+inteData <- DietSeurat(inteData, assays = "RNA")
+table(inteData$newCellTypes)
+fact_lev <- c("Bas-I", "Bas-II", "Bas-prolif", "Bas-mig", 
+              "Spi-I", "Spi-II", "Spi-mig", 
+              "Gra-I", "HF", 
+              "MEL", 
+              "FB-I", "FB-II", "FB-III", "FB-prolif", 
+              "Schwann", "PC-vSMC", "LE", "VE", 
+              "NK-cell", "Th", "Plasma_Bcell", "Mast-cell", 
+              "Mono-Mac", "cDC1", "cDC2", "DC3", "LC")
+
+ct.cols <- c("#d94701", "#fdae61", "#fd8d3c", "#fdbe85", #Basal clusters
+             "#33A02C", "#72BF5A", "#B2DF8A", #Spinous clusters
+             "#f768a1", "#d4b9da", #Granular, Hair follicle
+             "#737373", #MEL
+             "#0570b0", "#3690c0", "#92c5de", "#d1e5f0", #Fibroblast clusters
+             "#c0a700", "#1a9850", "#fb9a99", "#8d4720",  # Schwann,PCvSMC,LE,VE
+             "#35978f", "#41b6c4", "#80cdc1","#df65b0", #"NK-cell", "Th", "Plasma_Bcell", "Mast-cell", 
+             "#dd3497", "#807dba","#6a3d9a","#9e9ac8", "#b15928" #"Mono-Mac", "cDC1", "cDC2", "DC3", "LC"
+)
+
+inteData <- ScaleData(inteData)
+inteData$newCellTypes <- factor(inteData$newCellTypes, levels = fac_levs)
+
+pdf("human_markers_lncRNA_heatmap.pdf", useDingbats = F, width = 16, height = 14)
+DoHeatmap(inteData, features = unique(topDEgenes$gene), group.by='newCellTypes', 
+          label=TRUE, size = 5, disp.min = -2, disp.max = 2, slot = "scale.data",
+          group.colors = ct.cols)
+dev.off()
+
+data.table::fwrite(topDEgenes, file = "human_markers_lncRNA_fc05.txt", sep = "\t")
+
+# Human specific GENES
+psg <- readxl::read_xlsx("/Users/zhuliu/Desktop/sc st/Versions_SC_ST_Project/V2_Figures_230817/06-CrossSpecies/02-scRNA-seq mouse wound healing/s3-lncRNA-analysis/PSG.xlsx", sheet = 2)
+load("/Users/zhuliu/Desktop/KI_Derma_zhuliu/05-Archive-Projects/miRNA/a_Manuscript/ShinyApp_miRNA_Profiling/DEresult_wb_mRNA.RData")
+gene_anno <- wb_allgene_NewDE_mRNAresults$HumanGene_PC_v32 %>% separate(col = "Geneid", into = c("Geneid", "version"), sep = "\\.") %>% dplyr::select(1,3,7)
+psg_f <- psg %>% dplyr::select(1) %>% setNames("Geneid") %>% left_join(., gene_anno, by=c("Geneid"))
+
+psg_lncRNA <- readxl::read_xlsx("/Users/zhuliu/Desktop/sc st/Versions_SC_ST_Project/V2_Figures_230817/06-CrossSpecies/02-scRNA-seq mouse wound healing/s3-lncRNA-analysis/media-1.xlsx", sheet = 2)
+intersect(unique(topDEgenes$gene), psg_lncRNA)
+```
+
+
+# suppleFigure cytokine and chemokine expression in human acute wound healing
+```{r}
+cytokine <- readxl::read_xlsx("Fig2/cytokines.xlsx")
+cytokine_f <- intersect(cytokine$Cytokines, rownames(inteData)) %>% 
+  as.data.frame() %>% setNames(c("gene"))
+
+#pdf("CellType_cytokine_chemokine_expression.pdf", useDingbats = F, width = 16, height = 16)
+mapal <- colorRampPalette(RColorBrewer::brewer.pal(11,"RdBu"))(256)
+DoHeatmap(inteData, features = unique(cytokine_f), group.by='newCellTypes', 
+          label=TRUE, size = 5, disp.min = -1, disp.max = 1, slot = "scale.data",
+          group.colors = ct.cols)
+#+ scale_fill_gradientn(colours = rev(mapal))
+dev.off()
+```
+
+
+# SessionInfo
+```{r}
+sessionInfo()
+```
+

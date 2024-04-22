@@ -1,0 +1,314 @@
+---
+title: "EGF signaling analysis"
+author: "Zhuang Liu"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    toc: true #add a table of contents (TOC)
+    toc_depth: 3 #headers' level in the toc
+    toc_float: true #toc visible even when scrolled
+    theme: lumen
+    highlight: tango
+    code_folding: hide
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.align='center', fig.width=12, warning=FALSE, message=FALSE)
+```
+
+#####################################
+# Part 1: Data loading and comparing
+
+## a. Load the required libraries and data
+```{r warning=FALSE, message=FALSE}
+library(CellChat)
+library(patchwork)
+library(Seurat)
+library(tidyverse)
+options(stringsAsFactors = FALSE)
+```
+
+### 1. Acute wound cellchat data
+```{r warning=FALSE, message=FALSE}
+conditions = c("Skin", "Wound1", "Wound7", "Wound30")
+
+alldata = list()
+for (cond in conditions) {
+    savefile2 = paste0("./cellchat_all_L-R_", cond, ".rds")
+    alldata[[cond]] = readRDS(file = savefile2)
+}
+#alldata <- lapply(alldata, updateCellChat) # Update the objects if necessary
+alldata_ori <- alldata # make a copy
+```
+
+## b. Compare general interactions
+### I. Heatmap of general interaction
+```{r fig.height=8}
+library(ComplexHeatmap)
+library(circlize)
+library(viridis)
+library(RColorBrewer)
+
+# Sets the minimum, the maximum, and the increasing steps for the color scale
+# Note: if some of your genes are outside of this range, they will appear white on the heatmap
+
+for (cond in conditions) {
+  p1 <- Heatmap(alldata[[cond]]@net$weight,
+        column_title = cond,
+        row_title="Ligand sender cell types",
+        name = 'Strength of \ninteractions',
+        border = T,
+        col= colorRamp2(c(0,1,2,3,4,5,6),c('white','#edf8b1','#c7e9b4','#7fcdbb','#41b6c4','#1d91c0','#225ea8')),
+        cluster_rows = F, cluster_columns = F,
+        #cluster methods
+        show_column_names = TRUE, show_row_names = TRUE,
+        use_raster = FALSE, 
+        row_gap = unit(0, 'cm'),
+        column_gap = unit(0, 'cm'),
+        heatmap_legend_param = list(legend_direction=c("vertical"),
+                                    at = c(0,1,2,3,4,5,6)))
+  print(p1)
+}
+
+for (cond in conditions) {
+  p1 <- Heatmap(alldata[[cond]]@net$count,
+        column_title = cond,
+        row_title="Ligand sender cell types",
+        name = 'Total number \nof interactions',
+        border = T,
+        col= colorRamp2(c(0,30,60,90,120,150,180),c('white','#edf8b1','#c7e9b4','#7fcdbb','#41b6c4','#1d91c0','#225ea8')),
+        cluster_rows = F, cluster_columns = F,
+        #cluster methods
+        show_column_names = TRUE, show_row_names = TRUE,
+        use_raster = FALSE, 
+        row_gap = unit(0, 'cm'),
+        column_gap = unit(0, 'cm'),
+        heatmap_legend_param = list(legend_direction=c("vertical"),
+                                    at = c(0,30,60,90,120,150,180)))
+  print(p1)
+}
+
+conditions
+skin <- alldata[["Skin"]]@net$count
+wound1 <- alldata[["Wound1"]]@net$count
+wound7 <- alldata[["Wound7"]]@net$count
+wound30 <- alldata[["Wound30"]]@net$count
+
+ct <- data.frame(Skin_MonoMac = skin[1:7,22], Wound1_MonoMac = wound1[1:7, 22],
+                 Wound7_MonoMac = wound7[1:7, 22], Wound30_MonoMac = wound30[1:7, 22])
+ct <- data.frame(Skin = skin[22, 1:7], Wound1 = wound1[22, 1:7],
+                 Wound7 = wound7[22, 1:7], Wound30 = wound30[22, 1:7])
+Heatmap(ct,
+        row_title="",
+        name = 'Total number \nof interactions',
+        border = T,
+        col= colorRamp2(c(0,8,16,24,32,40,48),c('white','#edf8b1','#c7e9b4','#7fcdbb','#41b6c4','#1d91c0','#225ea8')),
+        cluster_rows = F, cluster_columns = F,
+        #cluster methods
+        show_column_names = TRUE, show_row_names = TRUE,
+        use_raster = FALSE, 
+        row_gap = unit(0, 'cm'),
+        column_gap = unit(0, 'cm'),
+        heatmap_legend_param = list(legend_direction=c("vertical"),
+                                    at = c(0,8,16,24,32,40,48)))
+```
+
+
+################################################
+# Part 2: Pairwise comparison across conditions
+## a. Skin (Control) vs. Wound1 (Test)
+```{r}
+# Define the cell labels to lift up
+#group.new = union(levels(alldata[["Skin"]]@idents), levels(alldata[["Wound1"]]@idents))
+#alldata[["Skin"]] <- liftCellChat(alldata[["Wound1"]], group.new) #Lift up using the cell types
+object.list <- list(Skin = alldata[["Skin"]], Wound1 = alldata[["Wound1"]])
+cellchat <- mergeCellChat(object.list, add.names = names(object.list))#, cell.prefix = TRUE)
+```
+
+```{r fig.height=8}
+print("The number and strength of interactions in each group")
+gg1 <- compareInteractions(cellchat, show.legend = F, group = c(1,2))
+gg2 <- compareInteractions(cellchat, show.legend = F, group = c(1,2), measure = "weight")
+gg1 + gg2
+
+#print("The differential number of interaction in each group")
+#par(mfrow = c(1,2), xpd=TRUE)
+#netVisual_diffInteraction(cellchat, weight.scale = T, measure = "count", arrow.size = 0,
+#                          vertex.weight.max = 20, vertex.size.max = 10, edge.width.max = 6)
+#netVisual_diffInteraction(cellchat, weight.scale = T, measure = "weight", arrow.size = 0,
+#                          vertex.weight.max = 20, vertex.size.max = 10, edge.width.max = 6)
+
+print("The differential number of interaction in each group (Heatmap")
+gg1 <- netVisual_heatmap(cellchat)
+gg2 <- netVisual_heatmap(cellchat, measure = "weight")
+gg1 + gg2
+
+allcount_group1 <- object.list[[1]]@net[["count"]]
+allcount_group2 <- object.list[[2]]@net[["count"]]
+# sum up all the interactions among cell types: 
+# colSum means total interaction numbers of receptor
+# rowSum means total interaction numbers of ligand
+group1_nInt <- colSums(allcount_group1) + rowSums(allcount_group1)
+group2_nInt <- colSums(allcount_group2) + rowSums(allcount_group2)
+nodesize <- list(group1=group1_nInt, group2=group2_nInt)
+
+weight.max <- getMaxWeight(object.list, attribute = c("idents","count"))
+par(mfrow = c(1,2), xpd=TRUE)
+for (i in 1:length(object.list)) {
+  netVisual_circle(object.list[[i]]@net$count, weight.scale = T, label.edge= F, 
+                   edge.weight.max = weight.max[2], 
+                   edge.width.max = 6, 
+                   title.name = paste0("Number of interactions - ", names(object.list)[i]), 
+                   arrow.size = 0, vertex.weight = nodesize[[i]])
+}
+
+weight.max <- getMaxWeight(object.list, attribute = c("idents","weight"))
+par(mfrow = c(1,2), xpd=TRUE)
+for (i in 1:length(object.list)) {
+  netVisual_circle(object.list[[i]]@net$weight, weight.scale = T, label.edge= F, 
+                   edge.weight.max = weight.max[2], edge.width.max = 6, 
+                   title.name = paste0("Strength of interactions - ", names(object.list)[i]),
+                   arrow.size = 0, vertex.weight = nodesize[[i]])
+}
+```
+
+```{r fig.height=8}
+print("Compare the major sources and targets in each groupthe outgoing and incoming interaction strength in 2D space")
+num.link <- sapply(object.list, function(x) {rowSums(x@net$count) + colSums(x@net$count)-diag(x@net$count)})
+weight.MinMax <- c(min(num.link), max(num.link)) # control the dot size in the different datasets
+gg <- list()
+for (i in 1:length(object.list)) {
+  gg[[i]] <- netAnalysis_signalingRole_scatter(object.list[[i]], title = names(object.list)[i], weight.MinMax = weight.MinMax)
+}
+patchwork::wrap_plots(plots = gg)
+```
+
+```{r fig.height=38}
+cat("For each newCellTypes plot the signalling changes of all pathways, both incoming and outgoing.\n\n")
+group.new = colnames(cellchat@net[[1]]$count)
+
+plots = list()
+for (ct in group.new) {
+    plots[[ct]] <- netAnalysis_signalingChanges_scatter(cellchat, idents.use = ct)
+}
+patchwork::wrap_plots(plots = plots, ncol = 2)
+```
+
+
+# Manuscript (EGF signaling) figures
+## export the bas/spi-mig clusters (EGF signaling pathway)
+```{r eval=FALSE, fig.height=38}
+pdf("Bas_Spin_mig_wound1_vs_skin.pdf", useDingbats = F, width = 8, height = 3)
+patchwork::wrap_plots(plots = plots[c(3,5)], ncol = 2) + plot_layout(guides = "collect")
+dev.off()
+
+# circle plots
+object.list.all <- list(Skin = alldata_ori[["Skin"]], 
+                        Wound1 = alldata_ori[["Wound1"]],
+                        Wound7 = alldata_ori[["Wound7"]], 
+                        Wound30 = alldata_ori[["Wound30"]])
+
+allcount_group1 <- object.list.all[[1]]@net[["count"]]
+allcount_group2 <- object.list.all[[2]]@net[["count"]]
+allcount_group3 <- object.list.all[[3]]@net[["count"]]
+allcount_group4 <- object.list.all[[4]]@net[["count"]]
+
+# calculate the total number of interactions of ligands and receptors
+group1_nInt <- colSums(allcount_group1) + rowSums(allcount_group1)
+group2_nInt <- colSums(allcount_group2) + rowSums(allcount_group2)
+group3_nInt <- colSums(allcount_group3) + rowSums(allcount_group3)
+group4_nInt <- colSums(allcount_group4) + rowSums(allcount_group4)
+nodesize <- list(group1=group1_nInt, group2=group2_nInt,
+                 group3=group3_nInt, group4=group4_nInt)
+
+# optional nodesize based on the cell number of each cluster
+ct_nu <- data.table::fread("original_cell_type_number.txt") %>% 
+  dplyr::filter(Var1 != "Schwann")
+skin_ct <- ct_nu %>% dplyr::filter(Var2 == "Skin") %>% pull(Freq)
+names(skin_ct) <- ct_nu$Var1[1:27]
+wound1_ct <- ct_nu %>% dplyr::filter(Var2 == "Wound1") %>% pull(Freq)
+names(wound1_ct) <- ct_nu$Var1[1:27]
+wound7_ct <- ct_nu %>% dplyr::filter(Var2 == "Wound7") %>% pull(Freq)
+names(wound7_ct) <- ct_nu$Var1[1:27]
+wound30_ct <- ct_nu %>% dplyr::filter(Var2 == "Wound30") %>% pull(Freq)
+names(wound30_ct) <- ct_nu$Var1[1:27]
+nodesize <- list(group1=skin_ct, group2=wound1_ct,
+                 group3=wound7_ct, group4=wound30_ct)
+
+
+nodecolor <- c("#d94701", "#fd8d3c", "#fdbe85", #Basal clusters
+             "#72BF5A", "#B2DF8A", #Spinous clusters
+             "#f768a1", "#d4b9da", #Granular, Hair follicle
+             "#737373", #MEL
+             "#0570b0", "#3690c0", "#92c5de", "#d1e5f0", #Fibroblast clusters
+             "#1a9850", "#fb9a99", "#8d4720",  #PCvSMC,LE,VE
+             "#35978f", "#41b6c4", "#80cdc1","#d090f5", #"NK-cell", "Th", "Plasma_Bcell", "Mast-cell", 
+             '#f1b6da', "#dd3497", '#41ab5d', '#addd8e',
+             "#807dba","#6a3d9a","#9e9ac8", "#b15928" #"Mono-Mac", "cDC1", "cDC2", "DC3", "LC"
+)
+
+pathways.show.all <- c("EGF")
+for (i in seq_along(pathways.show.all)) {
+  pathways.show <- pathways.show.all[i] #PDGF, VEGF
+  weight.max <- getMaxWeight(object.list.all, slot.name = c("netP"), attribute = pathways.show) #   control the edge weights across different datasets
+  io.idex = which(levels(object.list.all[[1]]@idents) %in% c("Bas_mig", "Spi_mig"))
+  
+  #pdf("THBS_FB.pdf", useDingbats = F, width = 12, height = 12)
+  par(mfrow = c(1,2), xpd=TRUE)
+  for (i in 1:length(object.list.all)) {
+    netVisual_aggregate(object.list.all[[i]], signaling = pathways.show, layout = "circle", 
+                        #sources.use = io.idex, # only care for the ligands from interested clusters
+                        #targets.use = io.idex, # only care for the receptors from interested clusters
+                        idents.use = c(3,5), # both ligands and receptors from interested clusters
+                        #edge.weight.max = weight.max[1], edge.width.max = 5, 
+                        signaling.name = paste(pathways.show, names(object.list.all)[i]), 
+                        thresh = 0.01, show.legend = T, arrow.size = 0.1,
+                        vertex.weight = nodesize[[i]], 
+                        vertex.weight.max = max(unlist(nodesize)),
+                        color.use = nodecolor)
+  }
+  #dev.off()
+  
+  # draw the violin plot
+  cellchat <- mergeCellChat(object.list.all, add.names = names(object.list.all))
+  cellchat@meta$datasets = factor(cellchat@meta$datasets, levels = c("Skin", "Wound1", "Wound7", "Wound30")) 
+  
+  print(plotGeneExpression(cellchat, signaling = pathways.show, split.by = "datasets", colors.ggplot = T, color.use = c("#fdc086","#FC4E07", "#4daf4a", "#377eb8")))
+}
+
+pathways.show.all <- c("CXCL")
+for (i in seq_along(pathways.show.all)) {
+  pathways.show <- pathways.show.all[i] #PDGF, VEGF
+  weight.max <- getMaxWeight(object.list.all, slot.name = c("netP"), attribute = pathways.show) #   control the edge weights across different datasets
+  io.idex = which(levels(object.list.all[[1]]@idents) %in% c("Bas_mig", "Spi_mig"))
+  
+  #pdf("THBS_FB.pdf", useDingbats = F, width = 12, height = 12)
+  par(mfrow = c(1,2), xpd=TRUE)
+  for (i in 1:length(object.list.all)) {
+    netVisual_aggregate(object.list.all[[i]], signaling = pathways.show, layout = "circle", 
+                        #sources.use = io.idex, # only care for the ligands from interested clusters
+                        #targets.use = io.idex, # only care for the receptors from interested clusters
+                        idents.use = c(3,5), # both ligands and receptors from interested clusters
+                        #edge.weight.max = weight.max[1], edge.width.max = 5, 
+                        signaling.name = paste(pathways.show, names(object.list.all)[i]), 
+                        thresh = 0.01, show.legend = T, arrow.size = 0.1,
+                        vertex.weight = nodesize[[i]], 
+                        vertex.weight.max = max(unlist(nodesize)),
+                        color.use = nodecolor)
+  }
+  #dev.off()
+  
+  # draw the violin plot
+  cellchat <- mergeCellChat(object.list.all, add.names = names(object.list.all))
+  cellchat@meta$datasets = factor(cellchat@meta$datasets, levels = c("Skin", "Wound1", "Wound7", "Wound30")) 
+  
+  print(plotGeneExpression(cellchat, signaling = pathways.show, split.by = "datasets", colors.ggplot = T, color.use = c("#fdc086","#FC4E07", "#4daf4a", "#377eb8")))
+}
+```
+
+# SessionInfo
+```{r}
+sessionInfo()
+```

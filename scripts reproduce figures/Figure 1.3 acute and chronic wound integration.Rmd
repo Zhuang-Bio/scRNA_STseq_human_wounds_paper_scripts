@@ -1,0 +1,442 @@
+---
+title: "integration of wound healing"
+author: "Zhuang Liu"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true #add a table of contents (TOC)
+    toc_depth: 3 #headers' level in the toc
+    toc_float: true #toc visible even when scrolled
+    theme: lumen
+    highlight: tango
+    code_folding: show
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.align='center', fig.width=12, fig.height = 6, warning=FALSE, message=FALSE)
+```
+
+```{r warning=FALSE, message=FALSE}
+library(Seurat)
+library(SeuratObject)
+library(SeuratDisk)
+library(tidyverse)
+library(patchwork)
+library(harmony)
+```
+
+
+# 1. Prepare wound data
+```{r}
+# run the step1
+```
+
+# 2. Integrate the human and VU, DFU chronic wound data
+```{r eval=TRUE}
+# vu data and acute wound data
+vu_seu <- readRDS("allWound_acute_vu_integrated.rds")
+DefaultAssay(vu_seu) = "RNA"
+vu_seu <- DietSeurat(vu_seu, assays = "RNA")
+
+# DFU data
+hs_seu <- readRDS("step1_diabetic_foot_ulcer_skin_integrated_harmony.rds")
+# re-annotate the cell clusters
+anno.cl <- list()
+anno.cl$HE_Fibro = c(12) #MMP3, MMP1, CHI3L2, CHI3L1, TNFAIP6
+anno.cl$FB_I_III_DFU = c(2,8,25) #ASPN, POSTN, WISP2, IGFBP6, COMP, APCDD1, PI16, ELN
+anno.cl$FB_II_DFU = c(1,18) #APOD, CXCL14, C3, APOE, C2orf40
+anno.cl$NKT_Lympho = c(5) #CD69, IL32, CD52, IL7R, PTPRC, NKG7
+anno.cl$M1_Macro = c(11) #IL1B,EREG,
+anno.cl$M2_Macro = c(9) #C1QA, C1QB, CD14, CD163
+anno.cl$B_Lympho = c(23) #CD79A,MS4A1
+anno.cl$VasEndo_art = c(16) #"IGFBP3","HEY1","SEMA3G"
+anno.cl$VasEndo_ven = c(3) #RGCC
+anno.cl$LymphEndo = c(21)
+anno.cl$SMC2 = c(15) #MKI67, CENPF
+anno.cl$SMC1 = c(0,4,7,13,24)
+anno.cl$Melano_Schwann = c(19) #DCT, SOX10, SOX2
+anno.cl$Mast = c(20) #TPSAB1, MS4A2
+anno.cl$Sweat_Seba = c(17) #DCD, SCGB2A2, MUCL1, KRT19
+anno.cl$OtherKera = c(14,22) #KRT17, KRT6B, KRT6A, S100A2, KRT16
+anno.cl$BasalKera = c(10) #COL17A1, KRT5
+anno.cl$DiffKera = c(6) #KRT1, KRT10, KRT16, KRT6A
+trans = rep(names(anno.cl), times = unlist(lapply(anno.cl, length)))
+names(trans) = unlist(anno.cl)
+mt <- hs_seu@meta.data %>% rownames_to_column(var = "barcode")
+mt$CellType <- trans[as.character(mt$SCT_snn_res.1)]
+mt <- mt %>% column_to_rownames(var = "barcode")
+hs_seu@meta.data <- mt
+
+DefaultAssay(hs_seu) = "RNA"
+hs_seu <- DietSeurat(hs_seu, assays = "RNA")
+
+# check the overlapped genes and keep the overlapped genes
+overgene <- intersect(rownames(vu_seu), rownames(hs_seu))
+length(overgene)
+
+vu_seu <- vu_seu[overgene, ]
+hs_seu <- hs_seu[overgene, ]
+
+# integrate based on orig.ident names
+#vu_seu$Project="VU"
+#vu_seu$CellType=vu_seu$CellType
+hs_seu$orig.ident=hs_seu$Donor1
+hs_seu$Project="DFU"
+hs_seu$CellType=hs_seu$CellType
+```
+
+# 3. sctransform normalization
+```{r eval=TRUE}
+all_seu <- merge(vu_seu, y = c(hs_seu),
+                project = "wounds")
+
+rm(vu_seu);rm(hs_seu);gc()
+
+alldata = SplitObject(all_seu, split.by = "orig.ident")
+alldata <- lapply(X = alldata, FUN = function(x) {
+  x <- NormalizeData(x)
+  x <- CellCycleScoring(x, s.features = cc.genes.updated.2019$s.genes, g2m.features = cc.genes.updated.2019$g2m.genes, set.ident = F)
+})
+for (i in seq_along(alldata)) {
+  alldata[[i]]$CC.Difference <- alldata[[i]]$S.Score - alldata[[i]]$G2M.Score
+}
+
+rm(all_seu)
+alldata <- lapply(X = alldata, FUN = SCTransform, method = "glmGamPoi", vars.to.regress = c("CC.Difference"))
+```
+
+
+# 4. Run harmony Clustering
+```{r eval=TRUE}
+# Run harmony using SCTransform
+options(future.globals.maxSize = 1000000 * 1024^2) 
+features <- SelectIntegrationFeatures(object.list = alldata, nfeatures = 4000)
+
+alldata <- PrepSCTIntegration(object.list = alldata, anchor.features = features)
+inteData <- merge(alldata[[1]], y = c(alldata[2:length(alldata)]), merge.data = TRUE)
+VariableFeatures(inteData) <- features
+rm(alldata);gc()
+
+inteData <- RunPCA(inteData, npcs = 50, assay = "SCT")
+ElbowPlot(inteData, ndims = 50)
+table(inteData$orig.ident)
+# RunHarmony parameter: assay.use only for Seurat V3
+inteData <- RunHarmony(inteData, #assay.use = "SCT", reduction = "pca", 
+		       dims.use = 1:30, 
+                       group.by.vars = "orig.ident", plot_convergence = TRUE)
+
+inteData <- RunUMAP(inteData, dims = 1:30, assay = "SCT", reduction = "harmony", n.neighbors = 40)
+DimPlot(inteData, group.by = "orig.ident") + NoAxes()
+
+inteData = FindNeighbors(inteData, dims = 1:30, reduction = "harmony", k.param = 40)
+inteData = FindClusters(inteData, resolution = 0.3)
+inteData = FindClusters(inteData, resolution = 1)
+inteData = FindClusters(inteData, resolution = 1.2)
+inteData = FindClusters(inteData, resolution = 0.5)
+inteData = FindClusters(inteData, resolution = 0.8)
+
+inteData$Condition <- factor(inteData$Condition, levels = c("Skin", "Wound1", "Wound7", "Wound30","H", "DFU_NH", "DFU_H", "NS", "VU"))
+
+DimPlot(inteData, group.by = "SCT_snn_res.1", label = T, raster=T)
+DimPlot(inteData, group.by = "SCT_snn_res.0.5", label = T, raster=T)
+DimPlot(inteData, group.by = "SCT_snn_res.0.8", label = T, raster=T)
+DimPlot(inteData, group.by = "SCT_snn_res.0.8", label = T, split.by = "Condition", raster=T)  
+DefaultAssay(inteData) <- "RNA"
+inteData <- NormalizeData(inteData)
+```
+
+
+# 5. CellType plotting
+```{r fig.width=12, fig.height=8}
+DimPlot(inteData, group.by = "Project", cols = c("#fc8d59", "#d8b365", "#5ab4ac"), raster=T) 
+DimPlot(inteData, group.by = "Project", split.by = "Project", cols = c("#fc8d59", "#d8b365", "#5ab4ac"), raster=T) 
+
+
+DimPlot(inteData, group.by = "CellType", label = T, split.by = "Project", raster=T) + ggtitle("")
+DimPlot(inteData, group.by = "CellType", label = T, split.by = "Condition", ncol = 4, raster=T) + ggtitle("") + NoLegend()
+```
+
+
+# 6. Data exporting
+```{r}
+saveRDS(inteData, "allacuteWound_DFU_VU_integrated.rds")
+
+# export the reduced results for quickly plotting
+inteData@reductions$pca@assay.used <- "RNA"
+inteData@reductions$harmony@assay.used <- "RNA"
+inteData@reductions$umap@assay.used <- "RNA"
+
+inteData <- DietSeurat(inteData, assays = "RNA", dimreducs = c("umap"))
+saveRDS(inteData, "allacuteWound_DFU_VU_integrated_reduced.rds")
+```
+
+
+# manuscript plotting
+```{r}
+#If you are using Seurat V5 but do not want to use the V5 Assay, 
+#you can set the option to "v3"
+options(Seurat.object.assay.version = 'v3')
+
+library(scCustomize)
+library(Seurat)
+library(SeuratObject)
+library(tidyverse)
+library(patchwork)
+library(ggplot2)
+
+inteData <- readRDS("allacuteWound_DFU_VU_integrated_reduced.rds")
+mt <- inteData@meta.data %>% rownames_to_column(var = "barocodeindex")
+data.table::fwrite(mt, file = "allacuteWound_DFU_VU_integrated_metadata.txt", sep="\t")
+hs_seu
+hs_seu <- subset(hs_seu, subset= Project == "DFU")
+inteData
+class(inteData)
+table(inteData$Project)
+table(is.na(inteData$orig.ident))
+table(inteData$orig.ident)
+
+DimPlot(inteData, group.by = "Project", cols = c("#fc8d59", "#d8b365", "#5ab4ac"), raster=T) 
+DimPlot(inteData, group.by = "Project", split.by = "Project", cols = c("#fc8d59", "#d8b365", "#5ab4ac"), raster=T) 
+
+
+DimPlot(inteData, group.by = "CellType", label = T, split.by = "Project", raster=T) + ggtitle("") + NoLegend()
+DimPlot(inteData, group.by = "CellType", label = T, split.by = "Condition", ncol = 4, raster=T) + ggtitle("") + NoLegend()
+DimPlot_scCustom(inteData,  group.by = "CellType", 
+                 label = T, split.by = "Project", 
+                 raster=F, #pt.size = 1, 
+                 label.size = 4,
+                 num_columns = 3) & NoLegend()
+DimPlot_scCustom(inteData,  group.by = "SCT_snn_res.1.2", 
+                 label = T, split.by = "Project", 
+                 raster=F, #pt.size = 1, 
+                 ggplot_default_colors =T,
+                 label.size = 4,
+                 num_columns = 3) & NoLegend()
+
+DimPlot_scCustom(inteData,  group.by = "CellType", 
+                 label = T, split.by = "Condition", 
+                 raster=T, pt.size = 1, label.size = 4,
+                 num_columns = 3) & NoLegend()
+
+DimPlot_scCustom(inteData,  group.by = "SCT_snn_res.0.5", 
+                 label = T, split.by = "Project", 
+                 raster=F, #pt.size = 1, 
+                 ggplot_default_colors =T,
+                 #label.size = 4,
+                 num_columns = 3) & NoLegend()
+
+FeaturePlot(inteData, features = c("MMP1", "MMP3", "KRT6A", "KRT17"))
+
+# re-annotate the cell clusters based on res0.5
+anno.cl <- list()
+anno.cl$Keratinocyte = c(1,2,8,10,11,15,18) #MMP3, MMP1, CHI3L2, CHI3L1, TNFAIP6
+anno.cl$Melanocyte_Schwann = c(14)
+anno.cl$Fibroblast = c(0,3,17)
+anno.cl$Pericyte_Smoothmuscle = c(4,9)
+anno.cl$Endothelium = c(6,16)
+anno.cl$Immune = c(5,7,12,13)
+
+trans = rep(names(anno.cl), times = unlist(lapply(anno.cl, length)))
+names(trans) = unlist(anno.cl)
+mt <- inteData@meta.data #%>% rownames_to_column(var = "barcode")
+mt$MainCellType <- trans[as.character(mt$SCT_snn_res.0.5)]
+inteData$MainCellType <- mt$MainCellType
+
+table(inteData$MainCellType)
+
+fact_lev_main <- c("Keratinocyte", "Melanocyte_Schwann", "Fibroblast", "Pericyte_Smoothmuscle", 
+                   "Endothelium", "Immune")
+inteData$MainCellType <- factor(inteData$MainCellType, levels = fact_lev_main)
+
+main.col <- c("#ce8b1a", "#d4b9da", "#3690c0", "#1a9850", 
+              "#807dba", "#df65b0")
+names(main.col) <- fact_lev_main
+p_umap.clean.main <- (DimPlot(object = inteData, 
+                         reduction = "umap", 
+                         label = F, 
+                         group.by = "MainCellType",
+                         raster = TRUE,
+                         raster.dpi = c(1024, 1024),
+                         pt.size = 2,
+                         label.size = 3, cols = main.col) + NoAxes() + ggtitle(""))
+
+pdf("inteUMAP_combined.pdf", useDingbats = F, width = 8, height = 5)
+p_umap.clean.main
+dev.off()
+
+# Set the main cell types as idents
+Idents(inteData) <- inteData$MainCellType
+
+# Get cell names and make list FROM AcuteWound, DFU, VU
+Keratinocyte <- WhichCells(object = subset(inteData, subset = Project == "VU"),
+                           idents="Keratinocyte")
+Melanocyte_Schwann <- WhichCells(object = subset(inteData, subset = Project == "VU"),
+                           idents="Melanocyte_Schwann")
+Fibroblast <- WhichCells(object = subset(inteData, subset = Project == "VU"),
+                           idents="Fibroblast")
+Pericyte_Smoothmuscle <- WhichCells(object = subset(inteData, subset = Project == "VU"),
+                           idents="Pericyte_Smoothmuscle")
+Endothelium <- WhichCells(object = subset(inteData, subset = Project == "VU"),
+                           idents="Endothelium")
+Immune <- WhichCells(object = subset(inteData, subset = Project == "VU"),
+                           idents="Immune")
+
+cells <- list(Keratinocyte = Keratinocyte, Melanocyte_Schwann = Melanocyte_Schwann,
+              Fibroblast = Fibroblast, Pericyte_Smoothmuscle = Pericyte_Smoothmuscle,
+              Endothelium = Endothelium, Immune = Immune)
+
+length(colnames(inteData))
+length(unique(colnames(inteData)))
+
+# Plot
+p_umap.clean.main.vu <- Cell_Highlight_Plot(seurat_object = inteData,
+                                            cells_highlight = cells,
+                                            highlight_color = main.col
+                                            ) & NoAxes()
+# The raster function did not work for Seurat V4 has to be upgraded to V5 (Option: use UppmaxR)
+#raster=TRUE, raster.dpi=c(1024,1024),pt.size=2
+
+tiff('inteUMAP_combined_VU.tiff', units="in", width=8, height=5, res=500, compression = 'lzw')
+#pdf("inteUMAP_combined_Acute.pdf", useDingbats = F, width = 8, height = 5)
+p_umap.clean.main.vu
+dev.off()
+```
+
+
+# Annotation updating
+```{r}
+#####################################################################################
+# Try to re-annotate the integrated main clusters (Integrated acute wound, DFU, VU) #
+# Since we filter out the HFs, Mast cells, Melanocytes in downstream analysis
+# thus, we first annotated these clusters based on the res1.2, 
+# then, we annotated the clusters based on subcluster annotations
+#####################################################################################
+# reduce the metada
+inteData <- readRDS("00-InteAllMainCellType/allacuteWound_DFU_VU_integrated_reduced.rds")
+mt <- inteData@meta.data %>% rownames_to_column(var = "barcodeindex") %>% select(1:3,8,14:17,22,33,34,28,29) 
+mt_tmp <- mt %>% column_to_rownames(var = "barcodeindex")
+inteData@meta.data <- mt_tmp
+inteData@meta.data <- droplevels(inteData@meta.data);rm(mt_tmp)
+
+DimPlot(inteData, group.by = "SCT_snn_res.1.2", label = T)
+FeaturePlot(inteData, features = c("SOX9"))
+
+Idents(inteData) <- inteData$SCT_snn_res.1.2
+Cluster_Highlight_Plot(seurat_object = inteData, 
+                       cluster_name = c(13), 
+                       highlight_color = c("red", "navy","forestgreen"),
+                       background_color = "lightgray")
+
+
+mt$mainCellType <- ifelse(mt$SCT_snn_res.1.2 == 18, "Mast_cell", "Other")
+mt$mainCellType <- ifelse(mt$SCT_snn_res.1.2 == 20, "MEL", mt$mainCellType)
+# add the annotation and check first
+inteData$mainCellType <- mt$mainCellType
+DimPlot(inteData, group.by = "mainCellType", label = T)
+
+# load the metadata from subclustering analysis
+kc <- data.table::fread("allacuteWound_DFU_VU_inteKC_metadata.txt") %>% select(1,20)
+fb <- data.table::fread("allacuteWound_DFU_VU_inteFB_metadata.txt") %>% select(1,21)
+mye <- data.table::fread("allacuteWound_DFU_VU_inteMyeloid_metadata.txt") %>% select(1,21)
+lym <- data.table::fread("allacuteWound_DFU_VU_inteLymphoid_metadata.txt") %>% select(1,20)
+endo <- data.table::fread("allacuteWound_DFU_VU_inteEndo_metadata.txt") %>% select(1,20)
+
+allsubs <- rbind(kc, fb, mye, lym, endo)
+table(allsubs$newCellType) %>% names() %>% sort()
+#[1] "Apoptotic"          "Bas_I"              "Bas_mig"            "Bas_prolif"         "Bcell"              "cDC1"              
+#[7] "cDC2"               "Cycling"            "DC3"                "ELN_SFRP4"          "FB_I_POSTN_COL11A1" "FB_I_POSTN_COL4A1" 
+#[13] "FB_I_POSTN_MMP11"   "FB_I_SFRP4_COMP"    "FB_II_APOD_ITM2A"   "FB_II_APOE_CCL19"   "FB_III_ELN_LEPR"    "FB_prolif"         
+#[19] "Gra_I"              "ILC1_NK"            "ILCs"               "LC"                 "LE"                 "Mac_inf"           
+#[25] "Mac1"               "Mac2"               "Mac3"               "NK"                 "pDC"                "Pericytes"         
+#[31] "Plasma"             "SFRP1_CRABP1"       "SMC"                "Spi_I"              "Spi_II_a"           "Spi_II_b"          
+#[37] "Spi_III"            "Spi_mig"            "Tc"                 "Th"                 "Treg"               "Ttol"              
+#[43] "VE_arteriole"       "VE_capillary"       "VE_venule1"         "VE_venule2"
+
+# add the HF cells and check again
+mt$mainCellType <- ifelse(mt$SCT_snn_res.1.2 == 13, ifelse(mt$barcodeindex %in% allsubs$barcodeindex, mt$mainCellType, "HF"), mt$mainCellType)
+table(mt$mainCellType)
+inteData$mainCellType <- mt$mainCellType
+DimPlot(inteData, group.by = "mainCellType", label = T)
+
+# tackle subclustering annotation
+mt <- mt %>% left_join(., allsubs, by=c("barcodeindex"))
+mt$newCellType <- replace_na(mt$newCellType, "Other")
+# add the HF, Mast and MEL
+mt$newCellType <- ifelse(mt$newCellType == "Other", ifelse(mt$newCellType == mt$mainCellType, mt$newCellType, mt$mainCellType), mt$newCellType)
+
+inteData$newCellType <- mt$newCellType
+DimPlot(inteData, group.by = "newCellType", label = T)
+
+Idents(inteData) <- inteData$newCellType
+Cluster_Highlight_Plot(seurat_object = inteData, 
+                       cluster_name = c("Other", "Bas_mig", "Spi_mig"), 
+                       highlight_color = c("skyblue", "pink","forestgreen"),
+                       background_color = "lightgray")
+
+table(inteData$newCellType) %>% names() %>% sort()
+# re-annotate the main clusters
+subcelct <- c("Apoptotic", "Bas_I", "Bas_mig", "Bas_prolif", "Bcell", "cDC1", 
+              "cDC2", "Cycling", "DC3", "ELN_SFRP4",  "FB_I_POSTN_COL11A1", "FB_I_POSTN_COL4A1",
+              "FB_I_POSTN_MMP11", "FB_I_SFRP4_COMP",  "FB_II_APOD_ITM2A", "FB_II_APOE_CCL19", "FB_III_ELN_LEPR",  "FB_prolif", 
+              "Gra_I", "ILC1_NK", "ILCs", "LC", "LE", 
+              "Mac_inf", "Mac1",  "Mac2",  "Mac3",  "NK",  "pDC", "Pericytes", "Plasma",  
+              "SFRP1_CRABP1", "SMC", "Spi_I", "Spi_II_a", "Spi_II_b", 
+              "Spi_III", "Spi_mig", "Tc",  "Th",  "Treg",  "Ttol", 
+              "VE_arteriole", "VE_capillary", "VE_venule1", "VE_venule2", "HF", "Mast_cell", "MEL", "Other")
+
+newanno_cluster_ids <- c("Mac2", "Bas-I", "Bas-mig", "Bas-prolif", "Plasma_Bcell", "cDC1", 
+                         "cDC2", "cDC1", "DC3", "FB-II",  "FB-I", "FB-I",
+                         "FB-I", "FB-I",  "FB-II", "FB-II", "FB-III",  "FB-prolif", 
+                         "Gra", "NK", "Tcell", "LC", "LE", 
+                         "Mac_inf", "Mac1",  "Mac2",  "Mac3",  "NK",  "cDC2", "PC_vSMC", "Plasma_Bcell", 
+                         "FB-II", "PC_vSMC", "Spi-I", "Spi-II", "Spi-II", 
+                         "Spi-II", "Spi-mig", "NK",  "Tcell",  "Tcell",  "NK", 
+                         "VE", "VE", "VE", "VE", "HF", "Mast-cell", "MEL", "Other") 
+
+# List of current cluster IDs
+mt$mainCellType  <- plyr::mapvalues(x=mt$newCellType, from=subcelct, to=newanno_cluster_ids)
+
+# write the metadata for new annotated cell clusters
+#data.table::fwrite(mt, "allacuteWound_DFU_VU_integrated_metadata_newAnno.txt", sep = "\t")
+
+inteData$mainCellType <- mt$mainCellType
+DimPlot(inteData, group.by = "mainCellType", label = T)
+
+# set the factor for cell type and plot
+fact_lev <- c("Bas-I", "Bas-prolif", "Bas-mig", 
+              "Spi-I", "Spi-II", "Spi-mig", 
+              "Gra", "HF", 
+              "MEL", 
+              "FB-I", "FB-II", "FB-III", "FB-prolif", 
+              "PC_vSMC", "LE", "VE", 
+              "NK", "Tcell", "Plasma_Bcell", "Mast-cell", 
+              "Mac_inf", "Mac1", "Mac2", "Mac3",
+              "cDC1", "cDC2", "DC3", "LC", "Other")
+
+ct.cols <- c("#d94701", "#fd8d3c", "#fdbe85", #Basal clusters
+             "#33A02C", "#72BF5A", "#B2DF8A", #Spinous clusters
+             "#f768a1", "#d4b9da", #Granular, Hair follicle
+             "#737373", #MEL
+             "#0570b0", "#3690c0", "#92c5de", "#d1e5f0", #Fibroblast clusters
+             "#1a9850", "#fb9a99", "#8d4720",  #PCvSMC,LE,VE
+             "#35978f", "#41b6c4", "#80cdc1","#df65b0", #"NK-cell", "Th", "Plasma_Bcell", "Mast-cell", 
+             "#dd3497", "#CF384D", "#FA9C58", "#93d741", # Mono-Mac"
+             "#807dba","#6a3d9a","#9e9ac8", "#b15928", #"cDC1", "cDC2", "DC3", "LC"
+             "grey90" # Other
+)
+# add the color names using new cell types
+names(ct.cols) <- fact_lev
+
+inteData$mainCellType <- factor(inteData$mainCellType, levels = fact_lev)
+DimPlot(inteData, group.by = "mainCellType", label = T, cols = ct.cols)
+saveRDS(inteData, file = "allacuteWound_DFU_VU_integrated_reduced.rds")
+```
+
+
+# SessionInfo
+```{r}
+sessionInfo()
+```
+
