@@ -1,0 +1,40 @@
+outdir: /crex/proj/snic2021-23-156/publicdata/wound_webatlas/output/Donor2_Wound1
+
+args:
+  h5ad:
+    compute_embeddings: "False" # set to `True` to compute PCA and UMAP if not already within the anndata object
+    obs_subset: ["library_id", ["Donor2_Wound1"]] # optional `obs` column name an value(s) to subset the anndata object
+    consolidate_metadata: "True" # whether to consolidate output zarr metadata. Defaults to `True`
+
+projects:
+  - project: Human_skin_wound_healing
+    datasets:
+      - dataset: Donor2_Wound1
+        title: "Visium Sample Donor2_Wound1"
+        data:
+          - data_type: h5ad
+            data_path: /crex/proj/snic2021-23-156/publicdata/wound_webatlas/input/STseq_scanpy_cleanSpots_allData.h5ad
+          - data_type: raw_image
+            data_path: /crex/proj/snic2021-23-156/publicdata/wound_webatlas/input/210204_P20063_V10B01-24_LP1_HE_AM_B1-Spot000002.tif
+          - data_type: label_image_data
+            data_path: /crex/proj/snic2021-23-156/publicdata/wound_webatlas/input/STseq_scanpy_cleanSpots_allData.h5ad
+            file_type: visium
+            ref_img: /crex/proj/snic2021-23-156/publicdata/wound_webatlas/input/210204_P20063_V10B01-24_LP1_HE_AM_B1-Spot000002.tif
+            args:
+              obs_subset: ["library_id", ["Donor2_Wound1"]] # optional `obs` column name an value(s) to subset the anndata object
+              
+vitessce_options:
+  spatial:
+    xy: "obsm/spatial" # where the Anndata object holds spatial coordinates
+  #mappings: # list of embeddings and the index of the dimensions to use in a scatterplot
+    #obsm/X_umap: [0,1]
+    #obsm/spatial: [0,1]
+  #factors: # list of useful metadata to show per cell when hovering over them in the visualization
+    #- "obs/spotClusters"
+  #sets: # list of keys for grouping cells
+    #- name: "obs/celltype" # key with cell set labels
+    #  score: "obs/celltype_prob" # key with cell set confidence/percentage scores (float values [0,1])
+    #- "obs/spotClusters" # key with cell set labels, without associated scores  
+  matrix: "X" # expression matrix to use
+
+layout: "advanced"

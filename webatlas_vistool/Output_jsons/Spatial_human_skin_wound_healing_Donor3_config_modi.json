@@ -1,0 +1,832 @@
+{
+  "version": "1.0.15",
+  "name": "Spatial human wound Donor3",
+  "description": "",
+  "datasets": [
+    {
+      "uid": "Donor3_Skin",
+      "name": "Donor3_Skin",
+      "files": [
+        {
+          "fileType": "obsFeatureMatrix.anndata.zarr",
+          "url": "http://localhost:3000/intersect-reindexed-concat-Human_skin_wound_healing-Donor3_Skin-anndata.zarr",
+          "options": {
+            "path": "X"
+          },
+          "coordinationValues": {
+            "obsType": "spot",
+            "featureType": "combined",
+            "featureValueType": "expression"
+          }
+        },
+        {
+          "fileType": "obsFeatureMatrix.anndata.zarr",
+          "url": "http://localhost:3000/intersect-reindexed-concat-Human_skin_wound_healing-Donor3_Skin-anndata.zarr",
+          "options": {
+            "path": "X",
+            "featureFilterPath": "var/is_gene"
+          },
+          "coordinationValues": {
+            "obsType": "spot",
+            "featureType": "gene",
+            "featureValueType": "expression"
+          }
+        },
+        {
+          "fileType": "obsFeatureMatrix.anndata.zarr",
+          "url": "http://localhost:3000/intersect-reindexed-concat-Human_skin_wound_healing-Donor3_Skin-anndata.zarr",
+          "options": {
+            "path": "X",
+            "featureFilterPath": "var/is_celltype"
+          },
+          "coordinationValues": {
+            "obsType": "spot",
+            "featureType": "celltype",
+            "featureValueType": "abundance"
+          }
+        },
+        {
+          "fileType": "anndata.zarr",
+          "url": "http://localhost:3000/intersect-reindexed-concat-Human_skin_wound_healing-Donor3_Skin-anndata.zarr",
+          "options": {
+            "obsLocations": {
+              "path": "obsm/spatial"
+            }
+          },
+          "coordinationValues": {
+            "obsType": "spot"
+          }
+        },
+        {
+          "fileType": "raster.json",
+          "options": {
+            "renderLayers": [
+              "Human_skin_wound_healing-Donor3_Skin-raw",
+              "reindexed-Human_skin_wound_healing-Donor3_Skin-label.ome"
+            ],
+            "schemaVersion": "0.0.2",
+            "images": [
+              {
+                "name": "Human_skin_wound_healing-Donor3_Skin-raw",
+                "url": "http://localhost:3000/Human_skin_wound_healing-Donor3_Skin-raw.zarr",
+                "type": "zarr",
+                "metadata": {
+                  "isBitmask": false,
+                  "dimensions": [
+                    {
+                      "field": "t",
+                      "type": "quantitative",
+                      "values": null
+                    },
+                    {
+                      "field": "channel",
+                      "type": "nominal",
+                      "values": [
+                        "Channel 0",
+                        "Channel 1",
+                        "Channel 2"
+                      ]
+                    },
+                    {
+                      "field": "y",
+                      "type": "quantitative",
+                      "values": null
+                    },
+                    {
+                      "field": "x",
+                      "type": "quantitative",
+                      "values": null
+                    }
+                  ],
+                  "isPyramid": true,
+                  "transform": {
+                    "translate": {
+                      "y": 0,
+                      "x": 0
+                    },
+                    "scale": 1
+                  }
+                }
+              },
+              {
+                "name": "reindexed-Human_skin_wound_healing-Donor3_Skin-label.ome",
+                "url": "http://localhost:3000/reindexed-Human_skin_wound_healing-Donor3_Skin-label.ome.zarr",
+                "type": "zarr",
+                "metadata": {
+                  "isBitmask": true,
+                  "dimensions": [
+                    {
+                      "field": "t",
+                      "type": "quantitative",
+                      "values": null
+                    },
+                    {
+                      "field": "channel",
+                      "type": "nominal",
+                      "values": [
+                        "Labels"
+                      ]
+                    },
+                    {
+                      "field": "y",
+                      "type": "quantitative",
+                      "values": null
+                    },
+                    {
+                      "field": "x",
+                      "type": "quantitative",
+                      "values": null
+                    }
+                  ],
+                  "isPyramid": true,
+                  "transform": {
+                    "translate": {
+                      "y": 0,
+                      "x": 0
+                    },
+                    "scale": 1
+                  }
+                }
+              }
+            ]
+          },
+          "coordinationValues": {
+            "obsType": "spot",
+            "featureType": "combined"
+          }
+        }
+      ]
+    },
+    {
+      "uid": "Donor3_Wound7",
+      "name": "Donor3_Wound7",
+      "files": [
+        {
+          "fileType": "obsFeatureMatrix.anndata.zarr",
+          "url": "http://localhost:3000/intersect-reindexed-concat-Human_skin_wound_healing-Donor3_Wound7-anndata.zarr",
+          "options": {
+            "path": "X"
+          },
+          "coordinationValues": {
+            "obsType": "spot",
+            "featureType": "combined",
+            "featureValueType": "expression"
+          }
+        },
+        {
+          "fileType": "obsFeatureMatrix.anndata.zarr",
+          "url": "http://localhost:3000/intersect-reindexed-concat-Human_skin_wound_healing-Donor3_Wound7-anndata.zarr",
+          "options": {
+            "path": "X",
+            "featureFilterPath": "var/is_gene"
+          },
+          "coordinationValues": {
+            "obsType": "spot",
+            "featureType": "gene",
+            "featureValueType": "expression"
+          }
+        },
+        {
+          "fileType": "obsFeatureMatrix.anndata.zarr",
+          "url": "http://localhost:3000/intersect-reindexed-concat-Human_skin_wound_healing-Donor3_Wound7-anndata.zarr",
+          "options": {
+            "path": "X",
+            "featureFilterPath": "var/is_celltype"
+          },
+          "coordinationValues": {
+            "obsType": "spot",
+            "featureType": "celltype",
+            "featureValueType": "abundance"
+          }
+        },
+        {
+          "fileType": "anndata.zarr",
+          "url": "http://localhost:3000/intersect-reindexed-concat-Human_skin_wound_healing-Donor3_Wound7-anndata.zarr",
+          "options": {
+            "obsLocations": {
+              "path": "obsm/spatial"
+            }
+          },
+          "coordinationValues": {
+            "obsType": "spot"
+          }
+        },
+        {
+          "fileType": "raster.json",
+          "options": {
+            "renderLayers": [
+              "Human_skin_wound_healing-Donor3_Wound7-raw",
+              "reindexed-Human_skin_wound_healing-Donor3_Wound7-label.ome"
+            ],
+            "schemaVersion": "0.0.2",
+            "images": [
+              {
+                "name": "Human_skin_wound_healing-Donor3_Wound7-raw",
+                "url": "http://localhost:3000/Human_skin_wound_healing-Donor3_Wound7-raw.zarr",
+                "type": "zarr",
+                "metadata": {
+                  "isBitmask": false,
+                  "dimensions": [
+                    {
+                      "field": "t",
+                      "type": "quantitative",
+                      "values": null
+                    },
+                    {
+                      "field": "channel",
+                      "type": "nominal",
+                      "values": [
+                        "Channel 0",
+                        "Channel 1",
+                        "Channel 2"
+                      ]
+                    },
+                    {
+                      "field": "y",
+                      "type": "quantitative",
+                      "values": null
+                    },
+                    {
+                      "field": "x",
+                      "type": "quantitative",
+                      "values": null
+                    }
+                  ],
+                  "isPyramid": true,
+                  "transform": {
+                    "translate": {
+                      "y": 0,
+                      "x": 0
+                    },
+                    "scale": 1
+                  }
+                }
+              },
+              {
+                "name": "reindexed-Human_skin_wound_healing-Donor3_Wound7-label.ome",
+                "url": "http://localhost:3000/reindexed-Human_skin_wound_healing-Donor3_Wound7-label.ome.zarr",
+                "type": "zarr",
+                "metadata": {
+                  "isBitmask": true,
+                  "dimensions": [
+                    {
+                      "field": "t",
+                      "type": "quantitative",
+                      "values": null
+                    },
+                    {
+                      "field": "channel",
+                      "type": "nominal",
+                      "values": [
+                        "Labels"
+                      ]
+                    },
+                    {
+                      "field": "y",
+                      "type": "quantitative",
+                      "values": null
+                    },
+                    {
+                      "field": "x",
+                      "type": "quantitative",
+                      "values": null
+                    }
+                  ],
+                  "isPyramid": true,
+                  "transform": {
+                    "translate": {
+                      "y": 0,
+                      "x": 0
+                    },
+                    "scale": 1
+                  }
+                }
+              }
+            ]
+          },
+          "coordinationValues": {
+            "obsType": "spot",
+            "featureType": "combined"
+          }
+        }
+      ]
+    },
+    {
+      "uid": "Donor3_Wound30",
+      "name": "Donor3_Wound30",
+      "files": [
+        {
+          "fileType": "obsFeatureMatrix.anndata.zarr",
+          "url": "http://localhost:3000/intersect-reindexed-concat-Human_skin_wound_healing-Donor3_Wound30-anndata.zarr",
+          "options": {
+            "path": "X"
+          },
+          "coordinationValues": {
+            "obsType": "spot",
+            "featureType": "combined",
+            "featureValueType": "expression"
+          }
+        },
+        {
+          "fileType": "obsFeatureMatrix.anndata.zarr",
+          "url": "http://localhost:3000/intersect-reindexed-concat-Human_skin_wound_healing-Donor3_Wound30-anndata.zarr",
+          "options": {
+            "path": "X",
+            "featureFilterPath": "var/is_gene"
+          },
+          "coordinationValues": {
+            "obsType": "spot",
+            "featureType": "gene",
+            "featureValueType": "expression"
+          }
+        },
+        {
+          "fileType": "obsFeatureMatrix.anndata.zarr",
+          "url": "http://localhost:3000/intersect-reindexed-concat-Human_skin_wound_healing-Donor3_Wound30-anndata.zarr",
+          "options": {
+            "path": "X",
+            "featureFilterPath": "var/is_celltype"
+          },
+          "coordinationValues": {
+            "obsType": "spot",
+            "featureType": "celltype",
+            "featureValueType": "abundance"
+          }
+        },
+        {
+          "fileType": "anndata.zarr",
+          "url": "http://localhost:3000/intersect-reindexed-concat-Human_skin_wound_healing-Donor3_Wound30-anndata.zarr",
+          "options": {
+            "obsLocations": {
+              "path": "obsm/spatial"
+            }
+          },
+          "coordinationValues": {
+            "obsType": "spot"
+          }
+        },
+        {
+          "fileType": "raster.json",
+          "options": {
+            "renderLayers": [
+              "Human_skin_wound_healing-Donor3_Wound30-raw",
+              "reindexed-Human_skin_wound_healing-Donor3_Wound30-label.ome"
+            ],
+            "schemaVersion": "0.0.2",
+            "images": [
+              {
+                "name": "Human_skin_wound_healing-Donor3_Wound30-raw",
+                "url": "http://localhost:3000/Human_skin_wound_healing-Donor3_Wound30-raw.zarr",
+                "type": "zarr",
+                "metadata": {
+                  "isBitmask": false,
+                  "dimensions": [
+                    {
+                      "field": "t",
+                      "type": "quantitative",
+                      "values": null
+                    },
+                    {
+                      "field": "channel",
+                      "type": "nominal",
+                      "values": [
+                        "Channel 0",
+                        "Channel 1",
+                        "Channel 2"
+                      ]
+                    },
+                    {
+                      "field": "y",
+                      "type": "quantitative",
+                      "values": null
+                    },
+                    {
+                      "field": "x",
+                      "type": "quantitative",
+                      "values": null
+                    }
+                  ],
+                  "isPyramid": true,
+                  "transform": {
+                    "translate": {
+                      "y": 0,
+                      "x": 0
+                    },
+                    "scale": 1
+                  }
+                }
+              },
+              {
+                "name": "reindexed-Human_skin_wound_healing-Donor3_Wound30-label.ome",
+                "url": "http://localhost:3000/reindexed-Human_skin_wound_healing-Donor3_Wound30-label.ome.zarr",
+                "type": "zarr",
+                "metadata": {
+                  "isBitmask": true,
+                  "dimensions": [
+                    {
+                      "field": "t",
+                      "type": "quantitative",
+                      "values": null
+                    },
+                    {
+                      "field": "channel",
+                      "type": "nominal",
+                      "values": [
+                        "Labels"
+                      ]
+                    },
+                    {
+                      "field": "y",
+                      "type": "quantitative",
+                      "values": null
+                    },
+                    {
+                      "field": "x",
+                      "type": "quantitative",
+                      "values": null
+                    }
+                  ],
+                  "isPyramid": true,
+                  "transform": {
+                    "translate": {
+                      "y": 0,
+                      "x": 0
+                    },
+                    "scale": 1
+                  }
+                }
+              }
+            ]
+          },
+          "coordinationValues": {
+            "obsType": "spot",
+            "featureType": "combined"
+          }
+        }
+      ]
+    },
+    {
+      "uid": "Donor3_Wound1",
+      "name": "Donor3_Wound1",
+      "files": [
+        {
+          "fileType": "obsFeatureMatrix.anndata.zarr",
+          "url": "http://localhost:3000/intersect-reindexed-concat-Human_skin_wound_healing-Donor3_Wound1-anndata.zarr",
+          "options": {
+            "path": "X"
+          },
+          "coordinationValues": {
+            "obsType": "spot",
+            "featureType": "combined",
+            "featureValueType": "expression"
+          }
+        },
+        {
+          "fileType": "obsFeatureMatrix.anndata.zarr",
+          "url": "http://localhost:3000/intersect-reindexed-concat-Human_skin_wound_healing-Donor3_Wound1-anndata.zarr",
+          "options": {
+            "path": "X",
+            "featureFilterPath": "var/is_gene"
+          },
+          "coordinationValues": {
+            "obsType": "spot",
+            "featureType": "gene",
+            "featureValueType": "expression"
+          }
+        },
+        {
+          "fileType": "obsFeatureMatrix.anndata.zarr",
+          "url": "http://localhost:3000/intersect-reindexed-concat-Human_skin_wound_healing-Donor3_Wound1-anndata.zarr",
+          "options": {
+            "path": "X",
+            "featureFilterPath": "var/is_celltype"
+          },
+          "coordinationValues": {
+            "obsType": "spot",
+            "featureType": "celltype",
+            "featureValueType": "abundance"
+          }
+        },
+        {
+          "fileType": "anndata.zarr",
+          "url": "http://localhost:3000/intersect-reindexed-concat-Human_skin_wound_healing-Donor3_Wound1-anndata.zarr",
+          "options": {
+            "obsLocations": {
+              "path": "obsm/spatial"
+            }
+          },
+          "coordinationValues": {
+            "obsType": "spot"
+          }
+        },
+        {
+          "fileType": "raster.json",
+          "options": {
+            "renderLayers": [
+              "Human_skin_wound_healing-Donor3_Wound1-raw",
+              "reindexed-Human_skin_wound_healing-Donor3_Wound1-label.ome"
+            ],
+            "schemaVersion": "0.0.2",
+            "images": [
+              {
+                "name": "Human_skin_wound_healing-Donor3_Wound1-raw",
+                "url": "http://localhost:3000/Human_skin_wound_healing-Donor3_Wound1-raw.zarr",
+                "type": "zarr",
+                "metadata": {
+                  "isBitmask": false,
+                  "dimensions": [
+                    {
+                      "field": "t",
+                      "type": "quantitative",
+                      "values": null
+                    },
+                    {
+                      "field": "channel",
+                      "type": "nominal",
+                      "values": [
+                        "Channel 0",
+                        "Channel 1",
+                        "Channel 2"
+                      ]
+                    },
+                    {
+                      "field": "y",
+                      "type": "quantitative",
+                      "values": null
+                    },
+                    {
+                      "field": "x",
+                      "type": "quantitative",
+                      "values": null
+                    }
+                  ],
+                  "isPyramid": true,
+                  "transform": {
+                    "translate": {
+                      "y": 0,
+                      "x": 0
+                    },
+                    "scale": 1
+                  }
+                }
+              },
+              {
+                "name": "reindexed-Human_skin_wound_healing-Donor3_Wound1-label.ome",
+                "url": "http://localhost:3000/reindexed-Human_skin_wound_healing-Donor3_Wound1-label.ome.zarr",
+                "type": "zarr",
+                "metadata": {
+                  "isBitmask": true,
+                  "dimensions": [
+                    {
+                      "field": "t",
+                      "type": "quantitative",
+                      "values": null
+                    },
+                    {
+                      "field": "channel",
+                      "type": "nominal",
+                      "values": [
+                        "Labels"
+                      ]
+                    },
+                    {
+                      "field": "y",
+                      "type": "quantitative",
+                      "values": null
+                    },
+                    {
+                      "field": "x",
+                      "type": "quantitative",
+                      "values": null
+                    }
+                  ],
+                  "isPyramid": true,
+                  "transform": {
+                    "translate": {
+                      "y": 0,
+                      "x": 0
+                    },
+                    "scale": 1
+                  }
+                }
+              }
+            ]
+          },
+          "coordinationValues": {
+            "obsType": "spot",
+            "featureType": "combined"
+          }
+        }
+      ]
+    }
+  ],
+  "coordinationSpace": {
+    "featureType": {
+      "A": "gene",
+      "B": "celltype",
+      "C": "combined"
+    },
+    "featureValueType": {
+      "A": "expression",
+      "B": "abundance"
+    },
+    "dataset": {
+      "A": "Donor3_Skin",
+      "B": "Donor3_Wound1",
+      "C": "Donor3_Wound7",
+      "D": "Donor3_Wound30"
+    },
+    "obsType": {
+      "A": "spot"
+    },
+    "spatialImageLayer": {
+      "A": null,
+      "B": null,
+      "C": null,
+      "D": null
+    },
+    "spatialSegmentationLayer": {
+      "A": null,
+      "B": null,
+      "C": null,
+      "D": null
+    },
+    "spatialZoom": {
+      "A": null,
+      "B": null,
+      "C": null,
+      "D": null
+    },
+    "spatialTargetX": {
+      "A": null,
+      "B": null,
+      "C": null,
+      "D": null
+    },
+    "spatialTargetY": {
+      "A": null,
+      "B": null,
+      "C": null,
+      "D": null
+    }
+  },
+  "layout": [
+    {
+      "component": "spatial",
+      "coordinationScopes": {
+        "dataset": "A",
+        "obsType": "A",
+        "spatialImageLayer": "A",
+        "spatialSegmentationLayer": "A",
+        "spatialZoom": "A",
+        "spatialTargetX": "A",
+        "spatialTargetY": "A",
+        "featureType": "C"
+      },
+      "x": 0,
+      "y": 0,
+      "w": 5,
+      "h": 5
+    },
+    {
+      "component": "layerController",
+      "coordinationScopes": {
+        "dataset": "A",
+        "obsType": "A",
+        "spatialImageLayer": "A",
+        "spatialSegmentationLayer": "A",
+        "spatialZoom": "A",
+        "spatialTargetX": "A",
+        "spatialTargetY": "A"
+      },
+      "x": 0,
+      "y": 5,
+      "w": 5,
+      "h": 1
+    },
+    {
+      "component": "spatial",
+      "coordinationScopes": {
+        "dataset": "B",
+        "obsType": "A",
+        "spatialImageLayer": "B",
+        "spatialSegmentationLayer": "B",
+        "spatialZoom": "B",
+        "spatialTargetX": "B",
+        "spatialTargetY": "B",
+        "featureType": "C"
+      },
+      "x": 5,
+      "y": 0,
+      "w": 5,
+      "h": 5
+    },
+    {
+      "component": "layerController",
+      "coordinationScopes": {
+        "dataset": "B",
+        "obsType": "A",
+        "spatialImageLayer": "B",
+        "spatialSegmentationLayer": "B",
+        "spatialZoom": "B",
+        "spatialTargetX": "B",
+        "spatialTargetY": "B"
+      },
+      "x": 5,
+      "y": 6,
+      "w": 5,
+      "h": 1
+    },
+    {
+      "component": "spatial",
+      "coordinationScopes": {
+        "dataset": "C",
+        "obsType": "A",
+        "spatialImageLayer": "C",
+        "spatialSegmentationLayer": "C",
+        "spatialZoom": "C",
+        "spatialTargetX": "C",
+        "spatialTargetY": "C",
+        "featureType": "C"
+      },
+      "x": 0,
+      "y": 6,
+      "w": 5,
+      "h": 5
+    },
+    {
+      "component": "layerController",
+      "coordinationScopes": {
+        "dataset": "C",
+        "obsType": "A",
+        "spatialImageLayer": "C",
+        "spatialSegmentationLayer": "C",
+        "spatialZoom": "C",
+        "spatialTargetX": "C",
+        "spatialTargetY": "C"
+      },
+      "x": 0,
+      "y": 11,
+      "w": 5,
+      "h": 1
+    },
+    {
+      "component": "spatial",
+      "coordinationScopes": {
+        "dataset": "D",
+        "obsType": "A",
+        "spatialImageLayer": "D",
+        "spatialSegmentationLayer": "D",
+        "spatialZoom": "D",
+        "spatialTargetX": "D",
+        "spatialTargetY": "D",
+        "featureType": "C"
+      },
+      "x": 5,
+      "y": 6,
+      "w": 5,
+      "h": 5
+    },
+    {
+      "component": "layerController",
+      "coordinationScopes": {
+        "dataset": "D",
+        "obsType": "A",
+        "spatialImageLayer": "D",
+        "spatialSegmentationLayer": "D",
+        "spatialZoom": "D",
+        "spatialTargetX": "D",
+        "spatialTargetY": "D"
+      },
+      "x": 5,
+      "y": 11,
+      "w": 5,
+      "h": 1
+    },
+    {
+      "component": "featureList",
+      "coordinationScopes": {
+        "dataset": "A",
+        "featureType": "A",
+        "featureValueType": "A"
+      },
+      "x": 10,
+      "y": 0,
+      "w": 2,
+      "h": 6
+    },
+    {
+      "component": "featureList",
+      "coordinationScopes": {
+        "dataset": "A",
+        "featureType": "B",
+        "featureValueType": "B"
+      },
+      "x": 10,
+      "y": 6,
+      "w": 2,
+      "h": 6
+    }
+  ],
+  "initStrategy": "auto"
+}
