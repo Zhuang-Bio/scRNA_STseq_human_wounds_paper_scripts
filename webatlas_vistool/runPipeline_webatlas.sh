@@ -82,4 +82,8 @@ module load bioinfo-tools Nextflow/22.10.1
  
 interactive -A naiss2023-22-935 -t 8:00:00 -N 2
 
+# Run main.nf function
 nextflow run main.nf -params-file /crex/proj/snic2021-23-156/publicdata/wound_webatlas/input/P20063_102_donor2_wound1_morefun/P20063_102_donor2_wound1_morefun.yaml -entry Full_pipeline -profile singularity
+# Run multimodal.nf function to combine sections from same donor
+nextflow run multimodal.nf -params-file /crex/proj/snic2021-23-156/publicdata/wound_webatlas/comDonor/multimod_Donor2.yaml -profile singularity
+# modified the json file to twist the view of website page
