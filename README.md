@@ -29,7 +29,7 @@ Liu, Z., Li, D., Bian, X., Luo, L., Björklund, Å.K., Li, L., Zhang, L., Chen, 
   Processed data can be accessed on our web portal at https://www.xulandenlab.com/tools
 
 ### Raw sequencing data
-  Original data sequenced in this study have been deposited in gene expression omnibus (GEO) under assession numbers: GSE241132, GSE265972, GSE241124, and GSE218430.
+  Original data sequenced in this study have been deposited in gene expression omnibus (GEO) under assession numbers: [GSE241132](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE241132), [GSE265972](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE265972), [GSE241124](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE241124), and [GSE218430](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE218430).
 
 
 
