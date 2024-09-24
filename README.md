@@ -2,9 +2,8 @@
 
 This repository contains the data processing and analysis scripts for our single-cell RNA-seq and Spatial transcript (ST-seq) of skin wound healing study leaded by ***Liu et al.***.
 
-Liu, Z., Li, D., Bian, X., Luo, L., Björklund, Å.K., Li, L., Zhang, L., Chen, Y., Guo, L., Gao, J., et al. (2024). Spatiotemporal Single-Cell Roadmap of Human Skin Wound Healing. bioRxiv, 2024.2008.2030.609923. 10.1101/2024.08.30.609923.(https://www.biorxiv.org/content/10.1101/2024.08.30.609923v1)
-
-
+Liu, Z., Li, D., Bian, X., Luo, L., Björklund, Å.K., Li, L., Zhang, L., Chen, Y., Guo, L., Gao, J., et al. (2024). Spatiotemporal Single-Cell Roadmap of Human Skin Wound Healing. bioRxiv, 2024.2008.2030.609923. 10.1101/2024.08.30.609923.
+[https://www.biorxiv.org/content/10.1101/2024.08.30.609923v1]
 
 ## Repository Contents
 
