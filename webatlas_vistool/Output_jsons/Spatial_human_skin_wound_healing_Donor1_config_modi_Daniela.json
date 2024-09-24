@@ -1,0 +1,758 @@
+{
+    "version": "1.0.15",
+    "name": "Spatial human wound Donor1",
+    "description": "",
+    "datasets": [
+      {
+        "uid": "Donor1_Skin",
+        "name": "Donor1_Skin",
+        "files": [
+          {
+            "fileType": "obsFeatureMatrix.anndata.zarr",
+            "url": "https://haniffa.cog.sanger.ac.uk/wound-healing/Donor1_nosort/0.5.2/intersect-reindexed-concat-Human_skin_wound_healing-Donor1_Skin-anndata.zarr",
+            "options": {
+              "path": "X"
+            },
+            "coordinationValues": {
+              "obsType": "spot",
+              "featureType": "combined",
+              "featureValueType": "expression"
+            }
+          },
+          {
+            "fileType": "obsFeatureMatrix.anndata.zarr",
+            "url": "https://haniffa.cog.sanger.ac.uk/wound-healing/Donor1_nosort/0.5.2/intersect-reindexed-concat-Human_skin_wound_healing-Donor1_Skin-anndata.zarr",
+            "options": {
+              "path": "X",
+              "featureFilterPath": "var/is_gene"
+            },
+            "coordinationValues": {
+              "obsType": "spot",
+              "featureType": "gene",
+              "featureValueType": "expression"
+            }
+          },
+          {
+            "fileType": "obsFeatureMatrix.anndata.zarr",
+            "url": "https://haniffa.cog.sanger.ac.uk/wound-healing/Donor1_nosort/0.5.2/intersect-reindexed-concat-Human_skin_wound_healing-Donor1_Skin-anndata.zarr",
+            "options": {
+              "path": "X",
+              "featureFilterPath": "var/is_celltype"
+            },
+            "coordinationValues": {
+              "obsType": "spot",
+              "featureType": "celltype",
+              "featureValueType": "abundance"
+            }
+          },
+          {
+            "fileType": "anndata.zarr",
+            "url": "https://haniffa.cog.sanger.ac.uk/wound-healing/Donor1_nosort/0.5.2/intersect-reindexed-concat-Human_skin_wound_healing-Donor1_Skin-anndata.zarr",
+            "options": {
+              "obsLocations": {
+                "path": "obsm/spatial"
+              }
+            },
+            "coordinationValues": {
+              "obsType": "spot"
+            }
+          },
+          {
+            "fileType": "raster.json",
+            "options": {
+              "renderLayers": [
+                "Human_skin_wound_healing-Donor1_Skin-raw",
+                "reindexed-Human_skin_wound_healing-Donor1_Skin-label.ome"
+              ],
+              "schemaVersion": "0.0.2",
+              "images": [
+                {
+                  "name": "Human_skin_wound_healing-Donor1_Skin-raw",
+                  "url": "https://haniffa.cog.sanger.ac.uk/wound-healing/Donor1_nosort/0.5.2/Human_skin_wound_healing-Donor1_Skin-raw.zarr",
+                  "type": "zarr",
+                  "metadata": {
+                    "isBitmask": false,
+                    "dimensions": [
+                      {
+                        "field": "t",
+                        "type": "quantitative",
+                        "values": null
+                      },
+                      {
+                        "field": "channel",
+                        "type": "nominal",
+                        "values": [
+                          "Channel 0",
+                          "Channel 1",
+                          "Channel 2"
+                        ]
+                      },
+                      {
+                        "field": "y",
+                        "type": "quantitative",
+                        "values": null
+                      },
+                      {
+                        "field": "x",
+                        "type": "quantitative",
+                        "values": null
+                      }
+                    ],
+                    "isPyramid": true,
+                    "transform": {
+                      "translate": {
+                        "y": 0,
+                        "x": 0
+                      },
+                      "scale": 1
+                    }
+                  }
+                },
+                {
+                  "name": "reindexed-Human_skin_wound_healing-Donor1_Skin-label.ome",
+                  "url": "https://haniffa.cog.sanger.ac.uk/wound-healing/Donor1_nosort/0.5.2/reindexed-Human_skin_wound_healing-Donor1_Skin-label.ome.zarr",
+                  "type": "zarr",
+                  "metadata": {
+                    "isBitmask": true,
+                    "dimensions": [
+                      {
+                        "field": "t",
+                        "type": "quantitative",
+                        "values": null
+                      },
+                      {
+                        "field": "channel",
+                        "type": "nominal",
+                        "values": [
+                          "Labels"
+                        ]
+                      },
+                      {
+                        "field": "y",
+                        "type": "quantitative",
+                        "values": null
+                      },
+                      {
+                        "field": "x",
+                        "type": "quantitative",
+                        "values": null
+                      }
+                    ],
+                    "isPyramid": true,
+                    "transform": {
+                      "translate": {
+                        "y": 0,
+                        "x": 0
+                      },
+                      "scale": 1
+                    }
+                  }
+                }
+              ]
+            },
+            "coordinationValues": {
+              "obsType": "spot",
+              "featureType": "combined"
+            }
+          }
+        ]
+      },
+      {
+        "uid": "Donor1_Wound1",
+        "name": "Donor1_Wound1",
+        "files": [
+          {
+            "fileType": "obsFeatureMatrix.anndata.zarr",
+            "url": "https://haniffa.cog.sanger.ac.uk/wound-healing/Donor1_nosort/0.5.2/intersect-reindexed-concat-Human_skin_wound_healing-Donor1_Wound1-anndata.zarr",
+            "options": {
+              "path": "X"
+            },
+            "coordinationValues": {
+              "obsType": "spot",
+              "featureType": "combined",
+              "featureValueType": "expression"
+            }
+          },
+          {
+            "fileType": "obsFeatureMatrix.anndata.zarr",
+            "url": "https://haniffa.cog.sanger.ac.uk/wound-healing/Donor1_nosort/0.5.2/intersect-reindexed-concat-Human_skin_wound_healing-Donor1_Wound1-anndata.zarr",
+            "options": {
+              "path": "X",
+              "featureFilterPath": "var/is_gene"
+            },
+            "coordinationValues": {
+              "obsType": "spot",
+              "featureType": "gene",
+              "featureValueType": "expression"
+            }
+          },
+          {
+            "fileType": "obsFeatureMatrix.anndata.zarr",
+            "url": "https://haniffa.cog.sanger.ac.uk/wound-healing/Donor1_nosort/0.5.2/intersect-reindexed-concat-Human_skin_wound_healing-Donor1_Wound1-anndata.zarr",
+            "options": {
+              "path": "X",
+              "featureFilterPath": "var/is_celltype"
+            },
+            "coordinationValues": {
+              "obsType": "spot",
+              "featureType": "celltype",
+              "featureValueType": "abundance"
+            }
+          },
+          {
+            "fileType": "anndata.zarr",
+            "url": "https://haniffa.cog.sanger.ac.uk/wound-healing/Donor1_nosort/0.5.2/intersect-reindexed-concat-Human_skin_wound_healing-Donor1_Wound1-anndata.zarr",
+            "options": {
+              "obsLocations": {
+                "path": "obsm/spatial"
+              }
+            },
+            "coordinationValues": {
+              "obsType": "spot"
+            }
+          },
+          {
+            "fileType": "raster.json",
+            "options": {
+              "renderLayers": [
+                "Human_skin_wound_healing-Donor1_Wound1-raw",
+                "reindexed-Human_skin_wound_healing-Donor1_Wound1-label.ome"
+              ],
+              "schemaVersion": "0.0.2",
+              "images": [
+                {
+                  "name": "Human_skin_wound_healing-Donor1_Wound1-raw",
+                  "url": "https://haniffa.cog.sanger.ac.uk/wound-healing/Donor1_nosort/0.5.2/Human_skin_wound_healing-Donor1_Wound1-raw.zarr",
+                  "type": "zarr",
+                  "metadata": {
+                    "isBitmask": false,
+                    "dimensions": [
+                      {
+                        "field": "t",
+                        "type": "quantitative",
+                        "values": null
+                      },
+                      {
+                        "field": "channel",
+                        "type": "nominal",
+                        "values": [
+                          "Channel 0",
+                          "Channel 1",
+                          "Channel 2"
+                        ]
+                      },
+                      {
+                        "field": "y",
+                        "type": "quantitative",
+                        "values": null
+                      },
+                      {
+                        "field": "x",
+                        "type": "quantitative",
+                        "values": null
+                      }
+                    ],
+                    "isPyramid": true,
+                    "transform": {
+                      "translate": {
+                        "y": 0,
+                        "x": 0
+                      },
+                      "scale": 1
+                    }
+                  }
+                },
+                {
+                  "name": "reindexed-Human_skin_wound_healing-Donor1_Wound1-label.ome",
+                  "url": "https://haniffa.cog.sanger.ac.uk/wound-healing/Donor1_nosort/0.5.2/reindexed-Human_skin_wound_healing-Donor1_Wound1-label.ome.zarr",
+                  "type": "zarr",
+                  "metadata": {
+                    "isBitmask": true,
+                    "dimensions": [
+                      {
+                        "field": "t",
+                        "type": "quantitative",
+                        "values": null
+                      },
+                      {
+                        "field": "channel",
+                        "type": "nominal",
+                        "values": [
+                          "Labels"
+                        ]
+                      },
+                      {
+                        "field": "y",
+                        "type": "quantitative",
+                        "values": null
+                      },
+                      {
+                        "field": "x",
+                        "type": "quantitative",
+                        "values": null
+                      }
+                    ],
+                    "isPyramid": true,
+                    "transform": {
+                      "translate": {
+                        "y": 0,
+                        "x": 0
+                      },
+                      "scale": 1
+                    }
+                  }
+                }
+              ]
+            },
+            "coordinationValues": {
+              "obsType": "spot",
+              "featureType": "combined"
+            }
+          }
+        ]
+      },
+      {
+        "uid": "Donor1_Wound7",
+        "name": "Donor1_Wound7",
+        "files": [
+          {
+            "fileType": "obsFeatureMatrix.anndata.zarr",
+            "url": "https://haniffa.cog.sanger.ac.uk/wound-healing/Donor1_nosort/0.5.2/intersect-reindexed-concat-Human_skin_wound_healing-Donor1_Wound7-anndata.zarr",
+            "options": {
+              "path": "X"
+            },
+            "coordinationValues": {
+              "obsType": "spot",
+              "featureType": "combined",
+              "featureValueType": "expression"
+            }
+          },
+          {
+            "fileType": "obsFeatureMatrix.anndata.zarr",
+            "url": "https://haniffa.cog.sanger.ac.uk/wound-healing/Donor1_nosort/0.5.2/intersect-reindexed-concat-Human_skin_wound_healing-Donor1_Wound7-anndata.zarr",
+            "options": {
+              "path": "X",
+              "featureFilterPath": "var/is_gene"
+            },
+            "coordinationValues": {
+              "obsType": "spot",
+              "featureType": "gene",
+              "featureValueType": "expression"
+            }
+          },
+          {
+            "fileType": "obsFeatureMatrix.anndata.zarr",
+            "url": "https://haniffa.cog.sanger.ac.uk/wound-healing/Donor1_nosort/0.5.2/intersect-reindexed-concat-Human_skin_wound_healing-Donor1_Wound7-anndata.zarr",
+            "options": {
+              "path": "X",
+              "featureFilterPath": "var/is_celltype"
+            },
+            "coordinationValues": {
+              "obsType": "spot",
+              "featureType": "celltype",
+              "featureValueType": "abundance"
+            }
+          },
+          {
+            "fileType": "anndata.zarr",
+            "url": "https://haniffa.cog.sanger.ac.uk/wound-healing/Donor1_nosort/0.5.2/intersect-reindexed-concat-Human_skin_wound_healing-Donor1_Wound7-anndata.zarr",
+            "options": {
+              "obsLocations": {
+                "path": "obsm/spatial"
+              }
+            },
+            "coordinationValues": {
+              "obsType": "spot"
+            }
+          },
+          {
+            "fileType": "raster.json",
+            "options": {
+              "renderLayers": [
+                "Human_skin_wound_healing-Donor1_Wound7-raw",
+                "reindexed-Human_skin_wound_healing-Donor1_Wound7-label.ome"
+              ],
+              "schemaVersion": "0.0.2",
+              "images": [
+                {
+                  "name": "Human_skin_wound_healing-Donor1_Wound7-raw",
+                  "url": "https://haniffa.cog.sanger.ac.uk/wound-healing/Donor1_nosort/0.5.2/Human_skin_wound_healing-Donor1_Wound7-raw.zarr",
+                  "type": "zarr",
+                  "metadata": {
+                    "isBitmask": false,
+                    "dimensions": [
+                      {
+                        "field": "t",
+                        "type": "quantitative",
+                        "values": null
+                      },
+                      {
+                        "field": "channel",
+                        "type": "nominal",
+                        "values": [
+                          "Channel 0",
+                          "Channel 1",
+                          "Channel 2"
+                        ]
+                      },
+                      {
+                        "field": "y",
+                        "type": "quantitative",
+                        "values": null
+                      },
+                      {
+                        "field": "x",
+                        "type": "quantitative",
+                        "values": null
+                      }
+                    ],
+                    "isPyramid": true,
+                    "transform": {
+                      "translate": {
+                        "y": 0,
+                        "x": 0
+                      },
+                      "scale": 1
+                    }
+                  }
+                },
+                {
+                  "name": "reindexed-Human_skin_wound_healing-Donor1_Wound7-label.ome",
+                  "url": "https://haniffa.cog.sanger.ac.uk/wound-healing/Donor1_nosort/0.5.2/reindexed-Human_skin_wound_healing-Donor1_Wound7-label.ome.zarr",
+                  "type": "zarr",
+                  "metadata": {
+                    "isBitmask": true,
+                    "dimensions": [
+                      {
+                        "field": "t",
+                        "type": "quantitative",
+                        "values": null
+                      },
+                      {
+                        "field": "channel",
+                        "type": "nominal",
+                        "values": [
+                          "Labels"
+                        ]
+                      },
+                      {
+                        "field": "y",
+                        "type": "quantitative",
+                        "values": null
+                      },
+                      {
+                        "field": "x",
+                        "type": "quantitative",
+                        "values": null
+                      }
+                    ],
+                    "isPyramid": true,
+                    "transform": {
+                      "translate": {
+                        "y": 0,
+                        "x": 0
+                      },
+                      "scale": 1
+                    }
+                  }
+                }
+              ]
+            },
+            "coordinationValues": {
+              "obsType": "spot",
+              "featureType": "combined"
+            }
+          }
+        ]
+      },
+      {
+        "uid": "Donor1_Wound30",
+        "name": "Donor1_Wound30",
+        "files": [
+          {
+            "fileType": "obsFeatureMatrix.anndata.zarr",
+            "url": "https://haniffa.cog.sanger.ac.uk/wound-healing/Donor1_nosort/0.5.2/intersect-reindexed-concat-Human_skin_wound_healing-Donor1_Wound30-anndata.zarr",
+            "options": {
+              "path": "X"
+            },
+            "coordinationValues": {
+              "obsType": "spot",
+              "featureType": "combined",
+              "featureValueType": "expression"
+            }
+          },
+          {
+            "fileType": "obsFeatureMatrix.anndata.zarr",
+            "url": "https://haniffa.cog.sanger.ac.uk/wound-healing/Donor1_nosort/0.5.2/intersect-reindexed-concat-Human_skin_wound_healing-Donor1_Wound30-anndata.zarr",
+            "options": {
+              "path": "X",
+              "featureFilterPath": "var/is_gene"
+            },
+            "coordinationValues": {
+              "obsType": "spot",
+              "featureType": "gene",
+              "featureValueType": "expression"
+            }
+          },
+          {
+            "fileType": "obsFeatureMatrix.anndata.zarr",
+            "url": "https://haniffa.cog.sanger.ac.uk/wound-healing/Donor1_nosort/0.5.2/intersect-reindexed-concat-Human_skin_wound_healing-Donor1_Wound30-anndata.zarr",
+            "options": {
+              "path": "X",
+              "featureFilterPath": "var/is_celltype"
+            },
+            "coordinationValues": {
+              "obsType": "spot",
+              "featureType": "celltype",
+              "featureValueType": "abundance"
+            }
+          },
+          {
+            "fileType": "anndata.zarr",
+            "url": "https://haniffa.cog.sanger.ac.uk/wound-healing/Donor1_nosort/0.5.2/intersect-reindexed-concat-Human_skin_wound_healing-Donor1_Wound30-anndata.zarr",
+            "options": {
+              "obsLocations": {
+                "path": "obsm/spatial"
+              }
+            },
+            "coordinationValues": {
+              "obsType": "spot"
+            }
+          },
+          {
+            "fileType": "raster.json",
+            "options": {
+              "renderLayers": [
+                "Human_skin_wound_healing-Donor1_Wound30-raw",
+                "reindexed-Human_skin_wound_healing-Donor1_Wound30-label.ome"
+              ],
+              "schemaVersion": "0.0.2",
+              "images": [
+                {
+                  "name": "Human_skin_wound_healing-Donor1_Wound30-raw",
+                  "url": "https://haniffa.cog.sanger.ac.uk/wound-healing/Donor1_nosort/0.5.2/Human_skin_wound_healing-Donor1_Wound30-raw.zarr",
+                  "type": "zarr",
+                  "metadata": {
+                    "isBitmask": false,
+                    "dimensions": [
+                      {
+                        "field": "t",
+                        "type": "quantitative",
+                        "values": null
+                      },
+                      {
+                        "field": "channel",
+                        "type": "nominal",
+                        "values": [
+                          "Channel 0",
+                          "Channel 1",
+                          "Channel 2"
+                        ]
+                      },
+                      {
+                        "field": "y",
+                        "type": "quantitative",
+                        "values": null
+                      },
+                      {
+                        "field": "x",
+                        "type": "quantitative",
+                        "values": null
+                      }
+                    ],
+                    "isPyramid": true,
+                    "transform": {
+                      "translate": {
+                        "y": 0,
+                        "x": 0
+                      },
+                      "scale": 1
+                    }
+                  }
+                },
+                {
+                  "name": "reindexed-Human_skin_wound_healing-Donor1_Wound30-label.ome",
+                  "url": "https://haniffa.cog.sanger.ac.uk/wound-healing/Donor1_nosort/0.5.2/reindexed-Human_skin_wound_healing-Donor1_Wound30-label.ome.zarr",
+                  "type": "zarr",
+                  "metadata": {
+                    "isBitmask": true,
+                    "dimensions": [
+                      {
+                        "field": "t",
+                        "type": "quantitative",
+                        "values": null
+                      },
+                      {
+                        "field": "channel",
+                        "type": "nominal",
+                        "values": [
+                          "Labels"
+                        ]
+                      },
+                      {
+                        "field": "y",
+                        "type": "quantitative",
+                        "values": null
+                      },
+                      {
+                        "field": "x",
+                        "type": "quantitative",
+                        "values": null
+                      }
+                    ],
+                    "isPyramid": true,
+                    "transform": {
+                      "translate": {
+                        "y": 0,
+                        "x": 0
+                      },
+                      "scale": 1
+                    }
+                  }
+                }
+              ]
+            },
+            "coordinationValues": {
+              "obsType": "spot",
+              "featureType": "combined"
+            }
+          }
+        ]
+      }
+    ],
+    "coordinationSpace": {
+      "featureType": {
+        "A": "gene",
+        "B": "celltype",
+        "C": "combined"
+      },
+      "featureValueType": {
+        "A": "expression",
+        "B": "abundance"
+      },
+      "dataset": {
+        "A": "Donor1_Skin",
+        "B": "Donor1_Wound1",
+        "C": "Donor1_Wound7",
+        "D": "Donor1_Wound30"
+      },
+      "obsType": {
+        "A": "spot"
+      },
+      "spatialZoom": {
+        "A": null,
+        "B": null,
+        "C": null,
+        "D": null
+      },
+      "spatialTargetX": {
+        "A": null,
+        "B": null,
+        "C": null,
+        "D": null
+      },
+      "spatialTargetY": {
+        "A": null,
+        "B": null,
+        "C": null,
+        "D": null
+      }
+    },
+    "layout": [
+      {
+        "component": "spatial",
+        "coordinationScopes": {
+          "dataset": "A",
+          "obsType": "A",
+          "spatialZoom": "A",
+          "spatialTargetX": "A",
+          "spatialTargetY": "A",
+          "featureType": "C"
+        },
+        "x": 0,
+        "y": 0,
+        "w": 5,
+        "h": 6
+      },
+      {
+        "component": "spatial",
+        "coordinationScopes": {
+          "dataset": "B",
+          "obsType": "A",
+          "spatialZoom": "B",
+          "spatialTargetX": "B",
+          "spatialTargetY": "B",
+          "featureType": "C"
+        },
+        "x": 5,
+        "y": 0,
+        "w": 5,
+        "h": 6
+      },
+      {
+        "component": "spatial",
+        "coordinationScopes": {
+          "dataset": "C",
+          "obsType": "A",
+          "spatialZoom": "C",
+          "spatialTargetX": "C",
+          "spatialTargetY": "C",
+          "featureType": "C"
+        },
+        "x": 0,
+        "y": 6,
+        "w": 5,
+        "h": 6
+      },
+      {
+        "component": "spatial",
+        "coordinationScopes": {
+          "dataset": "D",
+          "obsType": "A",
+          "spatialZoom": "D",
+          "spatialTargetX": "D",
+          "spatialTargetY": "D",
+          "featureType": "C"
+        },
+        "x": 5,
+        "y": 6,
+        "w": 5,
+        "h": 6
+      },
+      {
+        "component": "featureList",
+        "coordinationScopes": {
+          "dataset": "A",
+          "featureType": "A",
+          "featureValueType": "A"
+        },
+        "x": 10,
+        "y": 0,
+        "w": 2,
+        "h": 4
+      },
+      {
+        "component": "featureList",
+        "coordinationScopes": {
+          "dataset": "A",
+          "featureType": "B",
+          "featureValueType": "B"
+        },
+        "x": 10,
+        "y": 6,
+        "w": 2,
+        "h": 4
+      },
+      {
+        "component": "layerController",
+        "props": {
+            "disableChannelsIfRgbDetected": true
+        },
+        "x": 10,
+        "y": 8,
+        "w": 2,
+        "h": 4
+      }
+    ],
+    "initStrategy": "auto"
+  }
