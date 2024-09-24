@@ -1,0 +1,473 @@
+---
+title: "Cross-species analysis"
+author: "Zhuang Liu"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true #add a table of contents (TOC)
+    toc_depth: 3 #headers' level in the toc
+    toc_float: true #toc visible even when scrolled
+    theme: lumen
+    highlight: tango
+    code_folding: show
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.align='center', fig.width=12, fig.height = 6, warning=FALSE, message=FALSE)
+```
+
+```{r warning=FALSE, message=FALSE}
+library(Seurat)
+library(SeuratObject)
+library(SeuratDisk)
+library(tidyverse)
+library(patchwork)
+library(harmony)
+library(scCustomize)
+```
+
+# 1. Prepare the human and mouse wound healing scRNA-seq datasets
+```{r eval=FALSE}
+#############
+# Human skin wound healing scRNA data (This study)
+hs_seu <- readRDS("/Users/zhuliu/Desktop/sc st/Versions_SC_ST_Project/V2_Figures_231017/06-CrossSpecies/02-scRNA-seq mouse wound healing/s2-human_mouse_integration/all_human_wound_metadata.rds")
+hs_seu
+table(hs_seu$Condition)
+# Sampling the cell number of conditions
+lowNum <- 594
+metadata <- hs_seu@meta.data %>% rownames_to_column(var = "barcode")
+to_keep <- metadata %>% group_by(Condition) %>% sample_n(size = lowNum, replace = FALSE) %>%
+    pull(barcode)
+hs_seu <- subset(hs_seu, cells = to_keep)
+table(hs_seu$Condition)
+
+# Pseudobulk counts ("pseudobulk") for each sample.
+pseudo_sm <- AggregateExpression(hs_seu, 
+                                 assays = "RNA", 
+                                 slot = "count",
+                                 group.by = c("Condition"))$RNA %>% as.data.frame() #"orig.ident",
+colnames(pseudo_sm) <- gsub("PWH26", "Donor5_", colnames(pseudo_sm))
+colnames(pseudo_sm) <- gsub("PWH27", "Donor4_", colnames(pseudo_sm))
+colnames(pseudo_sm) <- gsub("PWH28", "Donor3_", colnames(pseudo_sm))
+# keep gene expressed in at least half of samples
+keep=which(rowSums(pseudo_sm > 0) >= 2) # >= 6 used for sample-based counts
+pseudo_sm <- pseudo_sm[keep, ]
+pseudo_sm <- pseudo_sm %>% rownames_to_column(var = "Gene") %>% arrange(Gene)
+
+#############
+# mouse skin wound healing scRNA data (own and public)
+ms_inte <- readRDS("/Users/zhuliu/Desktop/ZhuangLiu/00_Projects/s2_hsms_wound_diff/03-RawData/scAll_mouseWound_addCSCcancer.rds")
+ms_inte
+#ms_inte <- subset(ms_inte, Project == "aInhouse" | Project == "fCSCwoundCancer")
+#ms_inte@meta.data <- droplevels(ms_inte@meta.data)
+#saveRDS(ms_inte, file = "CSC_inHouse_mouse_wound.rds")
+
+# Remove the bWbedelife scRNA-seq (only wound bed data at 24h and 48h post wounding)
+ms_inte <- subset(ms_inte, Project != "bWbedelife")
+# Sampling the cell number of conditions
+lowNum <- 594
+metadata <- ms_inte@meta.data %>% rownames_to_column(var = "barcode")
+to_keep <- metadata %>% group_by(Project, newCondition) %>% sample_n(size = lowNum, replace = FALSE) %>% 
+  ungroup() %>% pull(barcode)
+ms_inte <- subset(ms_inte, cells = to_keep)
+table(ms_inte$newCondition)
+
+# Pseudobulk counts ("pseudobulk") for each sample.
+table(ms_inte$newCondition, ms_inte$Project)
+pseudo_mouse <- AggregateExpression(ms_inte, 
+                                    assays = "RNA", 
+                                    slot = "count",
+                                    group.by = c("newCondition", "Project"))$RNA %>% as.data.frame() # "orig.ident"
+# keep gene expressed in at least half of samples
+keep=which(rowSums(pseudo_mouse > 0) >= 8) # >= 15 used for sample-based counts
+pseudo_mouse <- pseudo_mouse[keep, ]
+
+# load the human_mouse gene annotation
+hs_mm <- data.table::fread("Dtmp_figures/00-gene_conversion_hs_ms/Private_human_mouse_GeneSymbol_conversion.txt")
+pseudo_mouse_f <- pseudo_mouse %>% rownames_to_column(var = "Gene") %>% left_join(., hs_mm, by=c("Gene"="ms_gene")) %>% 
+  select(19, 2:18) %>% arrange(hs_gene) %>% distinct(hs_gene, .keep_all=TRUE)
+pseudo_mouse_f <- pseudo_mouse_f[-nrow(pseudo_mouse_f),]
+
+# check the overlapped gene between human and mouse
+gene_op <- intersect(pseudo_sm$Gene, pseudo_mouse_f$hs_gene)
+
+#human and mouse
+pseudo_sm <- pseudo_sm %>% dplyr::filter(Gene %in% gene_op)
+pseudo_mouse_f <- pseudo_mouse_f%>% dplyr::filter(hs_gene %in% gene_op)
+
+identical(pseudo_sm$Gene, pseudo_mouse_f$hs_gene)
+
+inteCount <- cbind(pseudo_sm, pseudo_mouse_f[,-1])
+
+# make a metadata
+mt_sm <- colnames(pseudo_sm)[-1] %>% as.data.frame() %>% 
+  setNames("Sample") #%>% mutate(Donor = Sample) %>% 
+  #separate(., Donor, into = c("Donor", "Condition"), sep = "_")
+rownames(mt_sm) <- mt_sm$Sample
+mt_sm$Condition <- mt_sm$Sample 
+mt_sm$Project <- "Human"
+
+#mt_sm$Donor <- as.factor(mt_sm$Donor)
+#mt_sm$Condition <- factor(mt_sm$Condition, levels = c("D0", "D1", "D7", "D30"))
+
+#mt_mouse <- ms_inte@meta.data %>% dplyr::select(1,7,8) %>% distinct() %>% mutate(Donor = Project) %>% dplyr::select(1,4,2,3) %>% setNames(colnames(mt_sm))
+mt_mouse <- colnames(pseudo_mouse_f)[-1] %>% as.data.frame() %>% setNames("Sample") %>% 
+  mutate(Donor = Sample) %>% separate(., Donor, into = c("Condition", "Project"), sep = "_")
+mt_mouse$Condition <- gsub("^PWDd$", "PWDd14",mt_mouse$Condition)
+mt_mouse$Project <- gsub("^14$", "fCSCwoundCancer",mt_mouse$Project)
+
+mt <- rbind(mt_sm, mt_mouse)
+#data.table::fwrite(mt, "Cross_species_pseudoBulk_human_mouse_metaData.txt", sep="\t")
+#data.table::fwrite(mt, "Cross_species_pseudoBulk_human_mouse_metaData_condition.txt", sep="\t")
+
+identical(sort(mt$Sample), sort(colnames(inteCount)[-1]))
+
+#inteCount_f <- inteCount %>% column_to_rownames(var = "Gene")
+#inteCount_f <- inteCount_f[, mt$Sample]
+#inteCount_f <- inteCount_f %>% rownames_to_column(var = "Gene")
+#data.table::fwrite(inteCount_f, "Cross_species_pseudoBulk_human_mouse.txt", sep = "\t")
+#data.table::fwrite(inteCount, "Cross_species_pseudoBulk_human_mouse_condition.txt", sep = "\t")
+
+inteCount <- inteCount %>% column_to_rownames(var = "Gene")
+```
+
+
+# 2. (No) Sampling, correlation between human and mouse wound pseudobulk data
+```{r eval=FALSE}
+library(DESeq2)
+library(ggrepel)
+
+inteCount <- data.table::fread("Cross_species_pseudoBulk_human_mouse_condition.txt") %>% column_to_rownames(var = "Gene")
+inteCount <- as.matrix(inteCount)
+mt <- data.table::fread("Cross_species_pseudoBulk_human_mouse_metaData_condition.txt") %>% as.data.frame()
+rownames(mt) <- mt$Sample
+#mt$Condition <- gsub("^D30$", "Dd30", mt$Condition)
+#mt$Condition <- as.factor(mt$Condition)
+#mt$Project <- as.factor(mt$Project)
+
+table(mt$Condition);table(mt$Project)
+
+identical(rownames(mt), colnames(inteCount))
+
+# only extranct the human and inhouse mouse, and fCSCwoundCancer data
+mt_f <- mt #%>% filter(Project %in% c("Human", "fCSCwoundCancer")) #"aInhouse", 
+inteCount_f <- inteCount[,mt_f$Sample]
+
+#mt_f$Condition <- gsub("^DorsalSkin", "D0", mt_f$Condition)
+#mt_f$Condition <- gsub("^PWD3", "D3", mt_f$Condition)
+#mt_f$Condition %>% unique() %>% sort()
+
+# Change the human data into the same formatting naming in mouse
+mt_f$Condition <- gsub("^Skin", "DorsalSkin", mt_f$Condition)
+mt_f$Condition <- gsub("^Wound1", "PWD1", mt_f$Condition)
+mt_f$Condition <- gsub("^Wound7", "PWD7", mt_f$Condition)
+mt_f$Condition <- gsub("^Wound30", "PWDd30", mt_f$Condition)
+mt_f$Condition %>% unique() %>% sort()
+
+mt_f$Condition <- as.factor(mt_f$Condition)
+table(mt_f$Condition,mt_f$Project)
+
+#first we need to transform the format of our groups and batches from names (e.g. "UHR", "HBR", etc.) to numbers (e.g. 1, 2, etc.)
+#in the command below "sapply" is used to apply the "switch" command to each element and convert names to numbers as we define
+groups = sapply(as.character(mt_f$Condition), switch, 
+                "DorsalSkin"=1, "PWD1"=2, "PWD2"=3, "PWD3"=4, "PWD4"=5, "PWD7"=6, "PWDd14"=7, "PWDd30"=8,
+                USE.NAMES = F)
+batches = sapply(as.character(mt_f$Project), switch, 
+                 "aInhouse" = 1, "cGSAch"=2, "dWbedch"=3, "eCRxing"=4, "fCSCwoundCancer"=5, "Human" = 6, 
+                 USE.NAMES = F)
+
+
+##############################################################
+#now run ComBat_seq to correct the data from different project
+require(sva)
+identical(mt_f$Sample, colnames(inteCount_f))
+corrected_data = ComBat_seq(counts = inteCount_f,
+                            batch = batches, group = groups)
+
+# create the DESeqData
+dds_cor <- DESeqDataSetFromMatrix(countData = corrected_data, 
+                                  colData = mt_f, design = ~ Condition)
+dds_cor <- DESeq(dds_cor)
+
+# Transform counts for data visualization
+rld <- rlog(dds_cor, blind=TRUE)
+
+pcaData_cor <- plotPCA(rld, intgroup=c( "Sample", "Project", "Condition"), returnData=TRUE)
+percentVar_cor <- round(100 * attr(pcaData_cor, "percentVar"))
+max(pcaData_cor$PC1);min(pcaData_cor$PC1)
+max(pcaData_cor$PC2);min(pcaData_cor$PC2)
+nudge <- position_nudge(y = 1)
+ggplot(pcaData_cor, aes(PC1, PC2, color=Condition, shape=Project, label=name)) + 
+  geom_point(size=3) +
+  xlab(paste0("PC1: ",percentVar_cor[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar_cor[2],"% variance")) +
+  geom_text_repel(
+    max.overlaps = getOption("ggrepel.max.overlaps", default = 60)) +
+  theme_bw() + 
+  theme(axis.text.x = element_text(size = 12),
+        axis.text.y = element_text(size = 12),
+        aspect.ratio = 1)
+
+#pdf("Reviewer2_Q1_2_pati_hetero_pca.pdf", useDingbats = F, width = 6, height = 6)
+#dev.off()
+
+### Extract the vst matrix from the object
+rld_mat <- assay(rld) 
+### Compute pairwise correlation values
+rld_cor <- cor(rld_mat) 
+### Plot heatmap
+pheatmap::pheatmap(rld_cor, annotation = mt_f[, c("Project", "Condition"), drop=F])
+#pdf("Reviewer2_Q1_2_pati_hetero_heatmap.pdf", useDingbats = F, width = 6, height = 5)
+#dev.off()
+```
+
+
+# 3. Integrating human and mouse (in-house, CSCpaper) wound scRNA-seq
+## 3.1 Converting mouse genes to human orthologous genes
+```{r eval=FALSE}
+library(Matrix)
+#######################
+# 1.Mouse wound scRNA-seq
+ms_inhouse <- readRDS("/Users/zhuliu/Desktop/ZhuangLiu/00_Projects/s2_hsms_wound_diff/03-RawData/sc01_inhouse_DPW3.rds")
+table(ms_inhouse$Condition)
+rownames(ms_inhouse)[grep("Mmp", rownames(ms_inhouse))]
+
+# 2.Load the CSC wound healing and cancer scRNA-seq dataset (Demultiplex library)
+csc_woundcancer1 <- readRDS("/Users/zhuliu/Desktop/ZhuangLiu/00_Projects/s2_hsms_wound_diff/02-GEOdatasets/CSC-GSE204777_RAW/all_csc_integration_CD45positive.rds")
+DefaultAssay(csc_woundcancer1) <- "RNA"
+csc_woundcancer1 <- DietSeurat(csc_woundcancer1, assays = "RNA")
+csc_woundcancer2 <- readRDS("/Users/zhuliu/Desktop/ZhuangLiu/00_Projects/s2_hsms_wound_diff/02-GEOdatasets/CSC-GSE204777_RAW/all_csc_integration_CD45negative.rds")
+DefaultAssay(csc_woundcancer2) <- "RNA"
+csc_woundcancer2 <- DietSeurat(csc_woundcancer2, assays = "RNA")
+
+csc_woundcancer <- merge(csc_woundcancer1, y = c(csc_woundcancer2), project = "mouseWounds")
+rownames(csc_woundcancer)[grep("Mmp", rownames(csc_woundcancer))]
+rm(csc_woundcancer1, csc_woundcancer2);gc()
+# Remove unneeded columns of metadata
+mt <- csc_woundcancer@meta.data %>% rownames_to_column(var = "barcode") %>% 
+  select(1:8) %>% column_to_rownames(var = "barcode")
+mt$Celltype <- mt$Library
+colnames(mt)[7] <- "newCondition"
+csc_woundcancer@meta.data <- mt
+csc_woundcancer$newCondition <- gsub("UW", "dSkin", csc_woundcancer$Condition)
+csc_woundcancer$newCondition <- gsub("^D1$", "PWD1", csc_woundcancer$newCondition)
+csc_woundcancer$newCondition <- gsub("D3", "PWD3", csc_woundcancer$newCondition)
+csc_woundcancer$newCondition <- gsub("D7", "PWD7", csc_woundcancer$newCondition)
+csc_woundcancer$newCondition <- gsub("^D14$", "PWDd14", csc_woundcancer$newCondition)
+table(csc_woundcancer$newCondition)
+csc_woundcancer$Project <- "fCSCwoundCancer"
+
+# Merge
+ms_inte <- merge(ms_inhouse, y = c(csc_woundcancer), project = "mouseWounds")
+rownames(ms_inte)[grep("Mmp", rownames(ms_inte))]
+
+# load the conversion of human_mouse genes
+hs_mm <- data.table::fread("Dtmp_figures/00-gene_conversion_hs_ms/Private_human_mouse_GeneSymbol_conversion.txt")
+
+exp_mtx <- as.matrix(ms_inte@assays$RNA@counts);dim(exp_mtx)
+v2genes <- data.frame(ms_gene = rownames(exp_mtx)) %>% left_join(., hs_mm, by=c("ms_gene"))
+
+table(is.na(v2genes$hs_gene))
+##lots of NAs for which there are no human genes matching
+## Remove NAs
+v2genes <- v2genes[!is.na(v2genes$hs_gene),,F]
+## Filter the expression matrix for genes which a mouse counterpart is available
+exp_mtx <- exp_mtx[v2genes$ms_gene,]
+## Now change the rownames of the matrix to the mouse gene names
+rownames(exp_mtx) <- v2genes$hs_gene
+#check the duplicated gene names
+duplicated(rownames(exp_mtx)) %>% table()
+exp_mtx <- exp_mtx[!duplicated(rownames(exp_mtx)),]
+dim(exp_mtx);identical(colnames(exp_mtx), colnames(ms_inte))
+## Create the seurat object with mouse genes.
+ms_inte <- CreateSeuratObject(counts = exp_mtx, meta.data = ms_inte@meta.data)
+rownames(ms_inte)[grep("KRT", rownames(ms_inte))]
+rownames(ms_inte)[grep("MMP", rownames(ms_inte))]
+rownames(ms_inte)[grep("S100", rownames(ms_inte))]
+rownames(ms_inte)[grep("SERPINB", rownames(ms_inte))]
+
+saveRDS(ms_inte, file = "CSC_inHouse_mouse_wound.rds")
+```
+
+## 3.2 Merge three datasets together
+```{r eval=TRUE}
+# Human skin wound healing 
+hs_seu <- readRDS("all_human_wound_metadata.rds")
+hs_seu
+mt_hs <- hs_seu@meta.data %>% rownames_to_column(var = "barcode")
+mt_hs$Project <- "HumanWound"
+mt_hs$Sample <- mt_hs$orig.ident
+mt_hs <- mt_hs %>% column_to_rownames(var = "barcode") %>% select(1,7,4:6)
+hs_seu@meta.data <- mt_hs
+
+# Mouse skin wound healing
+mm_seu <- readRDS("CSC_inHouse_mouse_wound.rds")
+mm_seu
+mt_mm <- mm_seu@meta.data %>% rownames_to_column(var = "barcode")
+mt_mm$newCondition <- ifelse(mt_mm$newCondition %in% c("dSkin", "PWD1", "PWD3", "PWD7", "PWDd14"), mt_mm$newCondition, mt_mm$Condition)
+mt_mm$newCondition <- gsub("^Skin$", "dSkin", mt_mm$newCondition)
+mt_mm$newCondition <- gsub("^DPW3$", "PWD3", mt_mm$newCondition)
+table(mt_mm$newCondition)
+mt_mm$Project <- ifelse(is.na(mt_mm$Project), "Inhouse", mt_mm$Project)
+mt_mm$Project <- gsub("fCSCwoundCancer", "woundCancer", mt_mm$Project)
+mt_mm$Sample <- mt_mm$orig.ident
+mt_mm$orig.ident <- ifelse(mt_mm$Project == "woundCancer", mt_mm$Celltype, mt_mm$orig.ident)
+mt_mm$Condition <- mt_mm$newCondition
+mt_mm <- mt_mm %>% select(1,2,10,6,7,9) 
+mt_mm <- mt_mm %>% column_to_rownames(var = "barcode")
+colnames(mt_mm) <- colnames(mt_hs)
+mm_seu@meta.data <- mt_mm
+
+# Merge data
+# check the overlapped genes and keep the overlapped genes
+overgene <- intersect(rownames(hs_seu), rownames(mm_seu))
+length(overgene)
+mm_seu <- mm_seu[overgene, ]
+hs_seu <- hs_seu[overgene, ]
+
+# integrate based on orig.ident names
+mm_seu$Species="Mouse"
+hs_seu$Species="Human"
+
+all_seu <- merge(hs_seu,  y = c(mm_seu),
+                project = "wounds")
+
+table(all_seu$Project)
+rownames(all_seu)[grep("KRT", rownames(all_seu))]
+rownames(all_seu)[grep("MMP", rownames(all_seu))]
+rownames(all_seu)[grep("S100", rownames(all_seu))]
+rownames(all_seu)[grep("SERPINB", rownames(all_seu))]
+```
+
+## 3.3 noSampling (First) and normalization, CCA clustering
+```{r eval=FALSE}
+# sampling the cell numbers 
+table(all_seu$Condition, all_seu$Project)
+#lowNum <- 594
+#metadata <- all_seu@meta.data %>% rownames_to_column(var = "barcode")
+#to_keep <- metadata %>% group_by(Condition, Project) %>% sample_n(size = lowNum, replace = FALSE) %>%
+#    pull(barcode)
+#all_seu <- subset(all_seu, cells = to_keep)
+#table(all_seu$Condition,all_seu$Project)
+
+# split the data
+alldata = SplitObject(all_seu, split.by = "orig.ident")
+rm(all_seu);gc()
+# normalize and identify variable features for each dataset independently
+alldata <- lapply(X = alldata, FUN = function(x) {
+    x <- NormalizeData(x)
+    x <- FindVariableFeatures(x, selection.method = "vst", nfeatures = 4000)
+})
+
+# Run CCA using defaults
+features <- SelectIntegrationFeatures(object.list = alldata, nfeatures = 3000)
+anno <- readRDS("./00-gene_conversion_hs_ms/humanAnnotation.rds")
+features <- features %>% as.data.frame() %>% setNames("gene") %>% left_join(., anno[, c(1,3)], by=c("gene"="external_gene_name")) %>% 
+  filter(gene_biotype == "protein_coding" | gene_biotype == "lncRNA") %>% distinct(gene) %>% pull(gene)
+
+rn <- lapply(alldata, rownames) 
+nE <- colSums(Reduce(rbind, lapply(rn, function(x) features %in% x))) 
+features <- features[nE == length(alldata)] #Keep only variable genes expressed in all samples
+length(features)
+
+# Integrate alldata
+alldata.anchors <- FindIntegrationAnchors(object.list = alldata, anchor.features = features)
+# this command creates an 'integrated' data assay
+inteData <- IntegrateData(anchorset = alldata.anchors)
+
+# specify that we will perform downstream analysis on the corrected data note that the
+# original unmodified data still resides in the 'RNA' assay
+DefaultAssay(inteData) <- "integrated"
+VariableFeatures(inteData) <- features
+
+# Run the standard workflow for visualization and clustering
+inteData <- ScaleData(inteData)
+inteData <- RunPCA(inteData, npcs = 30)
+
+inteData <- RunUMAP(inteData, dims = 1:30, assay = "integrated", reduction = "pca", n.neighbors = 40,
+                    min.dist = 0.5, n.epochs = 500, spread = 1, learning.rate = 1)
+
+DimPlot(inteData, group.by = "orig.ident") + NoAxes()
+DimPlot(inteData, group.by = "Condition", split.by = "Project")
+DimPlot(inteData, group.by = "CellType", split.by = "Project", label = T)
+#DimPlot_scCustom(inteData, group.by = "CellType", split.by = "Condition", num_columns = 5, label = T, pt.size = 0.2)
+FeaturePlot(inteData, features = c("S100A8"))
+
+inteData = FindNeighbors(inteData, dims = 1:30, reduction = "pca", k.param = 40)
+inteData = FindClusters(inteData, resolution = 0.3)
+inteData = FindClusters(inteData, resolution = 1)
+inteData = FindClusters(inteData, resolution = 0.5)
+inteData = FindClusters(inteData, resolution = 0.8)
+
+DefaultAssay(inteData) <- "RNA"
+inteData <- NormalizeData(inteData)
+```
+
+## 3.4 CellType plotting
+```{r eval=FALSE,fig.width=12, fig.height=8}
+DimPlot(inteData, group.by = "Species", cols = c("#d8b365", "#5ab4ac")) + ggtitle("Cross species integration")
+DimPlot(inteData, group.by = "Species", split.by = "Species", cols = c("#d8b365", "#5ab4ac")) + ggtitle("Cross species integration")
+
+DimPlot(inteData, group.by = "CellType", label = T, split.by = "Species") + ggtitle("")
+DimPlot(inteData, group.by = "CellType", label = T, split.by = "Condition", ncol = 4) + ggtitle("") + NoLegend()
+DimPlot(inteData, group.by = "integrated_snn_res.0.3", label = T, split.by = "Condition")
+DimPlot(inteData, group.by = "integrated_snn_res.0.5", label = T, split.by = "Condition")
+DimPlot(inteData, group.by = "integrated_snn_res.0.8", label = T, split.by = "Condition")
+DimPlot(inteData, group.by = "integrated_snn_res.1", label = T, split.by = "Condition")
+```
+
+
+# 4. Data exporting
+```{r eval=FALSE}
+saveRDS(inteData, "all_human_mouse_integration.rds")
+
+# export the reduced results for quickly plotting
+inteData@reductions$pca@assay.used <- "RNA"
+inteData@reductions$umap@assay.used <- "RNA"
+
+inteData <- DietSeurat(inteData, assays = "RNA", dimreducs = c("umap"))
+saveRDS(inteData, "all_human_mouse_integration_reduced.rds")
+```
+
+# 5. Clustering plotting
+```{r}
+inteData <- readRDS("all_human_mouse_integration_reduced.rds")
+inteData$Condition <- factor(inteData$Condition, levels = c("dSkin","PWD1","PWD3","PWD7","PWDd14",
+                                                            "Skin","Wound1","Wound7","Wound30"))
+inteData$newCondition <- paste0(inteData$Project, "_", inteData$Condition)
+inteData$newCondition <- factor(inteData$newCondition, levels = c("HumanWound_Skin","HumanWound_Wound1",
+                                                                  "HumanWound_Wound7","HumanWound_Wound30",
+                                                                  "Inhouse_dSkin", "Inhouse_PWD3",
+                                                                  "woundCancer_dSkin","woundCancer_PWD1",
+                                                                  "woundCancer_PWD3","woundCancer_PWD7",
+                                                                  "woundCancer_PWDd14"))
+
+DimPlot(inteData, group.by = "orig.ident") + NoAxes()
+DimPlot(inteData, group.by = "Species") + NoAxes()
+DimPlot(inteData, group.by = "Project") + NoAxes()
+
+DimPlot(inteData, group.by = "CellType", label = T, split.by = "Condition", ncol = 5, label.size = 3) + ggtitle("") + NoLegend()
+DimPlot(object = subset(inteData, subset = Project != "Inhouse"), group.by = "CellType", 
+        label = T, split.by = "Condition", 
+        ncol = 5, label.size = 3) + ggtitle("") + NoLegend()
+
+DimPlot(inteData, group.by = "integrated_snn_res.0.3", label = T, split.by = "Condition", ncol = 5) + NoLegend()
+DimPlot(inteData, group.by = "integrated_snn_res.0.8", label = T, split.by = "newCondition", ncol = 6) + NoLegend()
+
+FeaturePlot_scCustom(inteData, features = c("MKI67"), split.by = "Condition", num_columns = 5, colors_use = c("grey90", "red"))
+FeaturePlot_scCustom(inteData, features = c("MKI67"), split.by = "newCondition", num_columns = 6, colors_use = c("grey90", "red"))
+FeaturePlot_scCustom(inteData, features = c("FOSL1"), split.by = "newCondition", num_columns = 6, colors_use = c("grey90", "red"))
+FeaturePlot_scCustom(inteData, features = c("S100A7"), split.by = "newCondition", num_columns = 6, colors_use = c("grey90", "red"))
+FeaturePlot_scCustom(inteData, features = c("MMP1"), split.by = "newCondition", num_columns = 6, colors_use = c("grey90", "red"))
+FeaturePlot_scCustom(inteData, features = c("CD68"), split.by = "newCondition", num_columns = 6, colors_use = c("grey90", "red"))
+FeaturePlot_scCustom(inteData, features = c("EREG"), split.by = "newCondition", num_columns = 6, colors_use = c("grey90", "red"))
+```
+
+
+# SessionInfo
+```{r}
+sessionInfo()
+```
+

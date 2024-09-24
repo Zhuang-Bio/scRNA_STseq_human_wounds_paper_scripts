@@ -1,0 +1,832 @@
+---
+title: "Integration of wound healing"
+author: "Zhuang Liu"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true #add a table of contents (TOC)
+    toc_depth: 3 #headers' level in the toc
+    toc_float: true #toc visible even when scrolled
+    theme: lumen
+    highlight: tango
+    code_folding: show
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.align='center', fig.width=12, fig.height = 6, warning=FALSE, message=FALSE)
+```
+
+```{r warning=FALSE, message=FALSE}
+library(Seurat)
+library(SeuratObject)
+library(SeuratDisk)
+library(tidyverse)
+library(patchwork)
+library(harmony)
+library(scCustomize)
+```
+
+
+# 1. Reviewer Q3 Cell proportion ratio of combined M1/M2 macrophage
+```{r eval=FALSE}
+ac_mye <- data.table::fread("/Users/zhuliu/Desktop/sc st/Versions_SC_ST_Project/V2_Figures_231017/04-ChronicWounds/VU_DFU_scRNA-seq/AcuteWound_normCellProportion_Myeloid.txt")
+
+mac <- ac_mye %>% filter(Var2 %in% c("Mac_inf", "Mac1", "Mac2", "Mac3")) %>% 
+  group_by(Var2, Group) %>%
+  summarise(avg=mean(Prop)) %>% ungroup()
+mac$celltype <- gsub("Mac_inf|Mac1", "Mac_inf_1", mac$Var2)
+mac$celltype <- gsub("Mac2|Mac3", "M2_3", mac$celltype)
+
+mac_f <- mac %>% group_by(celltype, Group) %>% summarise(cellproportion = sum(avg)) %>% ungroup()
+mac_m1m2 <- data.frame(D0 = mac_f$cellproportion[5]/mac_f$cellproportion[1],
+                       D1 = mac_f$cellproportion[6]/mac_f$cellproportion[2],
+                       D7 = mac_f$cellproportion[8]/mac_f$cellproportion[4],
+                       D30 = mac_f$cellproportion[7]/mac_f$cellproportion[3]) %>% t() %>% 
+  as.data.frame() %>% setNames("M12ratio") %>% rownames_to_column(var = "Group")
+
+mac_f$Group <- factor(mac_f$Group, levels = c("D0", "D1", "D7", "D30"))
+p_cp <- ggplot(mac_f, aes(x = Group, y = cellproportion, fill = celltype)) +
+  geom_bar(position = "fill", stat = "identity") +
+  scale_fill_manual(values = c("#41ab5d", "#df65b0")) +  # '#f1b6da','#df65b0', '#41ab5d', '#addd8e'
+  xlab('') +
+  scale_y_continuous(breaks = seq(0, 1, .2), 
+                     labels = c("0", "2", "4", "6", "8", "10"),
+                     name = 'Percentage') +
+  theme_bw() +
+  theme(legend.position = "none")
+#+
+  theme(
+    panel.grid.major.x = element_blank(),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    strip.background = element_blank(),
+    axis.text.x = element_text(size = 14, color = "black", angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 14, color = "black"),
+    axis.title.y = element_text(size = 16, color = "black"),
+    legend.position = "none",
+    legend.text = element_text(size = 12, color = "black")
+  ) 
+#pdf("Reviewer1_Q3_M1M2ratio1.pdf", width = 2, height = 4)
+p_cp
+#dev.off()
+
+mac_m1m2$Group <- factor(mac_m1m2$Group, levels = c("D0", "D1", "D7", "D30"))
+ggplot(mac_m1m2, aes(x = Group, y = M12ratio, group = 1)) +
+  geom_line() +
+  geom_point() +
+  xlab('') +
+  scale_y_continuous(limits = c(0,2.5), breaks = c(0,0.5,1,1.5,2,2.5)) +
+  theme_bw()
+#pdf("Reviewer1_Q3_M1M2ratio2.pdf", width = 2, height = 4)
+#dev.off()
+```
+
+
+# 2. Reviewer Q3 Gene signature level of macrophages
+```{r eval=FALSE}
+library(scRNAtoolVis)
+library(scCustomize)
+library(ggpubr)
+library(patchwork)
+
+output_path <- "/Users/zhuliu/Desktop/scRNA_STseq/proj_10X_woundhealing/03_results/01-Seurat-PreAnalysis/02_Seurat_BatchCorrection/s4_Seurat_subImmu_MyeloidCells/"
+mye_sub <- readRDS(paste0(output_path, "s1_clean_immu_myeloid.rds"))
+
+# re-annotate the cell clusters
+fac_levs <- c("Mac_inf", "Mac1","Mac2", "Mac3", 
+              "pDC", "cDC1", "cDC2", "DC3", 
+              "LC", "Apoptotic", "Cycling")
+
+current_cluster_ids <- c(2, 3, 1, 5,
+                         9, 4, 0, 6, 
+                         8, 7, 10) # List of current cluster IDs
+tmp <- plyr::mapvalues(x=mye_sub$SCT_snn_res.0.5, from=current_cluster_ids, to=fac_levs)
+
+mye_sub$upCellTypes <- tmp
+mye_sub$upCellTypes <- factor(mye_sub$upCellTypes, levels = fac_levs)
+Idents(mye_sub) <- mye_sub$upCellTypes
+
+# use new colors
+ct.cols <- c('#f1b6da','#df65b0', '#41ab5d', '#addd8e',
+             "#810f7c", "#807dba", "#9970ab", "#b2abd2", 
+             "#bf812d", "#fee0b6", "#f1a340"
+)
+names(ct.cols) <- fac_levs
+
+DimPlot(mye_sub, group.by = "upCellTypes", cols = ct.cols) + NoAxes()
+
+inteMac <- subset(mye_sub, idents = c("Mac_inf", "Mac1", "Mac2", "Mac3"))
+inteMac@meta.data <- droplevels(inteMac@meta.data)
+
+m1gene <- c("HIF1A", "VEGFA", "IL1B", "TNF", "IL6", "CCL2")
+m2gene <- c("IL10", "TGFB1", "VEGFA", "PDGFB", "PDGFA", "CD163", "MRC1", "IL4R", "ARG1")
+
+FeaturePlot_scCustom(seurat_object = inteMac, 
+                     features = genes, split.by = "Condition") & NoAxes( )
+VlnPlot_scCustom(seurat_object = inteMac, 
+                     features = genes, split.by = "Condition") & NoAxes( )
+
+VlnPlot(inteMac, features = genes, split.by = "Condition")
+
+ct <- c("Mac_inf", "Mac1", "Mac2", "Mac3")
+genes <- c("CCL7", "IL1A", "IL1B", "TGFB1", "C1QB", "IGF1", "ITGB2")
+
+plot_list <- list()
+for (i in seq_along(genes[5])) {
+  require(ggpubr)
+  plot_tmp <- list()
+  for (j in seq_along(ct)) {
+    plot_tmp[[j]] <- VlnPlot(subset(inteMac, idents = ct[j]), 
+        features = genes[5], y.max = 4.8,
+        group.by = "Condition", 
+        cols = c("#fdc086", "#fc4e07", "#4daf4a", "#377eb8")) + NoLegend() +
+      stat_summary(fun = mean, geom='point', size = 10, colour = "blue", shape = 95)
+  }
+  plot_list[[i]] <- plot_tmp
+}
+
+wrap_plots(plot_list[[1]], ncol = 4)
+#pdf("cell_cell_crosstalk_exp_ITGB2.pdf", useDingbats = F, width = 12, height = 3.5)
+#dev.off()
+
+for (i in 1:7) {
+  print(wrap_plots(plot_list[[i]], ncol = 4))
+}
+
+VlnPlot(object = subset(inteMac, idents = c("Mac_inf", "Mac1")), 
+        features = m1gene, split.by = "Condition")
+
+my_comparisons <- list( c("Skin", "Wound1"), c("Skin", "Wound7"), c("Skin", "Wound30"),
+                        c("Wound1", "Wound7"), c("Wound1", "Wound30"), c("Wound7", "Wound30"))
+
+m1_list <- c()
+for (i in seq_along(m1gene)) {
+  m1_list[[i]] <- VlnPlot(object = subset(inteMac, idents = c("Mac_inf", "Mac1")), 
+                          features = m1gene[i], group.by = "Condition", 
+                          #y.max = 10, 
+                          cols = c("#fdc086", "#fc4e07", "#4daf4a", "#377eb8")) + NoLegend() +
+  stat_summary(fun = mean, geom='point', size = 10, colour = "blue", shape = 95) #+
+  #stat_compare_means(comparisons = my_comparisons)
+}
+wrap_plots(m1_list, nrow = 2)
+
+VlnPlot(object = subset(inteMac, idents = c("Mac2", "Mac3")), 
+        features = m2gene, split.by = "Condition")
+
+
+m2_list <- c()
+for (i in seq_along(m2gene)) {
+  m2_list[[i]] <- VlnPlot(object = subset(inteMac, idents = c("Mac2", "Mac3")), 
+                          features = m2gene[i], group.by = "Condition", 
+                          #y.max = 10, 
+                          cols = c("#fdc086", "#fc4e07", "#4daf4a", "#377eb8")) + NoLegend() +
+  stat_summary(fun = mean, geom='point', size = 10, colour = "blue", shape = 95) #+
+  #stat_compare_means(comparisons = my_comparisons)
+}
+wrap_plots(m2_list, nrow = 2)
+
+# all gene list in all macrophages
+m1m2gene <- unique(c(m1gene, m2gene))
+m1m2_list <- c()
+for (i in seq_along(m1m2gene)) {
+  m1m2_list[[i]] <- VlnPlot(object = inteMac, 
+                          features = m1m2gene[i], group.by = "Condition", 
+                          #y.max = 11, 
+                          cols = c("#fdc086", "#fc4e07", "#4daf4a", "#377eb8")) + NoLegend() +
+  stat_summary(fun = mean, geom='point', size = 10, colour = "blue", shape = 95) #+
+  #stat_compare_means(comparisons = my_comparisons)
+}
+wrap_plots(m1m2_list, nrow = 2)
+#pdf("mac_markers.pdf", useDingbats = F, width = 8, height = 8)
+#dev.off()
+
+# only plot the IL1B, HIF1A, TNF, and CCL2
+il1b <- VlnPlot(object = inteMac, 
+                features = "IL1B", 
+                group.by = "Condition", 
+                y.max = 11, 
+                cols = c("#fdc086", "#fc4e07", "#4daf4a", "#377eb8")) + NoLegend() +
+  stat_summary(fun = mean, geom='point', size = 10, colour = "blue", shape = 95) +
+  stat_compare_means(comparisons = my_comparisons)
+il1b
+
+tnf1 <- VlnPlot(object = inteMac, 
+                features = "TNF", 
+                group.by = "Condition", 
+                y.max = 9, 
+                cols = c("#fdc086", "#fc4e07", "#4daf4a", "#377eb8")) + NoLegend() +
+  stat_summary(fun = mean, geom='point', size = 10, colour = "blue", shape = 95) +
+  stat_compare_means(comparisons = my_comparisons)
+tnf1
+
+hif1 <- VlnPlot(object = inteMac, 
+                features = "HIF1A", 
+                group.by = "Condition", 
+                y.max = 7, 
+                cols = c("#fdc086", "#fc4e07", "#4daf4a", "#377eb8")) + NoLegend() +
+  stat_summary(fun = mean, geom='point', size = 10, colour = "blue", shape = 95) +
+  stat_compare_means(comparisons = my_comparisons)
+hif1
+
+ccl2 <- VlnPlot(object = inteMac, 
+                features = "CCL2", 
+                group.by = "Condition", 
+                y.max = 10, 
+                cols = c("#fdc086", "#fc4e07", "#4daf4a", "#377eb8")) + NoLegend() +
+  stat_summary(fun = mean, geom='point', size = 10, colour = "blue", shape = 95) +
+  stat_compare_means(comparisons = my_comparisons)
+ccl2
+#pdf("Reviewer1_Q3_GeneralM1_marker.pdf", useDingbats = F, width = 8, height = 8)
+#dev.off()
+wrap_plots(list(il1b, tnf1, hif1, ccl2), ncol = 2)
+
+
+# only plot the IL10, MRC1, TGFB1, and PDGFB
+IL10 <- VlnPlot(object = inteMac, 
+                features = "IL10", 
+                group.by = "Condition", 
+                y.max = 8, 
+                cols = c("#fdc086", "#fc4e07", "#4daf4a", "#377eb8")) + NoLegend() +
+  stat_summary(fun = mean, geom='point', size = 10, colour = "blue", shape = 95) +
+  stat_compare_means(comparisons = my_comparisons)
+IL10
+
+MRC1 <- VlnPlot(object = inteMac, 
+                features = "MRC1", 
+                group.by = "Condition", 
+                y.max = 7, 
+                cols = c("#fdc086", "#fc4e07", "#4daf4a", "#377eb8")) + NoLegend() +
+  stat_summary(fun = mean, geom='point', size = 10, colour = "blue", shape = 95) +
+  stat_compare_means(comparisons = my_comparisons)
+MRC1
+
+TGFB1 <- VlnPlot(object = inteMac, 
+                features = "TGFB1", 
+                group.by = "Condition", 
+                y.max = 4, 
+                cols = c("#fdc086", "#fc4e07", "#4daf4a", "#377eb8")) + NoLegend() +
+  stat_summary(fun = mean, geom='point', size = 10, colour = "blue", shape = 95) +
+  stat_compare_means(comparisons = my_comparisons)
+TGFB1
+
+PDGFB <- VlnPlot(object = inteMac, 
+                features = "PDGFB", 
+                group.by = "Condition", 
+                y.max = 6, 
+                cols = c("#fdc086", "#fc4e07", "#4daf4a", "#377eb8")) + NoLegend() +
+  stat_summary(fun = mean, geom='point', size = 10, colour = "blue", shape = 95) +
+  stat_compare_means(comparisons = my_comparisons)
+PDGFB
+#pdf("Reviewer1_Q3_GeneralM2_marker.pdf", useDingbats = F, width = 8, height = 8)
+#dev.off()
+wrap_plots(list(IL10, MRC1, TGFB1, PDGFB), ncol = 2)
+```
+
+
+```{r eval=FALSE}
+#library(devtools)
+#install_github("YosefLab/VISION") #Please note that the version would be v2.1.0
+#install_github("wu-yc/scMetabolism")
+library(scMetabolism)
+
+inteMac <- sc.metabolism.Seurat(obj = inteMac, method = "AUCell", 
+                                imputation = F, ncores = 2, 
+                                metabolism.type = "KEGG")
+
+metablism_matrix <- as.matrix(inteMac@assays$METABOLISM$score)
+keep=which(rowSums(metablism_matrix > 0) >= 10)
+metablism_matrix <- metablism_matrix[keep, ]
+
+# change the names of cell barcode
+colnames(metablism_matrix) <- gsub("\\.", "-", colnames(metablism_matrix))
+metablism <- rownames(metablism_matrix)
+DotPlot.metabolism(obj = inteMac, pathway = metablism[1:40], 
+                   phenotype = "upCellTypes", norm = "y") +
+  DotPlot.metabolism(obj = inteMac, pathway = metablism[41:84], 
+                   phenotype = "upCellTypes", norm = "y")
+
+DotPlot.metabolism(obj = inteMac, pathway = metablism[1:40], 
+                   phenotype = "Condition", norm = "y") +
+  DotPlot.metabolism(obj = inteMac, pathway = metablism[41:84], 
+                     phenotype = "Condition", norm = "y")
+
+# check the identity of cell barcode
+identical(colnames(inteMac), colnames(metablism_matrix))
+# add the metablism assay into the seurat
+inteMac[["MetablismAssay"]] <- CreateAssayObject(counts = metablism_matrix)
+inteMac
+
+inteMac@assays$MetablismAssay$data <- inteMac@assays$MetablismAssay$counts
+
+# change the default assay
+library(scRNAtoolVis)
+DefaultAssay(inteMac) <- "MetablismAssay"
+DotPlot(inteMac, features = metablism[1:40], scale = F) + coord_flip()
+
+jjDotPlot(object = inteMac,
+          gene = metablism[1:40],
+          xtree = FALSE, ytree = FALSE,
+          id = 'upCellTypes',
+          #cluster.order = rev(c("Skin","Wound1","Wound7", "Wound30")), #"Skin","H","Wound30",
+          rescale = T,
+          rescale.min = 0,
+          rescale.max = 1) + coord_flip() #+ ggtitle(label = celltypename)
+
+all.markers <- FindAllMarkers(object = inteMac, 
+                              logfc.threshold = 0, slot = "data", test.use = "wilcox"
+                              )
+top10metablism <- all.markers %>% group_by(cluster) %>% top_n(15, avg_log2FC)
+top5metablism <- all.markers %>% group_by(cluster) %>% top_n(3, avg_log2FC)
+# remove the "Phenylalanine, tyrosine and tryptophan biosynthesis"
+top5metablism <- top5metablism %>% filter(!gene %in% c("Phenylalanine, tyrosine and tryptophan biosynthesis"))
+
+inteMac$newCondition <- gsub("Wound7", "Wound2", inteMac$Condition)
+DotPlot.metabolism(obj = inteMac, pathway = c(unique(top5metablism$gene), "Citrate cycle (TCA cycle)"), 
+                   phenotype = "upCellTypes", norm = "y")
+#pdf("Reviewer1_Q3_metabolism1.pdf", useDingbats = F, width = 7, height = 5)
+#dev.off()
+DotPlot.metabolism(obj = inteMac, pathway = c(unique(top5metablism$gene), "Citrate cycle (TCA cycle)"), 
+                   phenotype = "newCondition", norm = "y")
+#pdf("Reviewer1_Q3_metabolism2.pdf", useDingbats = F, width = 7, height = 5)
+#dev.off()
+
+FeaturePlot(mye_sub, feature= "IL1B", split.by = "Condition")
+VlnPlot(mye_sub, features = "IL1B", split.by = "Condition")
+
+# Extract single macrophage cell type
+tmp=subset(inteMac, subset = upCellTypes == "Mac3")
+tmp@assays$METABOLISM$score <- as.data.frame(metablism_matrix[,colnames(tmp)])
+
+DotPlot.metabolism(obj = tmp, 
+                   pathway = unique(top10metablism$gene), 
+                   phenotype = "Condition", norm = "y")
+
+
+###############################
+# Module scores (NFKB, HYPOXIA)
+nfkb <- clusterProfiler::read.gmt("Dtmp_figures/HALLMARK_TNFA_SIGNALING_VIA_NFKB.v2023.2.Hs.gmt")
+hypoxia <- clusterProfiler::read.gmt("Dtmp_figures/HALLMARK_HYPOXIA.v2023.2.Hs.gmt")
+
+DefaultAssay(inteMac) <- "RNA"
+inteMac <- AddModuleScore(inteMac, features = list(c(nfkb$gene)), 
+                          name = "NFKB_signaling")
+inteMac <- AddModuleScore(inteMac, features = list(c(hypoxia$gene)), 
+                          name = "Hypoxia_signaling")
+
+VlnPlot(inteMac, features = c("NFKB_signaling1"), 
+        cols = c("#fdc086", "#fc4e07", "#4daf4a", "#377eb8"),
+        group.by = "upCellTypes", split.by = "Condition") + NoLegend()
+
+VlnPlot(inteMac, features = c("Hypoxia_signaling1"), 
+        cols = c("#fdc086", "#fc4e07", "#4daf4a", "#377eb8"),
+        group.by = "upCellTypes", split.by = "Condition") 
+```
+
+
+# 3. Reviewer Q3 KLF2 Th cell (Th cell annotation)
+```{r eval=FALSE}
+###
+# Recluster the Th cells to see if there is any separations of Th1, Th2, and Th17
+output_path <- "/Users/zhuliu/Desktop/scRNA_STseq/proj_10X_woundhealing/03_results/01-Seurat-PreAnalysis/02_Seurat_BatchCorrection/s5_Seurat_subImmu_LymphoidCells/"
+lym_sub <- readRDS(paste0(output_path, "s1_clean_immu_lymphoid_newUMAP.rds"))
+
+# re-annotate the cell clusters
+fac_levs <- c("Treg", "Th", "ILCs", "Tc", 
+              "ILC1/NK", "NK", "Ttol", 
+              "Plasma", "Bcell")
+
+current_cluster_ids <- c(5, 0, 1, 7, 
+                         3, 2, 4,
+                         6, 8) # List of current cluster IDs
+tmp <- plyr::mapvalues(x=lym_sub$SCT_snn_res.0.5, from=current_cluster_ids, to=fac_levs)
+
+lym_sub$upCellTypes <- tmp
+lym_sub$upCellTypes <- factor(lym_sub$upCellTypes, levels = fac_levs)
+Idents(lym_sub) <- lym_sub$upCellTypes
+
+# use new colors
+ct.cols <- c('#807dba','#9970ab','#810f7c', '#41ae76', 
+             '#74add1', '#8dd3c7','#76d72f',
+             '#f768a1', '#fdb462'
+)
+
+names(ct.cols) <- fac_levs
+
+#############################################
+####---- Fig 7 UMAP plot of myeloids ----####
+#############################################
+p.umap <- DimPlot(object = lym_sub, 
+                  reduction = "umap", 
+                  label = F, group.by = "upCellTypes", cols = ct.cols) +
+  NoAxes() + ggtitle("")
+p.umap
+
+VlnPlot(lym_sub, features = c("KLF2"), group.by = "upCellTypes", split.by = "Condition")
+
+hswound.immu <- subset(x = lym_sub, subset = upCellTypes == "Th")
+hswound.immu@meta.data <- droplevels(hswound.immu@meta.data)
+
+DimPlot(object = hswound.immu, 
+        reduction = "umap", 
+        label = TRUE, 
+        group.by = "upCellTypes", label.size = 3) + NoAxes() + NoLegend()
+
+DefaultAssay(hswound.immu) <- "RNA"
+hswound.immu <- DietSeurat(hswound.immu, counts = TRUE, data = TRUE, scale.data = FALSE,
+                    assays = "RNA", dimreducs = NULL)
+#Remove unneeded columns
+hswound.immu@active.ident <- hswound.immu$orig.ident
+hswound.immu$SCT_snn_res.0.5 <- NULL
+hswound.immu$SCT_snn_res.0.8 <- NULL
+hswound.immu$SCT_snn_res.1.2 <- NULL
+hswound.immu$SCT_snn_res.1 <- NULL
+hswound.immu$seurat_clusters <- NULL
+hswound.immu$nCount_SCT <- NULL
+hswound.immu$nFeature_SCT <- NULL
+
+hswound.list <- SplitObject(hswound.immu, split.by = "orig.ident")
+rm(hswound.immu);invisible(gc())
+hswound.list <- lapply(X = hswound.list, FUN = function(x) {
+  x <- NormalizeData(x)
+  x <- CellCycleScoring(object = x, g2m.features = cc.genes$g2m.genes, s.features = cc.genes$s.genes, set.ident = FALSE)
+  x$CC.Difference <- x$S.Score - x$G2M.Score
+  x <- SCTransform(x, vars.to.regress = c("percent.mt", "CC.Difference"),
+                   variable.features.n = 3000, verbose = FALSE, 
+                   return.only.var.genes = TRUE, method = "glmGamPoi")
+})
+
+features.all <- SelectIntegrationFeatures(object.list = hswound.list, nfeatures = 2000)
+rn <- lapply(hswound.list, rownames) 
+nE <- colSums(Reduce(rbind, lapply(rn, function(x) features.all %in% x))) 
+features.all <- features.all[nE == length(hswound.list)]
+
+####----Prepare the integration----####
+hswound.list <- PrepSCTIntegration(object.list = hswound.list, anchor.features = features.all)
+
+hswound.immu.com <- merge(hswound.list[[1]], 
+                         y = hswound.list[2:length(hswound.list)],
+                         project = "woundimmu",
+                         merge.data = TRUE)
+
+VariableFeatures(hswound.immu.com) <- features.all
+hswound.immu.com <- RunPCA(object = hswound.immu.com, assay = "SCT", npcs = 50, features = VariableFeatures(hswound.immu.com))
+ElbowPlot(hswound.immu.com, ndims = 40, reduction = "pca")
+
+hswound.immu.com <- RunHarmony(object = hswound.immu.com,
+                                    #assay.use = "SCT",
+                                    #reduction = "pca",
+                                    dims.use = 1:20,
+                                    group.by.vars = "orig.ident",
+                                    plot_convergence = TRUE)
+
+#rn pca, umap, clustering
+hswound.immu.com <- FindNeighbors(object = hswound.immu.com, assay = "SCT", reduction = "harmony", dims = 1:20, k.param = 40)
+hswound.immu.com <- FindClusters(object = hswound.immu.com, resolution = 0.8)
+hswound.immu.com <- FindClusters(object = hswound.immu.com, resolution = 0.5)
+hswound.immu.com <- FindClusters(object = hswound.immu.com, resolution = 0.3)
+
+hswound.immu.com <- RunUMAP(object = hswound.immu.com, assay = "SCT", reduction = "harmony", dims = 1:20, n.neighbors = 40, min.dist = 0.5)
+
+hswound.immu.com$orig.ident <- factor(x = hswound.immu.com$orig.ident, levels =
+                                            c("PWH26D0", "PWH26D1", "PWH26D7","PWH26D30",
+                                              "PWH27D0", "PWH27D1", "PWH27D7","PWH27D30",
+                                              "PWH28D0", "PWH28D1", "PWH28D7","PWH28D30"))
+hswound.immu.com$Condition <- factor(x = hswound.immu.com$Condition, levels =
+                                            c("Skin", "Wound1", "Wound7","Wound30"))
+
+DimPlot(object = hswound.immu.com, 
+        reduction = "umap", 
+        label = F, 
+        group.by = "SCT_snn_res.0.5", label.size = 4.5) + NoAxes() 
+table(hswound.immu.com$SCT_snn_res.0.5)
+
+DimPlot(object = hswound.immu.com, 
+        reduction = "umap", 
+        label = TRUE, 
+        group.by = "SCT_snn_res.0.3", label.size = 4.5) + NoAxes() 
+table(hswound.immu.com$SCT_snn_res.0.3)
+
+DefaultAssay(hswound.immu.com) <- "RNA"
+hswound.immu.com <- NormalizeData(hswound.immu.com)
+
+mg <- c("IFNG", "TBX21", # Th1
+        "IL4", "IL13", "IRF4", #"GATA3", # Th2
+        "IL17A", "RORC", # Th17
+        "CXCR5", #"BCL6", # Tfh
+        "IL22", #"AHR", #Th22
+        "KLF2", "CD4", "CD40LG")
+FeaturePlot(hswound.immu.com, features = mg, order = T, ncol = 5)
+
+pdf("Reviewer1_Q3_ThCellMarkers.pdf", useDingbats = F, width = 18, height = 9)
+dev.off()
+
+hswound.immu.com <- ScaleData(hswound.immu.com)
+DoHeatmap(hswound.immu.com, features = mg, group.by = "upCellTypes", disp.min = -2, disp.max = 2) +
+  scale_fill_gradient2( low = rev(c('#d1e5f0','#67a9cf','#2166ac')), mid = "white", high = rev(c('red','#ef8a62','#fddbc7')), midpoint = 0, guide = "colourbar", aesthetics = "fill")
+
+pdf("Reviewer1_Q3_ThCellMarkers_heatmap2.pdf", useDingbats = F, width = 8, height = 8)
+dev.off()
+
+DoHeatmap(hswound.immu, features = mg, group.by = "upCellTypes", slot = "data", disp.max = 2.5) +
+  scale_fill_gradient2( low = rev(c('#d1e5f0','#67a9cf','#2166ac')), mid = "white", high = rev(c('red','#ef8a62','#fddbc7')), midpoint = 0, guide = "colourbar", aesthetics = "fill")
+
+```
+
+
+# 4. Reviewer Q4 cell cell crosstalk among mac, fb and endothelium
+```{r eval=FALSE}
+library(tidyverse)
+library(SingleCellExperiment)
+library(dplyr)
+library(ggplot2)
+library(multinichenetr)
+
+multinichenet_output <- readRDS("/Users/zhuliu/Desktop/scRNA_STseq/proj_10X_woundhealing/03_results/01-Seurat-PreAnalysis/02_Seurat_BatchCorrection/s1_Seurat_allSample_harmony/s8_Cell_Cell_L_R_analysis_upCellTypes/NicheNet/Manuscript_mainCluster_results/multinichenet_output_upMac.rds")
+
+fact_lev <- c("Bas-I", "Bas-prolif", "Bas-mig", 
+              "Spi", "Spi-mig", 
+              "Gra-I", "HF", 
+              "MEL", 
+              "FB-I", "FB-II", "FB-III", "FB-prolif", 
+              "PC-vSMC", "LE", "VE", 
+              "NK-cell", "Th", "Plasma_Bcell", "Mast-cell", 
+              "Mac_inf", "M1", "M2", "Mac_mig",
+              "cDC1", "cDC2", "DC3", "LC")
+fact_lev <- gsub("-", "_", fact_lev); fact_lev
+
+ct.cols <- c("#d94701", "#fd8d3c", "#fdbe85", #Basal clusters
+             "#72BF5A", "#B2DF8A", #Spinous clusters
+             "#f768a1", "#d4b9da", #Granular, Hair follicle
+             "#737373", #MEL
+             "#0570b0", "#3690c0", "#92c5de", "#d1e5f0", #Fibroblast clusters
+             "#1a9850", "#fb9a99", "#8d4720",  #PCvSMC,LE,VE
+             "#35978f", "#41b6c4", "#80cdc1","#d090f5", #"NK-cell", "Th", "Plasma_Bcell", "Mast-cell", 
+             '#f1b6da', "#dd3497", '#41ab5d', '#addd8e',
+             "#807dba","#6a3d9a","#9e9ac8", "#b15928" #"Mono-Mac", "cDC1", "cDC2", "DC3", "LC"
+)
+names(ct.cols) <- fact_lev
+
+#####################################
+# cell-cell cross among FB, Mac, Endo
+# choose the group and receiver cell types we are interested
+prioritized_tbl_oi_all = get_top_n_lr_pairs(multinichenet_output$prioritization_tables, 
+                                            top_n = 50,
+                                            groups_oi = "Wound7",
+                                            senders_oi = fact_lev[c(9:15, 20:23)],
+                                            receivers_oi = fact_lev[c(9:15, 20:23)], 
+                                            rank_per_group = TRUE)
+
+prioritized_tbl_oi = multinichenet_output$prioritization_tables$group_prioritization_tbl %>%
+  filter(id %in% prioritized_tbl_oi_all$id) %>%
+  distinct(id, sender, receiver, ligand, receptor, group) %>% left_join(prioritized_tbl_oi_all)
+prioritized_tbl_oi$prioritization_score[is.na(prioritized_tbl_oi$prioritization_score)] = 0
+
+senders_receivers = union(prioritized_tbl_oi$sender %>% unique(),
+                          prioritized_tbl_oi$receiver %>% unique()) %>% sort()
+
+colors_sender = ct.cols[match(senders_receivers, names(ct.cols))]
+colors_sender = colors_sender[order(match(names(colors_sender), fact_lev))]
+
+# (Optional) all cell type interaction
+colors_receiver = ct.cols[match(senders_receivers, names(ct.cols))] 
+#colors_receiver = ct.cols[match(c("Bas_mig", "Spi_mig"), names(ct.cols))]
+colors_receiver = colors_receiver[order(match(names(colors_receiver), fact_lev))]
+#RColorBrewer::brewer.pal(n = length(senders_receivers), name = 'Spectral') %>% magrittr::set_names(senders_receivers)
+
+# reset the fators of groups and cell types
+prioritized_tbl_oi$group <- factor(prioritized_tbl_oi$group, levels = c("Skin", "Wound1", "Wound7", "Wound30"))
+prioritized_tbl_oi$sender <- factor(prioritized_tbl_oi$sender, levels = names(colors_sender))
+prioritized_tbl_oi$receiver <- factor(prioritized_tbl_oi$receiver, levels = names(colors_receiver))
+
+circos_list = make_circos_group_comparison(prioritized_tbl_oi, colors_sender, colors_receiver)
+
+
+######################################
+# Set the Mac as interested cell types
+prioritized_tbl_oi_all = get_top_n_lr_pairs(multinichenet_output$prioritization_tables, 
+                                            top_n = 10,
+                                            groups_oi = "Wound30",
+                                            senders_oi = fact_lev[c(20:23)], # 20:23 All four macrophages
+                                            receivers_oi = fact_lev[c(9:15, 20:23)], 
+                                            rank_per_group = TRUE)
+
+prioritized_tbl_oi = multinichenet_output$prioritization_tables$group_prioritization_tbl %>%
+  filter(id %in% prioritized_tbl_oi_all$id) %>%
+  distinct(id, sender, receiver, ligand, receptor, group) %>% left_join(prioritized_tbl_oi_all)
+prioritized_tbl_oi$prioritization_score[is.na(prioritized_tbl_oi$prioritization_score)] = 0
+unique(prioritized_tbl_oi$ligand)
+senders_receivers = union(prioritized_tbl_oi$sender %>% unique(),
+                          prioritized_tbl_oi$receiver %>% unique()) %>% sort()
+
+colors_sender = ct.cols[match(senders_receivers, names(ct.cols))]
+colors_sender = colors_sender[order(match(names(colors_sender), fact_lev))]
+
+# (Optional) all cell type interaction
+colors_receiver = ct.cols[match(senders_receivers, names(ct.cols))] 
+#colors_receiver = ct.cols[match(c("Bas_mig", "Spi_mig"), names(ct.cols))]
+colors_receiver = colors_receiver[order(match(names(colors_receiver), fact_lev))]
+#RColorBrewer::brewer.pal(n = length(senders_receivers), name = 'Spectral') %>% magrittr::set_names(senders_receivers)
+
+# reset the fators of groups and cell types
+prioritized_tbl_oi$group <- factor(prioritized_tbl_oi$group, levels = c("Skin", "Wound1", "Wound7", "Wound30"))
+prioritized_tbl_oi$sender <- factor(prioritized_tbl_oi$sender, levels = names(colors_sender))
+prioritized_tbl_oi$receiver <- factor(prioritized_tbl_oi$receiver, levels = names(colors_receiver))
+
+#data.table::fwrite(prioritized_tbl_oi, "Cell_cell_crosstalk_Top50LR_Wound30.txt", sep = "\t")
+circos_list = make_circos_group_comparison(prioritized_tbl_oi, colors_sender, colors_receiver)
+
+
+# plot the ligand-receptor average expression
+plot_oi = make_sample_lr_prod_activity_plots(multinichenet_output$prioritization_tables, prioritized_tbl_oi_all)
+plot_oi
+```
+
+## 4.1 plot the gene expression of scRNA-seq
+```{r eval=FALSE}
+library(Seurat)
+library(SeuratDisk)
+library(scCustomize)
+library(scRNAtoolVis)
+
+##########################
+# plot the gene expression
+scACW <- readRDS(file = "/Users/zhuliu/Desktop/sc st/plotting scripts/Figure 1/allcombined_wounds_newAnnotation.rds")
+table(scACW$newCellTypes, scACW$Condition)
+table(scACW$newCellTypes, scACW$orig.ident)
+#remove the Schwann cells due to the low cell number in skin, wound1
+scACW <- subset(scACW, subset = newCellTypes != "Schwann")
+scACW <- subset(scACW, subset = newCellTypes != "Bas-II")
+scACW@meta.data <- droplevels(scACW@meta.data)
+
+# load the clean metadata of subclusters information
+mt <- data.table::fread("/Users/zhuliu/Desktop/sc st/plotting scripts/newsubCluster_annotation/Subclusters.txt")
+mt$CellType <- gsub("\\/|-", "_", mt$CellType)
+
+scACW$newCellTypes <- as.character(scACW$newCellTypes)
+# only keep the consistent the macrophage annotations between mainclustering and subclustering
+# (Remove 135 cells; Keep 3207 cells for the L-R analysis)
+mt_mainct <- scACW@meta.data %>% rownames_to_column(var = "barcode") %>% filter(newCellTypes == "Mono-Mac") %>% left_join(., mt, by=c("barcode"))
+mt_mainct <- mt_mainct %>% filter(CellType %in% c("M1", "M2", "Mac_inf", "Mac_mig"))
+
+# update the macrophage annotation in the seurat object
+mt_object <- scACW@meta.data %>% rownames_to_column(var = "barcode") %>% filter(newCellTypes != "Mono-Mac")
+mt_object$CellType <- mt_object$newCellTypes
+mt_final <- rbind(mt_object, mt_mainct)
+table(mt_final$CellType)
+
+# extract the cells
+scACW <- scACW[, mt_final$barcode]
+mt_new <- scACW@meta.data %>% rownames_to_column(var = "barcode") %>% left_join(., mt_final[, c(1,28)])
+mt_new$CellType <- gsub("Spi-II", "Spi", mt_new$CellType)
+mt_new$CellType <- gsub("Spi-I", "Spi", mt_new$CellType)
+table(mt_new$CellType)
+
+identical(colnames(scACW), mt_new$barcode)
+# add the cell type into seurat object
+scACW$CellType <- mt_new$CellType
+
+fact_lev <- c("Bas-I", "Bas-prolif", "Bas-mig", 
+              "Spi", "Spi-mig", 
+              "Gra-I", "HF", 
+              "MEL", 
+              "FB-I", "FB-II", "FB-III", "FB-prolif", 
+              "Schwann", "PC-vSMC", "LE", "VE", 
+              "NK-cell", "Th", "Plasma_Bcell", "Mast-cell", 
+              "Mac_inf", "M1", "M2", "Mac_mig",
+              "cDC1", "cDC2", "DC3", "LC")
+fact_lev <- gsub("-", "_", fact_lev);fact_lev
+
+# rename the cell type names
+scACW$CellType <- gsub("-", "_", scACW$CellType)
+table(scACW$CellType)
+scACW$CellType <- factor(scACW$CellType, levels = fact_lev)
+
+#scACW@reductions$umap@assay.used <- "RNA"
+#scACW <- DietSeurat(scACW, assays = "RNA", dimreducs = "umap")
+scACW <- NormalizeData(scACW)
+(DimPlot(object = scACW, 
+        reduction = "umap", 
+        label = TRUE, 
+        group.by = "CellType") + NoAxes() + ggtitle(""))
+gc()
+
+VlnPlot(scACW, features = c("CXCL8", "CCL7", "ACKR1"), 
+        group.by = "CellType", 
+        ncol = 1,
+        cols = c("#fdc086","#FC4E07", "#4daf4a", "#377eb8"),
+        split.by = "Condition")
+
+# Wound
+VlnPlot(scACW, features = c("CXCL8", "CCL7", "ACKR1"), 
+        group.by = "CellType", 
+        ncol = 1,
+        cols = c("#fdc086","#FC4E07", "#4daf4a", "#377eb8"),
+        split.by = "Condition")
+VlnPlot(scACW, features = c("BMP6", "ACVR1", "ACVR2A"), 
+        group.by = "CellType", 
+        ncol = 1,
+        cols = c("#fdc086","#FC4E07", "#4daf4a", "#377eb8"),
+        split.by = "Condition")
+
+#pdf("scRNA_AcuteWound_exp.pdf", height = 5, width = 14)
+#Stacked_VlnPlot(seurat_object = scACW, features = c("CCL7"), x_lab_rotate = TRUE,
+#                pt.size = 0.0001,
+#                colors_use = c("#fdc086","#FC4E07", "#4daf4a", "#377eb8"), 
+#                group.by = "CellType", 
+#                split.by = "Condition")
+#dev.off()
+
+################
+# Macrophage ligand genes
+## skin ligand genes
+ligand_skin <- c("VEGFA", "CXCL3", "AREG", "CD274", "IL10", "ATP1B1", "MMP9", "TGFB1")
+
+## wound1 ligand genes
+ligand_w1 <- c("IL1A", "IL1B", "CCL7", "ADAM17", "IL10", "PTDSS1", "TNF", "SEMA3C", "FN1", "PPBP", "THBS1", "CXCL1", "CXCL5", "SIGLEC7", "FCER2")
+
+## wound7 ligand genes (only Mac2, Mac3)
+ligand_w7 <- c("APOE", "C1QA", "TGFB1", "C1QB", "SIGLEC7", "ANGPTL4") %>% sort()
+
+## wound30 ligand genes
+ligand_w30 <- c("IGF1", "HLA-DMB", "A2M", "HLA-DMA", "PLB1", "TNFSF13") %>% sort()
+
+ligand_io <- c("SPP1", "APOE", "C1QA", "TGFB1", "C1QB", "MMP7")
+VlnPlot(scACW, features = ligand_io[1:3], 
+        group.by = "CellType", 
+        ncol = 1,
+        cols = c("#fdc086","#FC4E07", "#4daf4a", "#377eb8"),
+        split.by = "Condition")
+
+VlnPlot(scACW, features = ligand_io[4:6], 
+        group.by = "CellType", 
+        ncol = 1,
+        cols = c("#fdc086","#FC4E07", "#4daf4a", "#377eb8"),
+        split.by = "Condition")
+Idents(scACW) <- scACW$CellType
+mac <- subset(scACW, idents = c("Mac_inf", "M1", "M2", "Mac_mig"))
+mac@meta.data <- droplevels(mac@meta.data)
+
+
+jjDotPlot(object = mac, 
+          gene = c(ligand_w7, ligand_w30),
+          xtree = FALSE, ytree = FALSE,
+          id="CellType",
+          split.by = "Condition",
+          cluster.order = unlist(lapply(levels(mac$CellType), FUN = function(x) paste0(x, " (",levels(mac$Condition), ")"))),
+          split.by.aesGroup = T,
+          rescale = T,
+          rescale.min = 0,
+          rescale.max = 1) #+ 
+  scale_size(breaks = c(0, 25, 50, 75, 100), range = c(1,4))
+#pdf("Reviewer1_Q4_cellcellcrosstalk_mac_wound7_30_ligandExp1.pdf", useDingbats = FALSE, width = 10, height = 8)
+#dev.off()
+
+#pdf("Reviewer1_Q4_cellcellcrosstalk_mac_wound7_30_ligandExp2.pdf", useDingbats = FALSE, width = 8, height = 12)
+Stacked_VlnPlot(seurat_object = mac, features = c(ligand_w7, ligand_w30), x_lab_rotate = TRUE,
+                pt.size = 0.0001,
+                colors_use = c("#fdc086","#FC4E07", "#4daf4a", "#377eb8"), 
+                group.by = "CellType", 
+                split.by = "Condition")
+#dev.off()
+
+Stacked_VlnPlot(seurat_object = mac, features = "VEGFA", x_lab_rotate = TRUE,
+                pt.size = 0.0001,
+                colors_use = c("#fdc086","#FC4E07", "#4daf4a", "#377eb8"), 
+                group.by = "CellType", 
+                split.by = "Condition") 
+
+p4 <- VlnPlot(subset(mac, idents = c("Mac_mig")), 
+        features = c("VEGFA"), y.max = 4,
+        group.by = "Condition") + NoLegend() +
+  stat_summary(fun = mean, geom='point', size = 15, colour = "blue", shape = 95) 
+
+wrap_plots(list(p1=p1, p2=p2, p3=p3, p4=p4), ncol = 4)
+
+AverageExpression(mac, features = c("VEGFA"), group.by = c("CellType", "Condition"), slot = "data")$RNA
+```
+## 4.2 Load the required Ligand-target model
+```{r eval=FALSE}
+organism = "human"
+if(organism == "human"){
+  lr_network = readRDS("../new2022_db/lr_network_human_21122021.rds")
+  lr_network = lr_network %>% dplyr::rename(ligand = from, receptor = to) %>% distinct(ligand, receptor) %>% mutate(ligand = make.names(ligand), receptor = make.names(receptor))
+  ligand_target_matrix = readRDS("../new2022_db/ligand_target_matrix_nsga2r_final.rds")
+  colnames(ligand_target_matrix) = colnames(ligand_target_matrix) %>% make.names()
+  rownames(ligand_target_matrix) = rownames(ligand_target_matrix) %>% make.names()
+} else if(organism == "mouse"){
+  lr_network = readRDS("../new2022_db/lr_network_mouse_21122021.rds")
+  lr_network = lr_network %>% dplyr::rename(ligand = from, receptor = to) %>% distinct(ligand, receptor) %>% mutate(ligand = make.names(ligand), receptor = make.names(receptor))
+  ligand_target_matrix = readRDS("../new2022_db/ligand_target_matrix_nsga2r_final_mouse.rds")
+  colnames(ligand_target_matrix) = colnames(ligand_target_matrix) %>% make.names()
+  rownames(ligand_target_matrix) = rownames(ligand_target_matrix) %>% make.names()
+}
+```
+
+
+# SessionInfo
+```{r}
+sessionInfo()
+```
+

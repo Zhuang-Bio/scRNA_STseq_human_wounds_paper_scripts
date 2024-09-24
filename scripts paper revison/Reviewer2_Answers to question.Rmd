@@ -1,0 +1,769 @@
+---
+title: "Integration of wound healing"
+author: "Zhuang Liu"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true #add a table of contents (TOC)
+    toc_depth: 3 #headers' level in the toc
+    toc_float: true #toc visible even when scrolled
+    theme: lumen
+    highlight: tango
+    code_folding: show
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, fig.align='center', fig.width=12, fig.height = 6, warning=FALSE, message=FALSE)
+```
+
+```{r warning=FALSE, message=FALSE}
+library(Seurat)
+library(SeuratObject)
+library(SeuratDisk)
+library(tidyverse)
+library(patchwork)
+library(harmony)
+library(scCustomize)
+```
+
+
+# 1. Separate data into Patients
+```{r eval=FALSE}
+inteData <- readRDS("/Users/zhuliu/Desktop/sc st/plotting scripts/Figure 1/allcombined_wounds_newAnnotation.rds")
+
+mt <- inteData@meta.data %>% rownames_to_column(var = "barcode") %>%
+  select(1:5,8,10,24) %>% 
+  column_to_rownames(var = "barcode")
+mt$newCellTypes <- gsub("Gra-I", "Gra", mt$newCellTypes)
+mt$newCellTypes <- gsub("Th", "Tcell", mt$newCellTypes)
+mt$newCellTypes %>% table()
+inteData@meta.data <- mt
+
+# reduce the data size
+inteData@reductions$pca@assay.used <- "RNA"
+inteData@reductions$harmony@assay.used <- "RNA"
+inteData@reductions$umap@assay.used <- "RNA"
+inteData <- DietSeurat(inteData, assays = "RNA", dimreducs = c("umap"))
+
+fact_lev <- c("Bas-I", "Bas-II", "Bas-prolif", "Bas-mig", 
+              "Spi-I", "Spi-II", "Spi-mig", 
+              "Gra", "HF", 
+              "MEL", 
+              "FB-I", "FB-II", "FB-III", "FB-prolif", 
+              "Schwann", "PC-vSMC", "LE", "VE", 
+              "NK-cell", "Tcell", "Plasma_Bcell", "Mast-cell", 
+              "Mono-Mac", "cDC1", "cDC2", "DC3", "LC")
+
+ct.cols <- c("#d94701", "#fdae61", "#fd8d3c", "#fdbe85", #Basal clusters
+             "#33A02C", "#72BF5A", "#B2DF8A", #Spinous clusters
+             "#f768a1", "#d4b9da", #Granular, Hair follicle
+             "#737373", #MEL
+             "#0570b0", "#3690c0", "#92c5de", "#d1e5f0", #Fibroblast clusters
+             "#c0a700", "#1a9850", "#fb9a99", "#8d4720",  # Schwann,PCvSMC,LE,VE
+             "#35978f", "#41b6c4", "#80cdc1","#df65b0", #"NK-cell", "Th", "Plasma_Bcell", "Mast-cell", 
+             "#dd3497", "#807dba","#6a3d9a","#9e9ac8", "#b15928" #"Mono-Mac", "cDC1", "cDC2", "DC3", "LC"
+)
+# add the color names using new cell types
+names(ct.cols) <- fact_lev
+
+inteData$newCellTypes <- factor(inteData$newCellTypes, levels = fact_lev)
+
+DimPlot(inteData, group.by = "newCellTypes", cols = ct.cols)
+
+Idents(inteData) <- inteData$orig.ident
+saveRDS(inteData, "all_human_wound_reducedSize.rds")
+
+DimPlot_scCustom(inteData, group.by = "newCellTypes", colors_use = ct.cols, 
+                 split.by = "orig.ident")
+```
+
+
+# 2. (Q 1.2) Sample-defined (Bulk) co-expression analyses 
+```{r eval=FALSE}
+library(DESeq2)
+library(ggrepel)
+
+all_seu <- readRDS("all_human_wound_reducedSize.rds")
+
+# Pseudobulk counts ("pseudobulk") for each sample.
+pseudo_sm <- AggregateExpression(all_seu, 
+                                 assays = "RNA", 
+                                 slot = "count",
+                                 group.by = "orig.ident")$RNA %>% as.data.frame()
+colnames(pseudo_sm) <- gsub("PWH26", "Donor5_", colnames(pseudo_sm))
+colnames(pseudo_sm) <- gsub("PWH27", "Donor4_", colnames(pseudo_sm))
+colnames(pseudo_sm) <- gsub("PWH28", "Donor3_", colnames(pseudo_sm))
+
+# keep gene expressed in at least half of samples
+keep=which(rowSums(pseudo_sm > 0) >= 6)
+pseudo_sm_new <- pseudo_sm[keep, ]
+
+# make a metadata
+mt <- colnames(pseudo_sm_new) %>% as.data.frame() %>% 
+  setNames("Sample") %>% mutate(Donor = Sample) %>% 
+  separate(., Donor, into = c("Donor", "Condition"), sep = "_")
+rownames(mt) <- mt$Sample
+
+mt$Donor <- as.factor(mt$Donor)
+mt$Condition <- factor(mt$Condition, levels = c("D0", "D1", "D7", "D30"))
+
+# create the DESeqData
+dds_cor <- DESeqDataSetFromMatrix(countData = pseudo_sm_new, 
+                                  colData = mt, design = ~ Donor + Condition)
+dds_cor <- DESeq(dds_cor)
+
+# Transform counts for data visualization
+rld <- rlog(dds_cor, blind=TRUE)
+
+pcaData_cor <- plotPCA(rld, intgroup=c( "Sample", "Donor", "Condition"), returnData=TRUE)
+percentVar_cor <- round(100 * attr(pcaData_cor, "percentVar"))
+max(pcaData_cor$PC1);min(pcaData_cor$PC1)
+max(pcaData_cor$PC2);min(pcaData_cor$PC2)
+nudge <- position_nudge(y = 1)
+ggplot(pcaData_cor, aes(PC1, PC2, color=Condition, shape=Donor, label=name)) + 
+  geom_point(size=3) +
+  xlab(paste0("PC1: ",percentVar_cor[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar_cor[2],"% variance")) +
+  geom_text_repel(
+    max.overlaps = getOption("ggrepel.max.overlaps", default = 20)) +
+  theme_bw() + 
+  theme(axis.text.x = element_text(size = 12),
+        axis.text.y = element_text(size = 12),
+        aspect.ratio = 1)
+
+#pdf("Reviewer2_Q1_2_pati_hetero_pca.pdf", useDingbats = F, width = 6, height = 6)
+#dev.off()
+
+### Extract the vst matrix from the object
+rld_mat <- assay(rld) 
+### Compute pairwise correlation values
+rld_cor <- cor(rld_mat) 
+### Plot heatmap
+pheatmap::pheatmap(rld_cor, annotation = mt[, c("Donor"), drop=F])
+#pdf("Reviewer2_Q1_2_pati_hetero_heatmap.pdf", useDingbats = F, width = 6, height = 5)
+#dev.off()
+
+
+################################################################
+# GO analysis of four conditions (Skin, Wound1, Wound7, Wound30)
+all_seu <- readRDS("all_human_wound_reducedSize.rds")
+# Pseudobulk counts ("pseudobulk") for each sample.
+pseudo_sm <- AggregateExpression(all_seu, 
+                                 assays = "RNA", 
+                                 slot = "count",
+                                 return.seurat = TRUE,
+                                 normalization.method = "LogNormalize",
+                                 scale.factor = 10000,
+                                 group.by = "orig.ident")
+pseudo_sm$orig.ident <- colnames(pseudo_sm)
+pseudo_sm$Condition <- gsub("PWH2[0-9]", "", pseudo_sm$orig.ident)
+Idents(pseudo_sm) <- pseudo_sm$Condition
+
+# Run the DE analysis
+pseudo_sm_de <- FindMarkers(object = pseudo_sm,
+                            ident.1 = "D1",
+                            ident.2 = "D0",
+                            logfc.threshold = 0.58,
+                            only.pos = TRUE,
+                            test.use = "DESeq2")
+pseudo_sm_de$gene <- rownames(pseudo_sm_de)
+
+# load the human gene annotation
+hs_ano <- readRDS("/Users/zhuliu/Desktop/sc st/plotting scripts/Functions/humanAnnotation.rds")
+
+# Gene ontology analysis
+## Only for the Skin
+pseudo_sm_de_top100 <- pseudo_sm_de %>% dplyr::filter(p_val < 0.05) %>%
+  left_join(., hs_ano[,1:3], by=c("gene" = "external_gene_name")) %>% 
+  dplyr::filter(gene_biotype == "protein_coding")
+table(pseudo_sm_de_top100$cluster)
+
+## for Wound conditions
+pseudo_sm_de_top100 <- pseudo_sm_de %>% dplyr::filter(p_val_adj < 0.05) %>%
+  dplyr::filter(avg_log2FC > 1) %>% 
+  left_join(., hs_ano[,1:3], by=c("gene" = "external_gene_name")) %>% 
+  dplyr::filter(gene_biotype == "protein_coding") %>% 
+  top_n(500, avg_log2FC)
+table(pseudo_sm_de_top100$cluster)
+
+suppressMessages(require(clusterProfiler))
+suppressMessages(require(org.Hs.eg.db)) 
+
+Enriched_gene <- as.character(unique(pseudo_sm_de_top100$entrezgene_id))
+ego_BP_up <- enrichGO(gene = Enriched_gene,
+                      OrgDb         = org.Hs.eg.db,
+                      ont           = "BP",
+                      keyType = "ENTREZID",
+                      pAdjustMethod = "BH",
+                      pvalueCutoff  = 0.05,
+                      qvalueCutoff  = 0.2,
+                      minGSSize = 10,
+                      maxGSSize = 500,
+                      readable = T)
+ego_BP_up_f <- as.data.frame(ego_BP_up)
+#data.table::fwrite(ego_BP_up_f, file = "GOterms_Skin.txt", sep="\t")
+#data.table::fwrite(ego_BP_up_f, file = "GOterms_Wound1.txt", sep="\t")
+#data.table::fwrite(ego_BP_up_f, file = "GOterms_Wound7.txt", sep="\t")
+data.table::fwrite(ego_BP_up_f, file = "GOterms_Wound30.txt", sep="\t")
+if (nrow(ego_BP_up_f) > 0) {
+      dotplot(ego_BP_up, showCategory=20, label_format = 80) + ggtitle("Top 10 GO-BPs")
+} else{
+      print("No enriched terms")
+}
+
+# plot the GO results
+go_df <- readxl::read_xlsx("Gene ontology.xlsx", sheet = 1)
+go_df$Description <- factor(go_df$Description, levels = unique(rev(go_df$Description)))
+
+go_df$Group <- factor(go_df$Group, levels = c("Skin", "Wound1", "Wound7", "Wound30"))
+
+p2 <- ggplot(data = go_df, aes(x=Description, y = Count, 
+                           color = Group)) + 
+  scale_color_manual(values = c("#fdc086","#FC4E07", "#4daf4a", "#377eb8")) +
+  geom_point(stat='identity', fill="black", size=6) +
+  geom_segment(aes(y=0, x=Description, yend=Count, xend=Description)) +
+  
+  coord_flip() +
+  #scale_y_continuous(limits = c(0,30),breaks = c(0,10,20,30)) +
+  theme_bw() + 
+  ylab("") + 
+  xlab("") +
+  theme(axis.text.x = element_text(size = 12, angle = 0, hjust = 1)) +
+  facet_grid(~Group)
+pdf("Reviewer2_Q1_3_Top5GOs_2.pdf", useDingbats = FALSE, width = 10, height = 5)
+p1
+dev.off()
+p2 <- ggplot(data = go_df, aes(x=Description, y = Count, 
+                               color = -log10(pvalue))) + 
+  scale_colour_gradient(limits = c(1,30),low = "#FFC9C9", high = "red") +
+  #scale_color_manual(values = c("#fdc086","#FC4E07", "#4daf4a", "#377eb8")) +
+  geom_point(stat='identity', fill="black", size=6) +
+  geom_segment(aes(y=0, x=Description, yend=Count, xend=Description)) +
+  
+  coord_flip() +
+  #scale_y_continuous(limits = c(0,30),breaks = c(0,10,20,30)) +
+  theme_bw() + 
+  ylab("") + 
+  xlab("") +
+  theme(axis.text.x = element_text(size = 12, angle = 0, hjust = 1)) +
+  facet_grid(~Group)
+
+pdf("Reviewer2_Q1_3_Top5GOs_2.pdf", useDingbats = FALSE, width = 10, height = 5)
+p2
+dev.off()
+
+```
+
+
+# 3. (Q 1.3) Pseudo-bulk comparisons to published RNA-seq data
+```{r eval=FALSE}
+library(DESeq2)
+library(ggrepel)
+
+all_seu <- readRDS("all_human_wound_reducedSize.rds")
+
+# Pseudobulk counts ("pseudobulk") for each sample.
+pseudo_sm <- AggregateExpression(all_seu, 
+                                 assays = "RNA", 
+                                 slot = "count",
+                                 group.by = "orig.ident")$RNA %>% as.data.frame()
+colnames(pseudo_sm) <- gsub("PWH26", "Donor5_", colnames(pseudo_sm))
+colnames(pseudo_sm) <- gsub("PWH27", "Donor4_", colnames(pseudo_sm))
+colnames(pseudo_sm) <- gsub("PWH28", "Donor3_", colnames(pseudo_sm))
+
+# keep gene expressed in at least half of samples
+keep=which(rowSums(pseudo_sm > 0) >= 6)
+pseudo_sm_new <- pseudo_sm[keep, ]
+colnames(pseudo_sm_new) <- paste0("scRNAseq_", colnames(pseudo_sm_new))
+
+# Own eLife bulk RNA-seq data
+load("./OwnElifeData/wb_allgene_NewDE_mRNAresults.RData")
+eLife <- wb_allgene_NewDE_mRNAresults$readCount_wb %>% 
+  left_join(.,wb_allgene_NewDE_mRNAresults$HumanGene_PC_v32[,1:2], by=c("ID" = "Geneid")) %>% select(22, 7:21) %>% distinct(GeneSymbol, .keep_all = TRUE) %>% 
+  column_to_rownames(var = "GeneSymbol")
+rownames(eLife)[grep("KRT", rownames(eLife))]
+colnames(eLife) <- paste0("eLife_", colnames(eLife))
+# keep gene expressed in at least half of samples
+keep2=which(rowSums(eLife > 0) >= 6)
+# Remove one sample Skin4 due to outlier test
+eLife_new <- eLife[keep2, -4]
+
+
+# Public STM bulk RNA-seq data
+stm_df <- data.table::fread("./GSE97615/GSE97615_raw_counts_GRCh38.p13_NCBI.tsv")
+stm_an <- data.table::fread("./GSE97615/Human.GRCh38.p13.annot.tsv")
+identical(stm_df$GeneID, stm_an$GeneID)
+stm_df$GeneID <- stm_an$Symbol
+
+stm_df <- stm_df %>% select(1:13) %>% setNames(c("GeneID", "stm_D1_1", "stm_D1_2",
+                                                 "stm_D1_3", "stm_D1_4", "stm_D3_1",
+                                                 "stm_D3_2", "stm_D3_3", "stm_D3_4",
+                                                 "stm_D6_1", "stm_D6_2", "stm_D6_3",
+                                                 "stm_D6_4")) %>% 
+  distinct(GeneID, .keep_all = TRUE) %>% 
+  column_to_rownames(var = "GeneID")
+# keep gene expressed in at least half of samples
+keep3=which(rowSums(stm_df > 0) >= 6)
+stm_df_new <- stm_df[keep3, ]
+
+
+# combine all the data
+## Check the overlapped genes
+gene_ol <- intersect(rownames(pseudo_sm_new), rownames(eLife_new))
+gene_ol <- intersect(gene_ol, rownames(stm_df_new))
+gene_ol[grep("KRT", gene_ol)]
+
+pseudo_sm_new <- pseudo_sm_new %>% rownames_to_column(var = "GeneID") %>% dplyr::filter(GeneID %in% gene_ol)
+eLife_new <- eLife_new %>% rownames_to_column(var = "GeneID") %>% dplyr::filter(GeneID %in% gene_ol)
+stm_df_new <- stm_df_new %>% rownames_to_column(var = "GeneID") %>% dplyr::filter(GeneID %in% gene_ol)
+
+allData <- pseudo_sm_new %>% left_join(., eLife_new, by=c("GeneID")) %>% 
+  left_join(., stm_df_new, by=c("GeneID")) %>% column_to_rownames(var = "GeneID")
+
+
+# make a metadata for later PCA and sample silimarity analysis
+mt <- colnames(allData) %>% as.data.frame() %>% 
+  setNames("Sample") %>% mutate(Donor = Sample) %>% 
+  separate(., Donor, into = c("Project","Donor", "Condition"), sep = "_")
+mt$Donor <- ifelse(mt$Project == "scRNAseq", paste0("sc_", mt$Condition), mt$Donor)
+mt$Condition <- mt$Donor
+rownames(mt) <- mt$Sample
+mt$Condition <- gsub("sc_", "", mt$Condition)
+mt$Condition <- gsub("Skin[0-9]", "D0", mt$Condition)
+mt$Condition <- gsub("Wound1", "D1", mt$Condition)
+mt$Condition <- gsub("Wound7", "D7", mt$Condition)
+
+mt$Project <- as.factor(mt$Project)
+mt$Donor <- as.factor(mt$Donor)
+mt$Condition <- as.factor(mt$Condition)
+
+#first we need to transform the format of our groups and batches from names (e.g. "UHR", "HBR", etc.) to numbers (e.g. 1, 2, etc.)
+#in the command below "sapply" is used to apply the "switch" command to each element and convert names to numbers as we define
+groups = sapply(as.character(mt$Condition), switch, "D0" = 1, "D1" = 2, "D3" = 3, "D6" = 4, "D7" = 5, "D30" = 6, USE.NAMES = F)
+batches = sapply(as.character(mt$Project), switch, "scRNAseq" = 1, "eLife" = 2, "stm" = 3, USE.NAMES = F)
+
+##############################################################
+#now run ComBat_seq to correct the data from different project
+library(sva)
+identical(mt$Sample, colnames(allData))
+corrected_data = ComBat_seq(counts = as.matrix(allData), 
+                            batch = batches, group = groups)
+
+# pairwise analysis
+#corrected_data_fil <- corrected_data[, 1:26] # scRNAseq versus eLife
+corrected_data_fil <- corrected_data[, c(1:12, 27:38)] # scRNAseq versus STM
+#mt_fil <- mt[1:26,] # scRNAseq versus eLife
+mt_fil <- mt[c(1:12, 27:38),]
+mt_fil <- droplevels(mt_fil)
+
+# create the DESeqData
+dds_cor <- DESeqDataSetFromMatrix(countData = corrected_data_fil, 
+                                  colData = mt_fil, design = ~ Condition)
+dds_cor <- DESeq(dds_cor)
+
+# Transform counts for data visualization
+rld <- rlog(dds_cor, blind=TRUE)
+
+pcaData_cor <- plotPCA(rld, intgroup=c( "Sample", "Project", "Condition"), returnData=TRUE)
+percentVar_cor <- round(100 * attr(pcaData_cor, "percentVar"))
+max(pcaData_cor$PC1);min(pcaData_cor$PC1)
+max(pcaData_cor$PC2);min(pcaData_cor$PC2)
+nudge <- position_nudge(y = 1)
+ggplot(pcaData_cor, aes(PC1, PC2, color=Condition, shape=Project, label=name)) + 
+  geom_point(size=3) +
+  xlab(paste0("PC1: ",percentVar_cor[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar_cor[2],"% variance")) +
+  geom_text_repel(
+    max.overlaps = getOption("ggrepel.max.overlaps", default = 20)) +
+  theme_bw() + 
+  theme(axis.text.x = element_text(size = 12),
+        axis.text.y = element_text(size = 12),
+        aspect.ratio = 1)
+
+pdf("Reviewer2_Q1_3_publicData_2pca.pdf", useDingbats = F, width = 8, height = 8)
+dev.off()
+
+### Extract the vst matrix from the object
+rld_mat <- assay(rld) 
+### Compute pairwise correlation values
+rld_cor <- cor(rld_mat) 
+### Plot heatmap
+#pheatmap::pheatmap(rld_cor, annotation = mt[, c("Project"), drop=F])
+pdf("Reviewer2_Q1_3_publicData_2heatmap.pdf", useDingbats = F, width = 12, height = 12)
+pheatmap::pheatmap(rld_cor, annotation = mt[, c("Project"), drop=F])
+dev.off()
+
+library(circlize)
+rld_cor_f <- rld_cor[1:12, 13:24]
+mt_sort_f <- mt %>% filter(Project == "scRNAseq")
+
+pheatmap::pheatmap(t(rld_cor_f), cluster_rows = FALSE, cluster_cols = TRUE,
+                   annotation_col = mt_sort_f[, c("Condition"), drop=F])
+
+pdf("Reviewer2_Q1_3_publicData_3heatmap.pdf", useDingbats = F, width = 6, height = 6)
+dev.off()
+```
+
+
+# 4. (Q 1.3) Pseudo-bulk comparisons to Microarray data
+```{r eval=FALSE}
+library(DESeq2)
+library(ggrepel)
+library(limma)
+
+all_seu <- readRDS("all_human_wound_reducedSize.rds")
+
+# Pseudobulk counts ("pseudobulk") for each sample.
+pseudo_sm <- AggregateExpression(all_seu, 
+                                 assays = "RNA", 
+                                 slot = "count",
+                                 group.by = "orig.ident")$RNA %>% as.data.frame()
+colnames(pseudo_sm) <- gsub("PWH26", "Donor5_", colnames(pseudo_sm))
+colnames(pseudo_sm) <- gsub("PWH27", "Donor4_", colnames(pseudo_sm))
+colnames(pseudo_sm) <- gsub("PWH28", "Donor3_", colnames(pseudo_sm))
+
+# keep gene expressed in at least half of samples
+keep=which(rowSums(pseudo_sm > 0) >= 6)
+pseudo_sm_new <- pseudo_sm[keep, ]
+colnames(pseudo_sm_new) <- paste0("scRNAseq_", colnames(pseudo_sm_new))
+
+# Microarray data
+microarray <- data.table::fread("GSE209609/GSE209609_palate_skin_healing_exp.txt")
+microarray_meta <- data.table::fread("GSE209609/GSE209609_palate_skin_healing_meta.txt")
+
+# keep gene expressed in at least half of samples
+keep2=which(rowSums(microarray[,-1] > 0) >= 10)
+# Remove one sample Skin4 due to outlier test
+microarray_new <- microarray[keep2, ]
+rownames(microarray_new) <- microarray$GeneID
+
+# combine all the data
+## Check the overlapped genes
+gene_ol <- intersect(rownames(pseudo_sm_new), rownames(microarray_new))
+gene_ol[grep("KRT", gene_ol)]
+
+pseudo_sm_new <- pseudo_sm_new %>% rownames_to_column(var = "GeneID") %>% dplyr::filter(GeneID %in% gene_ol)
+microarray_new <- microarray_new %>% dplyr::filter(GeneID %in% gene_ol)
+
+allData <- pseudo_sm_new %>% left_join(., microarray_new, by=c("GeneID")) %>% column_to_rownames(var = "GeneID")
+
+# make a metadata
+mt <- colnames(pseudo_sm_new) %>% as.data.frame() %>% 
+  setNames("Sample") %>% mutate(Donor = Sample) %>% 
+  separate(., Donor, into = c("Donor", "Condition"), sep = "_")
+rownames(mt) <- mt$Sample
+mt <- mt[-1,]
+
+microarray_meta_re <- microarray_meta %>% select(1,4,3) %>% setNames(colnames(mt)) %>% mutate(Donor = "microarray")
+all_meta <- rbind(mt, microarray_meta_re)
+rownames(all_meta) <- all_meta$Sample
+
+identical(rownames(all_meta), colnames(allData))
+
+mm <- model.matrix(~ Donor + Condition, data = all_meta)
+y <- voom(as.matrix(allData), mm, plot = T,normalize="quantile")
+
+# Extract the normalized values
+nm_df <- y$E
+
+### Compute pairwise correlation values
+rld_cor <- cor(nm_df) 
+### Plot heatmap
+#pheatmap::pheatmap(rld_cor, annotation = mt[, c("Project"), drop=F])
+pdf("Reviewer2_Q1_3_publicData_3heatmap.pdf", useDingbats = F, width = 12, height = 12)
+pheatmap::pheatmap(rld_cor, annotation = mt[, c("Donor"), drop=F])
+dev.off()
+
+library(circlize)
+rld_cor_f <- rld_cor[1:12, 13:57]
+mt_micr <- microarray_meta %>% arrange(Sample)
+rld_cor_f <- rld_cor_f[, mt_micr$Sample]
+mt_sort_f <- mt %>% separate(col = Sample, into = c("Tech", "Donor", "Condition"), sep = "_")
+
+pheatmap::pheatmap(t(rld_cor_f), cluster_rows = FALSE, cluster_cols = TRUE,
+                   annotation_col = mt_sort_f[, "Condition", drop =F])
+
+pdf("Reviewer2_Q1_3_publicData_4heatmap.pdf", useDingbats = F, width = 6, height = 10)
+dev.off()
+```
+
+# 4.1 (Q 1.3) Pseudo-bulk comparisons to mouse microarray data
+```{r eval=FALSE}
+library(DESeq2)
+library(ggrepel)
+library(limma)
+
+all_seu <- readRDS("all_human_wound_reducedSize.rds")
+
+# Pseudobulk counts ("pseudobulk") for each sample.
+pseudo_sm <- AggregateExpression(all_seu, 
+                                 assays = "RNA", 
+                                 slot = "count",
+                                 group.by = "orig.ident")$RNA %>% as.data.frame()
+colnames(pseudo_sm) <- gsub("PWH26", "Donor5_", colnames(pseudo_sm))
+colnames(pseudo_sm) <- gsub("PWH27", "Donor4_", colnames(pseudo_sm))
+colnames(pseudo_sm) <- gsub("PWH28", "Donor3_", colnames(pseudo_sm))
+
+# keep gene expressed in at least half of samples
+keep=which(rowSums(pseudo_sm > 0) >= 6)
+pseudo_sm_new <- pseudo_sm[keep, ]
+colnames(pseudo_sm_new) <- paste0("scRNAseq_", colnames(pseudo_sm_new))
+
+# Microarray data
+microarray <- data.table::fread("GSE209609/GSE23006_mouse_skin_healing_exp.txt")
+microarray_meta <- data.table::fread("GSE209609/GSE23006_mouse_skin_healing_meta.txt")
+
+# keep gene expressed in at least half of samples
+keep2=which(rowSums(microarray[,-1] > 0) >= 10)
+# Remove one sample Skin4 due to outlier test
+microarray_new <- microarray[keep2, ]
+rownames(microarray_new) <- microarray$GeneID
+
+# combine all the data
+## Check the overlapped genes
+gene_ol <- intersect(rownames(pseudo_sm_new), rownames(microarray_new))
+gene_ol[grep("KRT", gene_ol)]
+
+pseudo_sm_new <- pseudo_sm_new %>% rownames_to_column(var = "GeneID") %>% dplyr::filter(GeneID %in% gene_ol)
+microarray_new <- microarray_new %>% dplyr::filter(GeneID %in% gene_ol)
+
+allData <- pseudo_sm_new %>% left_join(., microarray_new, by=c("GeneID")) %>% column_to_rownames(var = "GeneID")
+
+# make a metadata
+mt <- colnames(pseudo_sm_new) %>% as.data.frame() %>% 
+  setNames("Sample") %>% mutate(Donor = Sample) %>% 
+  separate(col = Donor, into = c("Tech", "Donor", "Condition"), sep = "_")
+rownames(mt) <- mt$Sample
+mt <- mt[-1,]
+
+microarray_meta_re <- microarray_meta %>% 
+  mutate(Tech = "microarray") %>% select(1,5,4,3) %>% setNames(colnames(mt))
+all_meta <- rbind(mt, microarray_meta_re)
+rownames(all_meta) <- all_meta$Sample
+
+identical(rownames(all_meta), colnames(allData))
+
+mm <- model.matrix(~ Donor + Condition, data = all_meta)
+y <- voom(as.matrix(allData), mm, plot = T,normalize="quantile")
+
+# Extract the normalized values
+nm_df <- y$E
+
+### Compute pairwise correlation values
+rld_cor <- cor(nm_df) 
+### Plot heatmap
+#pheatmap::pheatmap(rld_cor, annotation = mt[, c("Project"), drop=F])
+pdf("Reviewer2_Q1_3_publicData_3heatmap.pdf", useDingbats = F, width = 12, height = 12)
+pheatmap::pheatmap(rld_cor, annotation = mt[, c("Donor"), drop=F])
+dev.off()
+
+library(circlize)
+rld_cor_f <- rld_cor[1:12, 13:36]
+
+pheatmap::pheatmap(t(rld_cor_f), cluster_rows = FALSE, cluster_cols = TRUE,
+                   annotation_col = mt[, "Condition", drop =F])
+
+pdf("Reviewer2_Q1_3_publicData_5heatmap.pdf", useDingbats = F, width = 6, height = 8)
+dev.off()
+```
+
+
+# 5.(Q 2.4) scRNA-seq and ST-seq patient heterogeneity
+```{r eval=FALSE}
+library(DESeq2)
+library(ggrepel)
+library(RColorBrewer)
+
+#########################
+# load the scRNA-seq data
+all_seu <- readRDS("all_human_wound_reducedSize.rds")
+# Pseudobulk counts ("pseudobulk") for each sample.
+pseudo_sm <- AggregateExpression(all_seu, 
+                                 assays = "RNA", 
+                                 slot = "count",
+                                 group.by = "orig.ident")$RNA %>% as.data.frame()
+colnames(pseudo_sm) <- gsub("PWH26", "Donor5_", colnames(pseudo_sm))
+colnames(pseudo_sm) <- gsub("PWH27", "Donor4_", colnames(pseudo_sm))
+colnames(pseudo_sm) <- gsub("PWH28", "Donor3_", colnames(pseudo_sm))
+
+# keep gene expressed in at least half of samples
+keep=which(rowSums(pseudo_sm > 0) >= 6)
+pseudo_sm_new <- pseudo_sm[keep, ]
+
+
+#######################
+# load the spatial data
+inte_st <- readRDS("/Users/zhuliu/Desktop/sc st/ST plotting scripts/Seurat_STseq_integrate_update.rds")
+# Pseudobulk counts ("pseudobulk") for each sample.
+pseudo_st <- AggregateExpression(inte_st, 
+                                 assays = "Spatial", 
+                                 slot = "count",
+                                 group.by = "Sample_name")$Spatial %>%
+  as.data.frame()
+keep2=which(rowSums(pseudo_st > 0) >= 6)
+pseudo_st <- pseudo_st[keep2, ]
+
+# check overlapped gene
+gene_op <- intersect(rownames(pseudo_sm_new), rownames(pseudo_st))
+
+sc <- pseudo_sm_new %>% rownames_to_column(var = "gene") %>% filter(gene %in% gene_op)
+st <- pseudo_st %>% rownames_to_column(var = "gene") %>% filter(gene %in% gene_op)
+
+# combine the scRNA and spatial data
+alldata <- sc %>% left_join(., st, by=c("gene"))
+
+# make a metadata
+mt <- colnames(alldata)[-1] %>% as.data.frame() %>% 
+  setNames("Sample") %>% mutate(Donor = Sample) %>% 
+  separate(., Donor, into = c("Donor", "Condition"), sep = "_")
+rownames(mt) <- mt$Sample
+mt$Condition <- gsub("D0", "Skin", mt$Condition) 
+mt$Condition <- gsub("D1", "Wound1", mt$Condition) 
+mt$Condition <- gsub("D7", "Wound7", mt$Condition) 
+mt$Condition <- gsub("D30", "Wound30", mt$Condition) 
+
+mt$Donor <- as.factor(mt$Donor)
+mt$Condition <- factor(mt$Condition, levels = c("Skin", "Wound1", "Wound7", "Wound30"))
+
+# convert the count data into matrix
+alldata <- alldata %>% column_to_rownames(var = "gene")
+alldata <- as.matrix(alldata)
+
+identical(colnames(alldata), rownames(mt))
+
+# add the batch effect into the meta data
+mt$Project <- c(rep(c("scRNA"), 12), rep("spatial", 16))
+
+#first we need to transform the format of our groups and batches from names (e.g. "UHR", "HBR", etc.) to numbers (e.g. 1, 2, etc.)
+#in the command below "sapply" is used to apply the "switch" command to each element and convert names to numbers as we define
+groups = sapply(as.character(mt$Condition), switch, "Skin" = 1, "Wound1" = 2, "Wound7" = 3, "Wound30" = 4, USE.NAMES = F)
+batches = sapply(as.character(mt$Project), switch, "scRNA" = 1, "spatial" = 2, USE.NAMES = F)
+
+##############################################################
+#now run ComBat_seq to correct the data from different project
+library(sva)
+identical(mt$Sample, colnames(alldata))
+corrected_data = ComBat_seq(counts = alldata,
+                            batch = batches, group = groups)
+
+# create the DESeqData
+dds_cor <- DESeqDataSetFromMatrix(countData = corrected_data, 
+                                  colData = mt, design = ~ Donor + Condition)
+dds_cor <- DESeq(dds_cor)
+
+# Transform counts for data visualization
+rld <- rlog(dds_cor, blind=TRUE)
+
+pcaData_cor <- plotPCA(rld, intgroup=c( "Sample", "Project", "Donor", "Condition"), returnData=TRUE)
+percentVar_cor <- round(100 * attr(pcaData_cor, "percentVar"))
+max(pcaData_cor$PC1);min(pcaData_cor$PC1)
+max(pcaData_cor$PC2);min(pcaData_cor$PC2)
+nudge <- position_nudge(y = 1)
+ggplot(pcaData_cor, aes(PC1, PC2, color=Condition, shape=Project, type= Donor, label=name)) + 
+  geom_point(size=3) +
+  xlab(paste0("PC1: ",percentVar_cor[1],"% variance")) +
+  ylab(paste0("PC2: ",percentVar_cor[2],"% variance")) +
+  geom_text_repel(
+    max.overlaps = getOption("ggrepel.max.overlaps", default = 20)) +
+  theme_bw() + 
+  theme(axis.text.x = element_text(size = 12),
+        axis.text.y = element_text(size = 12),
+        aspect.ratio = 1)
+
+#pdf("Reviewer2_Q2_4_pati_hetero_pca.pdf", useDingbats = F, width = 6, height = 6)
+#dev.off()
+
+### Extract the vst matrix from the object
+rld_mat <- assay(rld) 
+### Compute pairwise correlation values
+rld_cor <- cor(rld_mat) 
+### Plot heatmap
+pheatmap::pheatmap(rld_cor, annotation = mt[, c("Donor", "Project"), drop=F],
+                   cluster_rows = FALSE, cluster_cols = FALSE)
+#pdf("Reviewer2_Q2_4_pati_hetero_heatmap.pdf", useDingbats = F, width = 8, height = 7)
+#dev.off()
+
+# resort the colnames
+library(circlize)
+library(ComplexHeatmap)
+mt_sort <- mt %>% arrange(Condition, Donor)
+rld_mat_sort <- rld_mat[, rownames(mt_sort)]
+rld_cor_sort <- cor(rld_mat_sort) 
+pheatmap::pheatmap(rld_cor_sort, annotation = mt_sort[, c("Donor", "Project"), drop=F],
+                   cluster_rows = FALSE, cluster_cols = FALSE,
+                   color = colorRamp2(c(0.96,0.983,1),c("#2171b5","#F7F7F7","#B2182B")))
+
+ha = HeatmapAnnotation(Condition = mt_sort[[3]],
+                       Donor = mt_sort[[2]],
+                       Project = mt_sort[[4]]
+                       )
+Heatmap(rld_cor_sort, name = "Z-score",
+              show_column_names = T, show_row_names = T,
+              top_annotation = ha,
+              cluster_rows = F, cluster_columns = F,border = TRUE,
+              col= colorRamp2(c(0.95,0.983,1),c("#2171b5","#F7F7F7","#B2182B")))
+#pdf("Reviewer2_Q2_4_pati_hetero_heatmap2.pdf", useDingbats = F, width = 10, height = 8)
+#dev.off()
+
+# plot the correlation per condition
+str(rld_mat);colnames(rld_mat)
+rld_mat_f <- rld_mat[, grep("D30|Wound30", colnames(rld_mat))]
+rld_cor_f <- cor(rld_mat_f) 
+# filter the metadata
+mt_f <- mt %>% dplyr::filter(Condition == "Wound30")
+
+pheatmap::pheatmap(rld_cor_f, annotation = mt_f[, c("Donor", "Project"), drop=F])
+```
+
+
+# 6. (Minor concern 3) Schwann cell type Correlation Varies in public data
+```{r eval=FALSE}
+all_seu <- readRDS("all_human_wound_reducedSize.rds")
+
+pdf("umap.pdf", useDingbats = F, width = 8, height = 5)
+DimPlot(all_seu, group.by = "newCellTypes", cols = ct.cols)
+dev.off()
+
+pdf("umap_FOSL1.pdf", useDingbats = F, width = 20, height = 5)
+FeaturePlot_scCustom(all_seu, features = c("FOSL1"), order = F,
+            cols = c("grey90", "red"), split.by="Condition")
+dev.off()
+
+# plot markers of schwann cell, melanocyte, FB and vSMC
+FeaturePlot_scCustom(all_seu, features = c("SOX10", "SOX2", "DCT", "TYRP1", "COL1A1", "ACTA2"), num_columns=3)
+
+pdf("umap_featureplot1.pdf", useDingbats = F, width = 12, height = 3)
+tiff("umap_featureplot1.tiff", units = "in", width = 12, height = 3, res = 300)
+FeaturePlot(all_seu, features = c("SOX10", "SOX2"), order = TRUE,
+            cols = c("grey90", "red"), ncol = 3)
+dev.off()
+
+pdf("umap_featureplot2.pdf", useDingbats = F, width = 12, height = 6)
+tiff("umap_featureplot2.tiff", units = "in", width = 12, height = 6, res = 300)
+FeaturePlot(all_seu, features = c("DCT", "TYRP1", "COL1A1", "ACTA2"), 
+            cols = c("grey90", "red"), ncol = 3)
+dev.off()
+
+# Markers from SCIENCE paper
+FeaturePlot_scCustom(all_seu, features = c("CRYAB", "TYRP1", "DKK3", "PLEKHA4", "LUM", "APOD", "PHLDA2", "CCL2", "IL6"), num_columns=3)
+pdf("umap_featureplot3_1.pdf", useDingbats = F, width = 12, height = 9)
+tiff("umap_featureplot3_1.tiff", units = "in", width = 12, height = 9, res = 300)
+FeaturePlot(all_seu, features = c("CRYAB", "TYRP1", "DKK3", "PLEKHA4", "LUM", "APOD", "PHLDA2", "CCL2", "IL6"),  
+            cols = c("grey90", "red"),
+            ncol=3)
+dev.off()
+pdf("umap_featureplot3_2.pdf", useDingbats = F, width = 12, height = 9)
+tiff("umap_featureplot3_2.tiff", units = "in", width = 12, height = 9, res = 300)
+FeaturePlot(all_seu, features = c("CRYAB", "TYRP1", "DKK3", "PLEKHA4", "LUM", "APOD", "PHLDA2", "CCL2", "IL6"), 
+            ncol=3)
+dev.off()
+```
+
+
+# SessionInfo
+```{r}
+sessionInfo()
+```
+
