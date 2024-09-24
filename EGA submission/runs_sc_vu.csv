@@ -1,0 +1,11 @@
+sample,file1,file2
+scRNA_VU1,/scRNA_vu/J22100052_S1_L001_R1_001.fastq.gz.c4gh,/scRNA_vu/J22100052_S1_L001_R2_001.fastq.gz.c4gh
+scRNA_VU2,/scRNA_vu/J22100053_S1_L001_R1_001.fastq.gz.c4gh,/scRNA_vu/J22100053_S1_L001_R2_001.fastq.gz.c4gh
+scRNA_VU3,/scRNA_vu/NS36_S1_L001_R1_001.fastq.gz.c4gh,/scRNA_vu/NS36_S1_L001_R2_001.fastq.gz.c4gh
+scRNA_VU4,/scRNA_vu/J23110422_S1_L001_R1_001.fastq.gz.c4gh,/scRNA_vu/J23110422_S1_L001_R2_001.fastq.gz.c4gh
+scRNA_VU5,/scRNA_vu/J23110421_S1_L001_R1_001.fastq.gz.c4gh,/scRNA_vu/J23110421_S1_L001_R2_001.fastq.gz.c4gh
+scRNA_VU6_1,/scRNA_vu/R22036698-UU_1_S1_L001_R1_001.fastq.gz.c4gh,/scRNA_vu/R22036698-UU_1_S1_L001_R2_001.fastq.gz.c4gh
+scRNA_VU6_2,/scRNA_vu/R22036698-UU_1_S1_L002_R1_001.fastq.gz.c4gh,/scRNA_vu/R22036698-UU_1_S1_L002_R2_001.fastq.gz.c4gh
+scRNA_VU7,/scRNA_vu/J22090089_S5_L004_R1_001.fastq.gz.c4gh,/scRNA_vu/J22090089_S5_L004_R2_001.fastq.gz.c4gh
+scRNA_VU8,/scRNA_vu/J22090158_S8_L004_R1_001.fastq.gz.c4gh,/scRNA_vu/J22090158_S8_L004_R2_001.fastq.gz.c4gh
+scRNA_VU9,/scRNA_vu/VU6_S1_L001_R1_001.fastq.gz.c4gh,/scRNA_vu/VU6_S1_L001_R2_001.fastq.gz.c4gh

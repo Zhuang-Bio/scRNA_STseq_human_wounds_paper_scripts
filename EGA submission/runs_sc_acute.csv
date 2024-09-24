@@ -1,0 +1,13 @@
+sample,file1,file2
+scRNA_Acute1,/scRNA_acutewound/P20852_1001_S9_L002_R1_001.fastq.gz.c4gh,/scRNA_acutewound/P20852_1001_S9_L002_R2_001.fastq.gz.c4gh
+scRNA_Acute2,/scRNA_acutewound/P20852_1004_S12_L002_R1_001.fastq.gz.c4gh,/scRNA_acutewound/P20852_1004_S12_L002_R2_001.fastq.gz.c4gh
+scRNA_Acute3,/scRNA_acutewound/P20852_1007_S15_L003_R1_001.fastq.gz.c4gh,/scRNA_acutewound/P20852_1007_S15_L003_R2_001.fastq.gz.c4gh
+scRNA_Acute4,/scRNA_acutewound/P20852_1010_S18_L003_R1_001.fastq.gz.c4gh,/scRNA_acutewound/P20852_1010_S18_L003_R2_001.fastq.gz.c4gh
+scRNA_Acute5,/scRNA_acutewound/P20852_1002_S10_L002_R1_001.fastq.gz.c4gh,/scRNA_acutewound/P20852_1002_S10_L002_R2_001.fastq.gz.c4gh
+scRNA_Acute6,/scRNA_acutewound/P20852_1005_S13_L002_R1_001.fastq.gz.c4gh,/scRNA_acutewound/P20852_1005_S13_L002_R2_001.fastq.gz.c4gh
+scRNA_Acute7,/scRNA_acutewound/P20852_1008_S16_L003_R1_001.fastq.gz.c4gh,/scRNA_acutewound/P20852_1008_S16_L003_R2_001.fastq.gz.c4gh
+scRNA_Acute8,/scRNA_acutewound/P20852_1011_S19_L003_R1_001.fastq.gz.c4gh,/scRNA_acutewound/P20852_1011_S19_L003_R2_001.fastq.gz.c4gh
+scRNA_Acute9,/scRNA_acutewound/P20852_1003_S11_L002_R1_001.fastq.gz.c4gh,/scRNA_acutewound/P20852_1003_S11_L002_R2_001.fastq.gz.c4gh
+scRNA_Acute10,/scRNA_acutewound/P20852_1006_S14_L002_R1_001.fastq.gz.c4gh,/scRNA_acutewound/P20852_1006_S14_L002_R2_001.fastq.gz.c4gh
+scRNA_Acute11,/scRNA_acutewound/P20852_1009_S17_L003_R1_001.fastq.gz.c4gh,/scRNA_acutewound/P20852_1009_S17_L003_R2_001.fastq.gz.c4gh
+scRNA_Acute12,/scRNA_acutewound/P20852_1012_S20_L003_R1_001.fastq.gz.c4gh,/scRNA_acutewound/P20852_1012_S20_L003_R2_001.fastq.gz.c4gh
