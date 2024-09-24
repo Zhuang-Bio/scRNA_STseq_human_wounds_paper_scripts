@@ -18,7 +18,7 @@ This repository contains the data processing and analysis scripts for our single
 ## Data Available
 
 ### Web portal (Rshiny tool)
-  Processed data can be accessed on our web portal at https://www.xulandenlab.com/tools [Not publicly available right now]
+  Processed data can be accessed on our web portal at https://www.xulandenlab.com/tools
 
 ### Raw sequencing data
   Raw requencing data for this study will be deposited in GEO: https://www.ncbi.nlm.nih.gov/geo/. Please keep an eye on our manuscript.
