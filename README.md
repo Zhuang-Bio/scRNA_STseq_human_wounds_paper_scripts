@@ -4,7 +4,7 @@ This repository contains the data processing and analysis scripts for our single
 
 Liu, Z., Bian, X., Luo, L., Björklund, Å. K., Li, L., Zhang, L., Chen, Y., Guo, L., Gao, J., Cao, C., Wang, J., He, W., Xiao, Y., Zhu, L., Annusver, K., Gopee, N. H., Basurto-Lozada, D., Horsfall, D., Bennett, C. L., Kasper, M., … Landén, N. X. (2025). Spatiotemporal single-cell roadmap of human skin wound healing. Cell stem cell, 32(3), 479–498.e8. https://doi.org/10.1016/j.stem.2024.11.013
         
-![Test Image 4]([https://github.com/Zhuang-Bio/scRNA_STseq_human_wounds_paper_scripts/blob/main/Figure%201%20mainCTs%20copy.png])
+![Test Image 4](https://github.com/Zhuang-Bio/scRNA_STseq_human_wounds_paper_scripts/blob/main/Figure%201%20mainCTs%20copy.png)
 
 
 
